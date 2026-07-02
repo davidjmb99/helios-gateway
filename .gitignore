@@ -1,0 +1,25 @@
+# Dependencias
+node_modules/
+
+# Compilación
+dist/
+
+# Variables de entorno locales y secretos
+.env
+.env.*
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+logs/
+
+# Entornos del editor y archivos locales
+.vscode/
+.idea/
+.DS_Store
+cline_mcp_settings.json
+scratch/
+temp/
+tmp/
