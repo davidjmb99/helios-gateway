@@ -106,6 +106,10 @@ class DebugTracker {
   public clear() {
     this.events = [];
   }
+
+  public clearTenant(tenantId: string) {
+    this.events = this.events.filter(e => e.normalizedPayload?.tenant_id !== tenantId);
+  }
 }
 
 export const debugTracker = new DebugTracker();

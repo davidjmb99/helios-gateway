@@ -11,117 +11,140 @@
     .code-font { font-family: 'Fira Code', monospace; }
   </style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col">
-  <!-- Navbar -->
-  <header class="border-b border-slate-800/80 bg-slate-900/40 backdrop-blur sticky top-0 z-50">
-    <div class="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
-      <div class="flex items-center gap-3">
-        <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center font-bold text-white shadow-lg shadow-orange-500/20">H</div>
-        <h1 class="text-xl font-bold tracking-tight bg-gradient-to-r from-amber-400 to-orange-500 bg-clip-text text-transparent">Helios Gateway <span class="text-xs font-semibold text-slate-400 font-sans ml-2">Inspector & Debugger</span></h1>
-      </div>
-      <div class="flex items-center gap-4">
-        <div id="hermes-mode-badge" class="px-2.5 py-1 rounded-full text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">Hermes: Cargando...</div>
-        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          Gateway Online
-        </span>
-      </div>
-    </div>
-  </header>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col justify-between">
 
-  <!-- Métricas Generales -->
-  <section class="max-w-7xl w-full mx-auto px-6 pt-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-    <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
-      <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Webhooks Recibidos</span>
-      <div id="stat-received" class="text-2xl font-bold text-blue-400 mt-1">0</div>
-    </div>
-    <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
-      <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Procesados (Buffer)</span>
-      <div id="stat-processed" class="text-2xl font-bold text-emerald-400 mt-1">0</div>
-    </div>
-    <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
-      <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Eventos Ignorados</span>
-      <div id="stat-ignored" class="text-2xl font-bold text-slate-400 mt-1">0</div>
-    </div>
-    <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
-      <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Webhook URL</span>
-      <div class="text-xs font-mono text-amber-500 mt-2 select-all overflow-hidden text-ellipsis">/webhooks/chatwoot</div>
-    </div>
-  </section>
-
-  <!-- Main Layout -->
-  <main class="flex-1 max-w-7xl w-full mx-auto px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-    <!-- Columna Izquierda: Pestañas de Vista y Lista (5 Columnas) -->
-    <section class="lg:col-span-5 flex flex-col bg-slate-900/30 border border-slate-800 rounded-2xl overflow-hidden h-[750px] shadow-xl">
-      
-      <!-- Selector de Pestañas Izquierdas -->
-      <div class="bg-slate-950/40 border-b border-slate-800/80 flex p-1 gap-1">
-        <button id="tab-left-conversations" onclick="setLeftTab('conversations')" class="flex-1 py-2 text-xs font-bold rounded-lg transition-all bg-amber-500 text-slate-950">Conversaciones</button>
-        <button id="tab-left-globals" onclick="setLeftTab('globals')" class="flex-1 py-2 text-xs font-bold rounded-lg transition-all text-slate-400 hover:text-slate-200">Eventos Globales</button>
+  <!-- PANTALLA DE LOGIN (Visible por defecto si no hay sesión) -->
+  <div id="login-container" class="flex-1 flex flex-col items-center justify-center px-4 py-12">
+    <div class="w-full max-w-md bg-slate-900/60 border border-slate-800 rounded-3xl p-8 shadow-2xl backdrop-blur-md">
+      <div class="flex flex-col items-center mb-8">
+        <div class="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center font-bold text-white text-xl shadow-lg shadow-orange-500/20 mb-3">H</div>
+        <h2 class="text-2xl font-bold tracking-tight bg-gradient-to-r from-amber-400 to-orange-500 bg-clip-text text-transparent">Helios Gateway</h2>
+        <p class="text-xs text-slate-400 mt-1">Ingresa las credenciales de tu clínica dental</p>
       </div>
 
-      <!-- Filtros Dinámicos -->
-      <div class="p-3 border-b border-slate-800 bg-slate-950/20 space-y-2.5">
-        <div class="flex justify-between items-center">
-          <h2 id="left-panel-title" class="font-bold text-[10px] uppercase tracking-wider text-slate-400">Conversaciones Activas</h2>
-          <div class="flex gap-2">
-            <button onclick="clearDebugEvents()" class="text-[10px] text-red-400 hover:text-red-300 font-semibold transition-colors">Limpiar</button>
-            <button id="btn-refresh" onclick="forceFetch()" class="text-[10px] text-amber-500 hover:text-amber-400 font-semibold transition-colors">Actualizar</button>
+      <form id="login-form" onsubmit="handleLogin(event)" class="space-y-4">
+        <div>
+          <label class="block text-[10px] uppercase font-bold text-slate-400 mb-1.5 tracking-wider">Usuario de la Clínica</label>
+          <input type="text" id="login-username" required placeholder="Ej: democoi1" class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-amber-500 text-white placeholder-slate-600 transition-colors">
+        </div>
+        <div>
+          <label class="block text-[10px] uppercase font-bold text-slate-400 mb-1.5 tracking-wider">Contraseña</label>
+          <input type="password" id="login-password" required placeholder="••••••••" class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-amber-500 text-white placeholder-slate-600 transition-colors">
+        </div>
+        <div id="login-error" class="text-xs text-red-400 font-semibold hidden bg-red-500/10 border border-red-500/25 p-3 rounded-xl"></div>
+        <button type="submit" class="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-slate-950 font-bold text-sm tracking-wide shadow-lg shadow-orange-500/10 active:scale-[0.98] transition-all">
+          Iniciar Sesión
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- DASHBOARD PRINCIPAL (Oculto por defecto) -->
+  <div id="dashboard-container" class="flex-1 flex flex-col" style="display: none;">
+    <!-- Navbar -->
+    <header class="border-b border-slate-800/80 bg-slate-900/40 backdrop-blur sticky top-0 z-50">
+      <div class="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center font-bold text-white shadow-lg shadow-orange-500/20">H</div>
+          <div>
+            <h1 class="text-base font-bold tracking-tight bg-gradient-to-r from-amber-400 to-orange-500 bg-clip-text text-transparent">Helios Gateway <span class="text-xs font-semibold text-slate-400 font-sans ml-2">Debugger</span></h1>
+            <div id="clinic-name-header" class="text-[10px] text-slate-400 font-mono mt-0.5">Clínica: Cargando...</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-4">
+          <div id="hermes-mode-badge" class="px-2.5 py-1 rounded-full text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">Hermes: Cargando...</div>
+          <button onclick="handleLogout()" class="text-xs text-red-400 hover:text-red-300 font-semibold bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg px-3 py-1.5 transition-all">Cerrar Sesión</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Métricas Generales -->
+    <section class="max-w-7xl w-full mx-auto px-6 pt-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Webhooks Recibidos</span>
+        <div id="stat-received" class="text-2xl font-bold text-blue-400 mt-1">0</div>
+      </div>
+      <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Procesados (Buffer)</span>
+        <div id="stat-processed" class="text-2xl font-bold text-emerald-400 mt-1">0</div>
+      </div>
+      <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Eventos Ignorados</span>
+        <div id="stat-ignored" class="text-2xl font-bold text-slate-400 mt-1">0</div>
+      </div>
+      <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Webhook URL</span>
+        <div id="stat-webhook-url" class="text-[10px] font-mono text-amber-500 mt-2 select-all overflow-hidden text-ellipsis">/webhooks/chatwoot</div>
+      </div>
+    </section>
+
+    <!-- Main Layout -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+      <!-- Columna Izquierda (5 Columnas) -->
+      <section class="lg:col-span-5 flex flex-col bg-slate-900/30 border border-slate-800 rounded-2xl overflow-hidden h-[750px] shadow-xl">
+        <div class="bg-slate-950/40 border-b border-slate-800/80 flex p-1 gap-1">
+          <button id="tab-left-conversations" onclick="setLeftTab('conversations')" class="flex-1 py-2 text-xs font-bold rounded-lg transition-all bg-amber-500 text-slate-950">Conversaciones</button>
+          <button id="tab-left-globals" onclick="setLeftTab('globals')" class="flex-1 py-2 text-xs font-bold rounded-lg transition-all text-slate-400 hover:text-slate-200">Eventos Globales</button>
+        </div>
+
+        <div class="p-3 border-b border-slate-800 bg-slate-950/20 space-y-2.5">
+          <div class="flex justify-between items-center">
+            <h2 id="left-panel-title" class="font-bold text-[10px] uppercase tracking-wider text-slate-400">Conversaciones Activas</h2>
+            <div class="flex gap-2">
+              <button onclick="clearDebugEvents()" class="text-[10px] text-red-400 hover:text-red-300 font-semibold transition-colors">Limpiar</button>
+              <button id="btn-refresh" onclick="forceFetch()" class="text-[10px] text-amber-500 hover:text-amber-400 font-semibold transition-colors">Actualizar</button>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between bg-slate-950/60 p-2 rounded-lg border border-slate-800/60">
+            <div class="flex items-center gap-1.5">
+              <span id="refresh-status-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span id="refresh-status-text" class="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Auto-refresh activo</span>
+            </div>
+            <button id="btn-toggle-refresh" onclick="toggleAutoRefresh()" class="bg-slate-905 hover:bg-slate-900 text-slate-300 border border-slate-800 rounded px-2 py-0.5 text-[9px] font-semibold transition-all">Pausar</button>
+          </div>
+          
+          <div class="grid grid-cols-2 gap-2">
+            <input type="text" id="filter-conv" oninput="applyFilters()" placeholder="Buscar ID..." class="bg-slate-900/80 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-amber-500 text-white placeholder-slate-600">
+            <select id="filter-decision" onchange="applyFilters()" class="bg-slate-900/80 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-amber-500">
+              <option value="">Decisión (Todas)</option>
+              <option value="accepted">Accepted</option>
+              <option value="buffered">Buffered</option>
+              <option value="ignored">Ignored</option>
+              <option value="duplicate">Duplicate</option>
+              <option value="error">Error</option>
+            </select>
           </div>
         </div>
 
-        <!-- Controles de Auto-refresh -->
-        <div class="flex items-center justify-between bg-slate-950/60 p-2 rounded-lg border border-slate-800/60">
-          <div class="flex items-center gap-1.5">
-            <span id="refresh-status-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span id="refresh-status-text" class="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Auto-refresh activo</span>
-          </div>
-          <button id="btn-toggle-refresh" onclick="toggleAutoRefresh()" class="bg-slate-905 hover:bg-slate-900 text-slate-300 border border-slate-800 rounded px-2 py-0.5 text-[9px] font-semibold transition-all">Pausar</button>
+        <div id="left-list-container" class="flex-1 overflow-y-auto divide-y divide-slate-800/60">
+          <div class="text-slate-500 text-xs text-center p-8">Cargando datos de depuración...</div>
         </div>
         
-        <div class="grid grid-cols-2 gap-2">
-          <input type="text" id="filter-conv" oninput="applyFilters()" placeholder="Buscar ID..." class="bg-slate-900/80 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-amber-500 text-white placeholder-slate-600">
-          <select id="filter-decision" onchange="applyFilters()" class="bg-slate-900/80 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-amber-500">
-            <option value="">Decisión (Todas)</option>
-            <option value="accepted">Accepted</option>
-            <option value="buffered">Buffered</option>
-            <option value="ignored">Ignored</option>
-            <option value="duplicate">Duplicate</option>
-            <option value="error">Error</option>
-          </select>
+        <div class="p-3 bg-slate-950/50 border-t border-slate-800">
+          <span class="text-[10px] uppercase font-bold text-slate-500 block mb-1">Simulador de mensaje</span>
+          <form onsubmit="sendSimulated(event)" class="flex gap-1.5">
+            <input type="text" id="sim-text" placeholder="Escribe un mensaje de prueba..." class="flex-1 bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500">
+            <button type="submit" class="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg transition-colors">Enviar</button>
+          </form>
         </div>
-      </div>
+      </section>
 
-      <!-- Lista de Contenido -->
-      <div id="left-list-container" class="flex-1 overflow-y-auto divide-y divide-slate-800/60">
-        <div class="text-slate-500 text-xs text-center p-8">Cargando datos de depuración...</div>
-      </div>
-      
-      <!-- Simulador de mensajes -->
-      <div class="p-3 bg-slate-950/50 border-t border-slate-800">
-        <span class="text-[10px] uppercase font-bold text-slate-500 block mb-1">Simulador de mensaje</span>
-        <form onsubmit="sendSimulated(event)" class="flex gap-1.5">
-          <input type="text" id="sim-text" placeholder="Escribe un mensaje de prueba..." class="flex-1 bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500">
-          <button type="submit" class="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg transition-colors">Enviar</button>
-        </form>
-      </div>
-    </section>
+      <!-- Columna Derecha (7 Columnas) -->
+      <section id="inspector-panel" class="lg:col-span-7 flex flex-col bg-slate-900/30 border border-slate-800 rounded-2xl overflow-hidden h-[750px] shadow-xl">
+        <div class="px-6 py-4 bg-slate-950/60 border-b border-slate-800">
+          <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">DETALLE DEL EVENTO SELECCIONADO</h2>
+        </div>
+        <div class="p-8 text-center my-auto text-slate-500 space-y-2">
+          <svg class="w-12 h-12 mx-auto text-slate-700 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+          <h3 class="font-bold text-sm text-slate-400">Selecciona un evento para ver el detalle técnico</h3>
+          <p class="text-xs max-w-xs mx-auto">Selecciona un webhook en el panel de la izquierda para ver su trazabilidad y payloads en tiempo real.</p>
+        </div>
+      </section>
+    </main>
+  </div>
 
-    <!-- Columna Derecha: DETALLE DEL EVENTO SELECCIONADO (7 Columnas) -->
-    <section id="inspector-panel" class="lg:col-span-7 flex flex-col bg-slate-900/30 border border-slate-800 rounded-2xl overflow-hidden h-[750px] shadow-xl">
-      <!-- DETALLE DEL EVENTO SELECCIONADO -->
-      <div class="px-6 py-4 bg-slate-950/60 border-b border-slate-800">
-        <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">DETALLE DEL EVENTO SELECCIONADO</h2>
-      </div>
-      <div class="p-8 text-center my-auto text-slate-500 space-y-2">
-        <svg class="w-12 h-12 mx-auto text-slate-700 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-        <h3 class="font-bold text-sm text-slate-400">Selecciona un evento para ver el detalle técnico</h3>
-        <p class="text-xs max-w-xs mx-auto">Selecciona un webhook en el panel de la izquierda para ver su trazabilidad y payloads en tiempo real.</p>
-      </div>
-    </section>
-  </main>
-
-  <footer class="border-t border-slate-900/80 bg-slate-950 py-4 text-center text-xs text-slate-600">
+  <footer class="border-t border-slate-900/80 bg-slate-950 py-4 text-center text-xs text-slate-600 w-full mt-auto">
     Helios Dental AI &copy; 2026. Herramientas de depuración operativa.
   </footer>
 
@@ -133,8 +156,155 @@
     let isAutoRefreshActive = true;
     let lastRenderedTraceId = null;
     let lastRenderedTab = null;
-    let leftTab = 'conversations';
+    let leftTab = 'conversations'; 
     let expandedConversationId = null; 
+
+    // OBTENER TOKEN DE SESION
+    function getSessionToken() {
+      return localStorage.getItem('helios_session_token');
+    }
+
+    function checkSession() {
+      const token = getSessionToken();
+      const clinicName = localStorage.getItem('helios_clinic_name');
+      
+      if (!token) {
+        document.getElementById('login-container').style.display = 'flex';
+        document.getElementById('dashboard-container').style.display = 'none';
+        return false;
+      } else {
+        document.getElementById('login-container').style.display = 'none';
+        document.getElementById('dashboard-container').style.display = 'flex';
+        document.getElementById('clinic-name-header').innerText = `Clínica: ${clinicName || 'Demo'}`;
+        document.getElementById('stat-webhook-url').innerText = `/webhooks/chatwoot/${token}`;
+        return true;
+      }
+    }
+
+    // AUTH LOGIN FLOW
+    async function handleLogin(e) {
+      e.preventDefault();
+      const userEl = document.getElementById('login-username');
+      const passEl = document.getElementById('login-password');
+      const errorEl = document.getElementById('login-error');
+      
+      errorEl.classList.add('hidden');
+      
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: userEl.value, password: passEl.value })
+        });
+        
+        const data = await res.json();
+        
+        if (!res.ok) {
+          throw new Error(data.error || 'Credenciales incorrectas');
+        }
+        
+        localStorage.setItem('helios_session_token', data.token);
+        localStorage.setItem('helios_clinic_name', data.tenant.name);
+        
+        userEl.value = '';
+        passEl.value = '';
+        
+        checkSession();
+        
+        // Cargar datos iniciales
+        fetchStats();
+        fetchDebugEvents();
+      } catch (err) {
+        errorEl.innerText = err.message;
+        errorEl.classList.remove('hidden');
+      }
+    }
+
+    // AUTH LOGOUT FLOW
+    function handleLogout() {
+      localStorage.removeItem('helios_session_token');
+      localStorage.removeItem('helios_clinic_name');
+      activeEventId = null;
+      expandedConversationId = null;
+      allEvents = [];
+      
+      // Restablecer el visor de detalles a su estado inicial
+      document.getElementById('inspector-panel').innerHTML = `
+        <div class="px-6 py-4 bg-slate-950/60 border-b border-slate-800">
+          <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">DETALLE DEL EVENTO SELECCIONADO</h2>
+        </div>
+        <div class="p-8 text-center my-auto text-slate-500 space-y-2">
+          <svg class="w-12 h-12 mx-auto text-slate-700 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+          <h3 class="font-bold text-sm text-slate-400">Selecciona un evento para ver el detalle técnico</h3>
+          <p class="text-xs max-w-xs mx-auto">Selecciona un webhook en el panel de la izquierda para ver su trazabilidad y payloads en tiempo real.</p>
+        </div>
+      `;
+      
+      checkSession();
+    }
+
+    // LLAMADAS FETCH AUTENTICADAS
+    async function fetchStats() {
+      if (!getSessionToken()) return;
+      try {
+        const res = await fetch('/admin/stats', {
+          headers: { 'Authorization': `Bearer ${getSessionToken()}` }
+        });
+        
+        if (res.status === 401) {
+          handleLogout();
+          return;
+        }
+
+        const stats = await res.json();
+        document.getElementById('stat-received').innerText = stats.totalWebhooksReceived;
+        document.getElementById('stat-processed').innerText = stats.totalMessagesProcessed;
+        document.getElementById('stat-ignored').innerText = stats.totalEventsIgnored;
+
+        const badge = document.getElementById('hermes-mode-badge');
+        if (stats.hermesMode === 'MOCK') {
+          badge.innerText = 'Hermes: MOCK';
+          badge.className = 'px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20';
+        } else {
+          badge.innerText = 'Hermes: PRODUCTION';
+          badge.className = 'px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function fetchDebugEvents(forceRender = false) {
+      if (!getSessionToken()) return;
+      if (!isAutoRefreshActive && !forceRender) return;
+
+      try {
+        const res = await fetch('/admin/debug/events', {
+          headers: { 'Authorization': `Bearer ${getSessionToken()}` }
+        });
+        
+        if (res.status === 401) {
+          handleLogout();
+          return;
+        }
+
+        allEvents = await res.json();
+        applyFilters();
+        if (activeEventId) {
+          showEventDetails(activeEventId, forceRender);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function forceFetch() {
+      const btn = document.getElementById('btn-refresh');
+      btn.innerText = "Cargando...";
+      await fetchStats();
+      await fetchDebugEvents(true);
+      btn.innerText = "Actualizar";
+    }
 
     function setLeftTab(tab) {
       leftTab = tab;
@@ -172,50 +342,6 @@
         text.className = "text-[9px] font-bold text-amber-500 uppercase tracking-wider";
         btn.innerText = "Reanudar";
         btn.className = "bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded px-2 py-0.5 text-[9px] font-semibold transition-all";
-      }
-    }
-
-    async function forceFetch() {
-      const btn = document.getElementById('btn-refresh');
-      btn.innerText = "Cargando...";
-      await fetchStats();
-      await fetchDebugEvents(true);
-      btn.innerText = "Actualizar";
-    }
-
-    async function fetchStats() {
-      try {
-        const res = await fetch('/admin/stats');
-        const stats = await res.json();
-        document.getElementById('stat-received').innerText = stats.totalWebhooksReceived;
-        document.getElementById('stat-processed').innerText = stats.totalMessagesProcessed;
-        document.getElementById('stat-ignored').innerText = stats.totalEventsIgnored;
-
-        const badge = document.getElementById('hermes-mode-badge');
-        if (stats.hermesMode === 'MOCK') {
-          badge.innerText = 'Hermes: MOCK';
-          badge.className = 'px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20';
-        } else {
-          badge.innerText = 'Hermes: PRODUCTION';
-          badge.className = 'px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    async function fetchDebugEvents(forceRender = false) {
-      if (!isAutoRefreshActive && !forceRender) return;
-
-      try {
-        const res = await fetch('/admin/debug/events');
-        allEvents = await res.json();
-        applyFilters();
-        if (activeEventId) {
-          showEventDetails(activeEventId, forceRender);
-        }
-      } catch (e) {
-        console.error(e);
       }
     }
 
@@ -533,6 +659,7 @@
           <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">DETALLE DEL EVENTO SELECCIONADO</h2>
           <span class="text-[9px] font-mono text-slate-500">Trace: ${ev.trace_id.substring(0, 8)}...</span>
         </div>
+
         <div class="border-b border-slate-800 bg-slate-950/30 flex flex-wrap gap-1 px-4 pt-2">
           <button onclick="changeTab('timeline')" class="${tabClass('timeline')} font-sans">Timeline</button>
           <button onclick="changeTab('normalized')" class="${tabClass('normalized')} font-sans">1. Entrada</button>
@@ -566,7 +693,8 @@
             conversation_id: 'debug_conv_1',
             contact_id: 'debug_contact_1',
             name: 'David Mercado',
-            phone: '+584125207119'
+            phone: '+584125207119',
+            tenant_id: getSessionToken() // Enviar token activo de sesión como tenant_id
           })
         });
         
@@ -579,7 +707,10 @@
 
     async function clearDebugEvents() {
       if (confirm('¿Seguro que deseas limpiar la cola de eventos en memoria?')) {
-        await fetch('/admin/debug/clear', { method: 'POST' });
+        await fetch('/admin/debug/clear', { 
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${getSessionToken()}` }
+        });
         activeEventId = null;
         expandedConversationId = null;
         document.getElementById('inspector-panel').innerHTML = `
@@ -597,11 +728,20 @@
       }
     }
 
-    fetchStats();
-    fetchDebugEvents();
+    // Inicializar sesión y polling
+    const hasSession = checkSession();
+    if (hasSession) {
+      fetchStats();
+      fetchDebugEvents();
+    }
     
-    setInterval(fetchStats, 3000);
-    setInterval(fetchDebugEvents, 3000);
+    // Polling en loop
+    setInterval(() => {
+      if (getSessionToken()) {
+        fetchStats();
+        fetchDebugEvents();
+      }
+    }, 3000);
   </script>
 </body>
 </html>
