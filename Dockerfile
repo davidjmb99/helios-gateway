@@ -14,10 +14,15 @@ FROM node:22-alpine AS runner
 WORKDIR /usr/src/app
 ENV NODE_ENV=production
 
+# Instalar curl para el healthcheck de Coolify
+RUN apk add --no-cache curl
+
 COPY package*.json ./
 RUN npm ci --only=production
 
+# Copiar archivos compilados y carpeta public
 COPY --from=builder /usr/src/app/dist ./dist
+COPY public ./public
 
 EXPOSE 3000
 
