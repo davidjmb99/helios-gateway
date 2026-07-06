@@ -10,8 +10,17 @@ const envSchema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
 
-  HERMES_WEBHOOK_URL: z.string().url().optional().or(z.literal('')),
+  // Configuración de Hermes
+  HERMES_ENABLED: z.preprocess((v) => v === 'true' || v === true, z.boolean().default(true)),
+  HERMES_MOCK: z.preprocess((v) => v === 'true' || v === true, z.boolean().default(false)),
+  HERMES_BASE_URL: z.string().optional().or(z.literal('')),
+  HERMES_ENDPOINT: z.string().default('/v1/chat/completions'),
   HERMES_API_KEY: z.string().optional().or(z.literal('')),
+  HERMES_MODEL: z.string().default('default'),
+  HERMES_PROFILE: z.string().default('helios'),
+  HERMES_CWD: z.string().optional().or(z.literal('')),
+  HERMES_SOUL_PATH: z.string().optional().or(z.literal('')),
+  HERMES_TIMEOUT_MS: z.coerce.number().default(30000),
 
   CHATWOOT_BASE_URL: z.string().url().default('https://app.chatwoot.com'),
   CHATWOOT_ACCOUNT_ID: z.string().optional().or(z.literal('')),

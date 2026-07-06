@@ -11,6 +11,7 @@ import { callHermes } from './hermes/client.js';
 import { runTools } from './tools/tool-runner.js';
 import { chatwootClient } from './chatwoot/client.js';
 import { debugTracker } from './debug/debug-tracker.js';
+import { hermesStatusTracker } from './server.js';
 
 export async function processBufferEvent(tenantId: string, conversationId: string, traceId: string): Promise<void> {
   console.log(`[Orchestrator] Iniciando procesamiento de buffer para Conv #${conversationId}`);
@@ -155,6 +156,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     // 8. Llamar a Hermes
     const hermesResponse = await callHermes(payload, traceId);
     
+    // Si la llamada fue exitosa, marcar que no hay fallos
+    hermesStatusTracker.lastCallFailed = false;
+    
     // Actualizar respuesta en el tracker
     debugTracker.updateEvent(traceId, { hermesResponse });
     debugTracker.addTimelineStep(traceId, 'hermes_response', hermesResponse);
@@ -262,12 +266,14 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       await chatwootClient.sendMessage(conversationId, hermesResponse.reply);
       debugTracker.addAction(traceId, 'reply_sent_to_chatwoot', true, { reply: hermesResponse.reply });
 
+      console.log(`[Orchestrator] CHATWOOT_REPLY_SENT: Mensaje enviado exitosamente a Chatwoot para Conv #${conversationId}`);
+
       await logsRepository.save({
         trace_id: traceId,
         tenant_id: tenantId,
         conversation_id: conversationId,
         contact_id: contact_id,
-        event_type: 'chatwoot_reply_sent',
+        event_type: 'CHATWOOT_REPLY_SENT',
         metadata: { reply: hermesResponse.reply }
       });
     }
@@ -282,13 +288,34 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     debugTracker.updateEvent(traceId, { decision: 'error' });
     debugTracker.addTimelineStep(traceId, 'error', { message: error.message });
     
-    // Registrar el error en base de datos
+    // Indicar que la última llamada falló
+    hermesStatusTracker.lastCallFailed = true;
+    
+    // Si Hermes falló (timeout o error de conexión), registrar como ignorado debido a error
+    console.warn(`[Orchestrator] CHATWOOT_REPLY_SKIPPED_DUE_TO_HERMES_ERROR: Evitando respuesta mock a Chatwoot para Conv #${conversationId}`);
+
+    // Modificar estado en la conversación a error
+    await stateRepository.upsert({
+      tenant_id: tenantId,
+      conversation_id: conversationId,
+      contact_id: 'unknown',
+      inbox_id: 'unknown',
+      status: 'error',
+      ai_enabled: true,
+      human_handoff_active: true // Derivación opcional por seguridad en caso de fallo crítico
+    });
+
+    // Registrar el error en base de datos con los nombres clave requeridos
+    let event_type = 'HERMES_CALL_FAILED';
+    if (error.message === 'HERMES_TIMEOUT') event_type = 'HERMES_TIMEOUT';
+    if (error.message === 'HERMES_DISABLED' || error.message === 'HERMES_BASE_URL_MISSING') event_type = 'HERMES_NOT_CONFIGURED';
+
     await logsRepository.save({
       trace_id: traceId,
       tenant_id: tenantId,
       conversation_id: conversationId,
       contact_id: 'unknown',
-      event_type: 'error',
+      event_type: event_type,
       error: error.message
     });
   }

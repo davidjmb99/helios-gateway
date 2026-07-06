@@ -39,10 +39,17 @@ bufferService.setCallback(async (tenantId, conversationId, traceId) => {
   await processBufferEvent(tenantId, conversationId, traceId);
 });
 
-// Contadores en memoria para estadísticas del Dashboard
-let totalWebhooksReceived = 0;
-let totalMessagesProcessed = 0;
-let totalEventsIgnored = 0;
+// Estado global en memoria para rastrear si la última llamada a Hermes falló
+export const hermesStatusTracker = {
+  lastCallFailed: false
+};
+
+function getHermesStatus(): 'CONNECTED' | 'MOCK' | 'DISABLED' | 'ERROR' {
+  if (!config.HERMES_ENABLED) return 'DISABLED';
+  if (config.HERMES_MOCK) return 'MOCK';
+  if (hermesStatusTracker.lastCallFailed) return 'ERROR';
+  return 'CONNECTED';
+}
 
 // 1. GET /
 // Servimos el archivo index.html para la ruta raíz
@@ -56,7 +63,7 @@ server.get('/health', async (request, reply) => {
     ok: true,
     service: 'helios-gateway',
     version: '0.1.0',
-    hermesMode: config.HERMES_WEBHOOK_URL ? 'PRODUCTION' : 'MOCK'
+    hermesMode: getHermesStatus()
   };
 });
 
@@ -146,7 +153,7 @@ server.get('/admin/stats', async (request, reply) => {
     totalWebhooksReceived: receivedCount || 0,
     totalMessagesProcessed: (receivedCount || 0) - (ignoredCount || 0),
     totalEventsIgnored: ignoredCount || 0,
-    hermesMode: config.HERMES_WEBHOOK_URL ? 'PRODUCTION' : 'MOCK'
+    hermesMode: getHermesStatus()
   };
 });
 

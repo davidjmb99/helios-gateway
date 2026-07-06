@@ -3,32 +3,134 @@ import { config } from '../config.js';
 import { HermesResponse, HermesResponseSchema } from './schema.js';
 
 export async function callHermes(payload: any, traceId: string): Promise<HermesResponse> {
-  const url = config.HERMES_WEBHOOK_URL;
-  const apiKey = config.HERMES_API_KEY;
+  const tenantId = payload.metadata?.tenant_id || 'unknown';
+  const conversationId = payload.metadata?.conversation_id || 'unknown';
+  const contactId = payload.metadata?.contact_id || 'unknown';
+  const inboxId = payload.metadata?.inbox_id || 'unknown';
 
-  if (!url) {
-    console.log(`[Hermes Client] MOCKING: No se especificó HERMES_WEBHOOK_URL. Usando respuesta mock.`);
+  // 1. Caso de Hermes Deshabilitado
+  if (!config.HERMES_ENABLED) {
+    console.log(`[Hermes Client] HERMES_NOT_CONFIGURED: Hermes está desactivado (HERMES_ENABLED=false).`);
+    throw new Error('HERMES_DISABLED');
+  }
+
+  // 2. Modo MOCK (Solo si HERMES_MOCK es explícitamente true en entorno de desarrollo)
+  if (config.HERMES_MOCK) {
+    console.log(`[Hermes Client] MOCKING: Ejecutando en modo mock de desarrollo.`);
     return mockHermesResponse(payload);
   }
 
+  // 3. Validación de URL en producción
+  if (!config.HERMES_BASE_URL) {
+    console.error(`[Hermes Client] HERMES_NOT_CONFIGURED: Falta definir HERMES_BASE_URL en producción.`);
+    throw new Error('HERMES_BASE_URL_MISSING');
+  }
+
+  const cleanBaseUrl = config.HERMES_BASE_URL.replace(/\/$/, '');
+  const url = `${cleanBaseUrl}${config.HERMES_ENDPOINT}`;
+
+  // Consolidar el mensaje del buffer
+  const consolidatedText = payload.message?.text || '';
+
+  // Construcción del payload estructurado solicitado
+  const hermesPayload = {
+    model: config.HERMES_MODEL,
+    messages: [
+      {
+        role: "user",
+        content: consolidatedText
+      }
+    ],
+    metadata: {
+      tenant_id: tenantId,
+      conversation_id: conversationId,
+      contact_id: contactId,
+      inbox_id: inboxId,
+      source: "chatwoot",
+      channel: "whatsapp",
+      trace_id: traceId
+    }
+  };
+
+  // Headers recomendados
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'x-hermes-profile': config.HERMES_PROFILE,
+    'x-hermes-session-key': `${tenantId}:${conversationId}:${contactId}`,
+    'x-trace-id': traceId
+  };
+
+  if (config.HERMES_API_KEY) {
+    headers['Authorization'] = `Bearer ${config.HERMES_API_KEY}`;
+  }
+  if (config.HERMES_CWD) {
+    headers['x-hermes-cwd'] = config.HERMES_CWD;
+  }
+  if (config.HERMES_SOUL_PATH) {
+    headers['x-hermes-soul-path'] = config.HERMES_SOUL_PATH;
+  }
+
+  console.log(`[Hermes Client] HERMES_CALL_STARTED: Llamando a Hermes real en ${url}`);
+
   try {
-    const response = await axios.post(url, payload, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'x-trace-id': traceId
-      },
-      timeout: 10000 // 10s
+    const response = await axios.post(url, hermesPayload, {
+      headers,
+      timeout: config.HERMES_TIMEOUT_MS
     });
 
-    const parsed = HermesResponseSchema.safeParse(response.data);
-    if (!parsed.success) {
-      console.error('[Hermes Client] Estructura inválida retornada por Hermes:', parsed.error.format());
-      throw new Error('Estructura de respuesta inválida de Hermes');
+    console.log(`[Hermes Client] HERMES_CALL_SUCCESS: Respuesta recibida de Hermes.`);
+
+    const responseData = response.data;
+    if (!responseData) {
+      throw new Error('Respuesta vacía recibida de Hermes.');
     }
+
+    // Extracción jerárquica de la respuesta (abarcando OpenAI-compatible y formato nativo)
+    let replyText = '';
+    
+    if (responseData.reply_text) {
+      replyText = responseData.reply_text;
+    } else if (responseData.output_text) {
+      replyText = responseData.output_text;
+    } else if (responseData.reply) {
+      replyText = responseData.reply;
+    } else if (responseData.message && typeof responseData.message === 'string') {
+      replyText = responseData.message;
+    } else if (responseData.choices?.[0]?.message?.content) {
+      replyText = responseData.choices[0].message.content;
+    }
+
+    if (!replyText) {
+      console.error('[Hermes Client] Estructura de respuesta inesperada:', JSON.stringify(responseData));
+      throw new Error('No se encontró un texto de respuesta válido en la respuesta de Hermes.');
+    }
+
+    // Formatear respuesta al esquema HermesResponse esperado por el orquestador
+    const normalizedResponse: HermesResponse = {
+      route: responseData.route || 'faq',
+      intent: responseData.intent || 'general_query',
+      reply: replyText,
+      handoff_required: responseData.handoff_required || responseData.handoff || false,
+      reason: responseData.reason || '',
+      state_update: responseData.state_update || undefined,
+      tool_calls: responseData.tool_calls || []
+    };
+
+    // Validar con Zod
+    const parsed = HermesResponseSchema.safeParse(normalizedResponse);
+    if (!parsed.success) {
+      console.error('[Hermes Client] Estructura de esquema inválida tras normalización:', parsed.error.format());
+      throw new Error('Error al normalizar la respuesta de Hermes al esquema de la aplicación.');
+    }
+
     return parsed.data;
+
   } catch (error: any) {
-    console.error('[Hermes Client] Error llamando a Hermes:', error.message);
+    if (axios.isAxiosError(error) && error.code === 'ECONNABORTED') {
+      console.error(`[Hermes Client] HERMES_TIMEOUT: Hermes superó el timeout de ${config.HERMES_TIMEOUT_MS}ms.`);
+      throw new Error('HERMES_TIMEOUT');
+    }
+    console.error(`[Hermes Client] HERMES_CALL_FAILED: Error al contactar a Hermes:`, error.message);
     throw error;
   }
 }
@@ -39,7 +141,6 @@ function mockHermesResponse(payload: any): HermesResponse {
   const email = payload.patient?.email;
   const isNew = payload.patient?.is_new;
 
-  // CASO 1: Paciente Nuevo (Faltan datos)
   if (isNew && (!name || !email)) {
     return {
       route: 'collect_profile',
@@ -55,58 +156,10 @@ function mockHermesResponse(payload: any): HermesResponse {
     };
   }
 
-  // CASO 3 & 4: Handoff a humano
-  if (payload.signals?.asks_for_human || payload.signals?.possible_frustration) {
-    return {
-      route: 'handoff',
-      intent: 'request_human',
-      reply: 'Entiendo perfectamente tu solicitud. En este momento te estoy transfiriendo con un agente humano de nuestro equipo clínico para atenderte personalmente. Te responderemos en breve.',
-      handoff_required: true,
-      reason: 'Paciente solicita hablar con un humano o muestra frustración.',
-      state_update: {
-        status: 'human_assigned',
-        human_handoff_active: true
-      },
-      tool_calls: [
-        {
-          name: 'chatwoot.create_private_note',
-          arguments: { content: '⚠️ El paciente ha sido derivado a atención humana por solicitud o detección de molestia.' }
-        },
-        {
-          name: 'chatwoot.add_labels',
-          arguments: { labels: ['handoff-ia', 'atencion-urgente'] }
-        },
-        {
-          name: 'chatwoot.assign_human',
-          arguments: {}
-        },
-        {
-          name: 'state.update',
-          arguments: {
-            ai_enabled: false,
-            human_handoff_active: true
-          }
-        }
-      ]
-    };
-  }
-
-  // CASO 5: Financiamiento
-  if (payload.signals?.asks_for_financing) {
-    return {
-      route: 'financing',
-      intent: 'ask_financing',
-      reply: 'Claro, en nuestra clínica contamos con cómodos planes de financiación a tu medida. ¿Para qué tratamiento deseas solicitar la financiación y qué monto aproximado necesitas?',
-      handoff_required: false,
-      tool_calls: []
-    };
-  }
-
-  // CASO GENERAL: FAQ / Respuesta estándar
   return {
     route: 'faq',
     intent: 'general_query',
-    reply: `Hola ${name || 'paciente'}, gracias por tu mensaje: "${text}". He recibido tu consulta correctamente.`,
+    reply: `[MOCK RESPONSE] Hola ${name || 'paciente'}, gracias por tu mensaje: "${text}". Modo desarrollo activo.`,
     handoff_required: false,
     tool_calls: []
   };
