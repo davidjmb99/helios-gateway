@@ -411,6 +411,7 @@ server.get('/healthz', async (request, reply) => {
 const start = async () => {
   try {
     console.log("[BOOT] Helios Gateway starting...");
+    console.log("[BOOT] Node version:", process.version);
     console.log("[BOOT] Hermes enabled:", config.HERMES_ENABLED);
     console.log("[BOOT] Hermes mock:", config.HERMES_MOCK);
     console.log("[BOOT] Hermes base url configured:", Boolean(config.HERMES_BASE_URL));
