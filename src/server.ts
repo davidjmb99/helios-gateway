@@ -403,9 +403,20 @@ server.post('/admin/disable-ai', async (request, reply) => {
   return { ok: true, ai_enabled: false, message: 'IA desactivada / pausada para la conversación.' };
 });
 
+// Endpoint de Healthcheck alternativo
+server.get('/healthz', async (request, reply) => {
+  return { ok: true, status: 'healthy' };
+});
+
 const start = async () => {
   try {
+    console.log("[BOOT] Helios Gateway starting...");
+    console.log("[BOOT] Hermes enabled:", config.HERMES_ENABLED);
+    console.log("[BOOT] Hermes mock:", config.HERMES_MOCK);
+    console.log("[BOOT] Hermes base url configured:", Boolean(config.HERMES_BASE_URL));
+
     await server.listen({ port: config.PORT, host: '0.0.0.0' });
+    console.log("[BOOT] Server listening on port:", config.PORT);
     server.log.info(`Servidor escuchando en http://localhost:${config.PORT}`);
   } catch (err) {
     server.log.error(err);
