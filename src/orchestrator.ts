@@ -13,7 +13,23 @@ import { chatwootClient } from './chatwoot/client.js';
 import { debugTracker } from './debug/debug-tracker.js';
 import { hermesStatusTracker } from './server.js';
 
+// Control de idempotencia en memoria para evitar flushes duplicados redundantes de la misma conversación en ventanas muy cortas de tiempo
+const lastProcessedFlushes = new Map<string, number>();
+
 export async function processBufferEvent(tenantId: string, conversationId: string, traceId: string): Promise<void> {
+  const key = `${tenantId}:${conversationId}`;
+  const now = Date.now();
+  
+  if (lastProcessedFlushes.has(key)) {
+    const lastTime = lastProcessedFlushes.get(key) || 0;
+    if (now - lastTime < 2500) {
+      console.log(`[Orchestrator] Ignorando ejecución de flush duplicada para Conv #${conversationId} (última hace menos de 2.5s)`);
+      return;
+    }
+  }
+  
+  lastProcessedFlushes.set(key, now);
+
   console.log(`[Orchestrator] Iniciando procesamiento de buffer para Conv #${conversationId}`);
   
   let phone = '';
@@ -388,7 +404,11 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       
       for (const msg of rawMessages) {
         if (msg.trace_id) {
-          debugTracker.addAction(msg.trace_id, 'reply_sent_to_chatwoot', true, { reply: replyText });
+          debugTracker.addAction(msg.trace_id, 'reply_sent_to_chatwoot', true, { 
+            reply: replyText,
+            delivery_mode: 'unified_buffer_consolidated_reply',
+            messages_consolidated_count: rawMessages.length
+          });
         }
       }
 
