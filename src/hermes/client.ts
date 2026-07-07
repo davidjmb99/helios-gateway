@@ -165,13 +165,18 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
     return parsed.data;
 
   } catch (error: any) {
-    let errorDetail: any;
-
+    let errorDetail: any = {};
+    
     if (axios.isAxiosError(error)) {
+      const redirectLocation = error.response?.headers?.location || '';
+      
       if (error.code === 'ECONNABORTED') {
         console.error(`[Hermes Client] HERMES_TIMEOUT: Hermes superó el timeout de ${config.HERMES_TIMEOUT_MS}ms.`);
         errorDetail = {
           error_type: 'HERMES_TIMEOUT',
+          hermes_base_url: config.HERMES_BASE_URL,
+          hermes_endpoint: config.HERMES_ENDPOINT,
+          final_url: url,
           timeout_ms: config.HERMES_TIMEOUT_MS,
           message: error.message
         };
@@ -183,19 +188,28 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
         // El servidor respondió con código de estado fuera de 2xx
         errorDetail = {
           error_type: 'HERMES_HTTP_ERROR',
+          hermes_base_url: config.HERMES_BASE_URL,
+          hermes_endpoint: config.HERMES_ENDPOINT,
+          final_url: url,
           status: error.response.status,
+          redirect_location: redirectLocation,
           response: error.response.data,
           headers: {
             'content-type': error.response.headers['content-type'],
-            'date': error.response.headers['date']
+            'date': error.response.headers['date'],
+            'location': redirectLocation
           },
           message: error.message
         };
       } else {
-        // La petición se realizó pero no se recibió respuesta (Error de red)
+        // La petición se realizó pero no se recibió respuesta (Error de red/redirecciones excedidas)
         errorDetail = {
           error_type: 'HERMES_NETWORK_ERROR',
+          hermes_base_url: config.HERMES_BASE_URL,
+          hermes_endpoint: config.HERMES_ENDPOINT,
+          final_url: url,
           code: error.code || 'UNKNOWN',
+          redirect_location: error.config?.url !== url ? error.config?.url : '',
           message: error.message
         };
       }
@@ -203,6 +217,9 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
       // Error genérico o interno
       errorDetail = {
         error_type: 'HERMES_INTERNAL_ERROR',
+        hermes_base_url: config.HERMES_BASE_URL,
+        hermes_endpoint: config.HERMES_ENDPOINT,
+        final_url: url,
         message: error.message
       };
     }

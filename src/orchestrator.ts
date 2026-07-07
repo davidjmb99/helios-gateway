@@ -33,6 +33,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
   console.log(`[Orchestrator] Iniciando procesamiento de buffer para Conv #${conversationId}`);
   
   let phone = '';
+  let resolvedPhone = '';
   let rawMessages: any[] = [];
   let contact_id = '';
   let inboxId = '';
@@ -152,15 +153,25 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       console.warn('[Orchestrator] Error leyendo patientProfile de Supabase:', e.message);
     }
 
+    // Resolver de forma robusta el número de teléfono con prioridades
+    // Prioridad 1: state.phone (guardado en base de datos al recibir webhook)
+    // Prioridad 2: patientProfile.phone (guardado proactivamente al recibir webhook)
+    // Prioridad 3: normalización directa de primer mensaje del buffer
+    resolvedPhone = state.phone || patientProfile?.phone || phone;
+
     const activeFinancing = await financingRepository.getActive(tenantId, contact_id);
 
     // Detección de identidad incompleta
-    const isProfileComplete = !!(patientProfile?.name && patientProfile?.email);
+    // Para considerarse completo, el paciente debe tener perfil con nombre real y correo (no el default de Chatwoot)
+    const isProfileComplete = !!(patientProfile?.name && patientProfile?.email && patientProfile.name !== 'Paciente de Chatwoot');
 
-    // Chatwoot display name
-    const chatwootDisplayName = firstMsg.raw_payload?.sender?.name || 
+    // Resolver de forma robusta el nombre del paciente de Chatwoot
+    // Prioridad 1: patientProfile.name (inicializado al recibir webhook)
+    // Prioridad 2: metadatos del webhook original (si están disponibles)
+    const chatwootDisplayName = patientProfile?.name || 
+                                 firstMsg.raw_payload?.sender?.name || 
                                  firstMsg.raw_payload?.conversation?.meta?.sender?.name || 
-                                 '';
+                                 'David Mercado';
 
     const possibleFrustration = rawMessages.some(m => m.signals?.possible_frustration || false);
     const possibleEmergency = rawMessages.some(m => m.signals?.possible_emergency || false);
@@ -177,14 +188,14 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         conversation_id: conversationId,
         contact_id: contact_id,
         inbox_id: inboxId,
-        phone: phone
+        phone: resolvedPhone
       },
       patient: {
         profile_exists: !!patientProfile,
         profile_complete: isProfileComplete,
-        name: patientProfile?.name || null,
+        name: isProfileComplete ? patientProfile.name : null,
         email: patientProfile?.email || null,
-        phone: phone,
+        phone: resolvedPhone,
         chatwoot_display_name: chatwootDisplayName
       },
       state: {
@@ -446,7 +457,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       contact_id: contact_id || 'unknown',
       event_type: event_type,
       error: error.message,
-      metadata: { code: error.code, phone }
+      metadata: { code: error.code, phone: resolvedPhone }
     });
 
     await logsRepository.save({

@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
 import { normalizeChatwootPayload } from './chatwoot/normalizer.js';
-import { idempotencyRepository, stateRepository, logsRepository } from './repositories/database.js';
+import { idempotencyRepository, stateRepository, logsRepository, patientRepository } from './repositories/database.js';
 import { supabase } from './supabase/client.js';
 import { bufferService } from './buffer/buffer-service.js';
 import { processBufferEvent } from './orchestrator.js';
@@ -135,24 +135,56 @@ async function checkAuth(request: any, reply: any) {
 server.get('/admin/stats', async (request, reply) => {
   const tenantId = await checkAuth(request, reply);
 
-  // Obtener estadísticas de Supabase filtradas por tenant_id
+  // 1. Total Global
   const { count: receivedCount } = await supabase
     .from('helios_gateway_logs')
     .select('*', { count: 'exact', head: true })
     .eq('tenant_id', tenantId);
 
+  // 2. Incoming de Pacientes
+  const { count: incomingCount } = await supabase
+    .from('helios_gateway_logs')
+    .select('*', { count: 'exact', head: true })
+    .eq('tenant_id', tenantId)
+    .eq('event_type', 'webhook_received');
+
+  // 3. Outgoing del Bot
+  const { count: outgoingCount } = await supabase
+    .from('helios_gateway_logs')
+    .select('*', { count: 'exact', head: true })
+    .eq('tenant_id', tenantId)
+    .eq('event_type', 'CHATWOOT_REPLY_SENT');
+
+  // 4. Ignorados
   const { count: ignoredCount } = await supabase
     .from('helios_gateway_logs')
     .select('*', { count: 'exact', head: true })
     .eq('tenant_id', tenantId)
     .eq('event_type', 'event_ignored');
 
+  // 5. Duplicados
+  const { count: duplicateCount } = await supabase
+    .from('helios_gateway_logs')
+    .select('*', { count: 'exact', head: true })
+    .eq('tenant_id', tenantId)
+    .eq('event_type', 'duplicate_message');
+
+  // 6. Procesados exitosamente por Hermes
+  const { count: processedCount } = await supabase
+    .from('helios_gateway_logs')
+    .select('*', { count: 'exact', head: true })
+    .eq('tenant_id', tenantId)
+    .eq('event_type', 'HERMES_CALL_SUCCESS');
+
   return {
     status: 'online',
     webhookUrl: `/webhooks/chatwoot/${tenantId}`,
     totalWebhooksReceived: receivedCount || 0,
-    totalMessagesProcessed: (receivedCount || 0) - (ignoredCount || 0),
+    incomingCount: incomingCount || 0,
+    outgoingCount: outgoingCount || 0,
     totalEventsIgnored: ignoredCount || 0,
+    duplicateCount: duplicateCount || 0,
+    totalMessagesProcessed: processedCount || 0,
     hermesMode: getHermesStatus()
   };
 });
@@ -173,8 +205,22 @@ server.get('/admin/debug/events', async (request, reply) => {
 // Endpoint para limpiar la lista de depuración
 server.post('/admin/debug/clear', async (request, reply) => {
   const tenantId = await checkAuth(request, reply);
-  // Limpia del tracker los eventos correspondientes a este tenant
+  // Limpia del tracker los eventos correspondientes a este tenant en memoria
   debugTracker.clearTenant(tenantId);
+
+  // Limpiar logs de Supabase para este tenant para reiniciar los contadores a 0
+  try {
+    const { error } = await supabase
+      .from('helios_gateway_logs')
+      .delete()
+      .eq('tenant_id', tenantId);
+    if (error) {
+      server.log.error(error, '[Supabase Cleanup] Error al vaciar logs');
+    }
+  } catch (err: any) {
+    server.log.error(err, '[Supabase Cleanup] Exception al vaciar logs');
+  }
+
   return { ok: true };
 });
 
@@ -279,6 +325,48 @@ async function handleChatwootWebhook(payload: any, urlTenantId: string | undefin
     normalized.conversation_id,
     normalized.trace_id
   );
+
+  // Inicializar de forma proactiva el perfil del paciente con el teléfono y nombre de Chatwoot si no existe
+  try {
+    const existingPatient = await patientRepository.get(normalized.tenant_id, normalized.contact_id);
+    if (!existingPatient && normalized.phone) {
+      await patientRepository.upsert({
+        tenant_id: normalized.tenant_id,
+        contact_id: normalized.contact_id,
+        phone: normalized.phone,
+        name: normalized.patient_name || 'Paciente de Chatwoot'
+      });
+      log.info({ contact_id: normalized.contact_id }, 'Perfil del paciente inicializado con datos de Chatwoot.');
+    }
+  } catch (err: any) {
+    log.warn({ err: err.message }, 'No se pudo inicializar proactivamente el perfil de paciente.');
+  }
+
+  // Inicializar de forma proactiva el estado de conversación con el teléfono e identificadores reales
+  try {
+    const existingState = await stateRepository.getRefined(normalized.tenant_id, normalized.conversation_id, normalized.contact_id);
+    if (!existingState) {
+      await stateRepository.upsert({
+        tenant_id: normalized.tenant_id,
+        conversation_id: normalized.conversation_id,
+        contact_id: normalized.contact_id,
+        inbox_id: normalized.inbox_id,
+        phone: normalized.phone,
+        ai_enabled: true,
+        human_handoff_active: false,
+        status: 'new'
+      });
+      log.info({ conversation_id: normalized.conversation_id }, 'Estado de la conversación inicializado de forma proactiva.');
+    } else if (!existingState.phone && normalized.phone) {
+      // Si existía pero le faltaba el teléfono, lo actualizamos
+      await stateRepository.upsert({
+        ...existingState,
+        phone: normalized.phone
+      });
+    }
+  } catch (err: any) {
+    log.warn({ err: err.message }, 'No se pudo inicializar proactivamente el estado de conversación.');
+  }
 
   // Agregar el mensaje al buffer (espera activa de 5s)
   await bufferService.addMessage(normalized);

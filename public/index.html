@@ -73,16 +73,16 @@
         <div id="stat-received" class="text-2xl font-bold text-blue-400 mt-1">0</div>
       </div>
       <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
-        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Procesados (Buffer)</span>
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Mensajes Recibidos (Incoming)</span>
+        <div id="stat-incoming" class="text-2xl font-bold text-cyan-400 mt-1">0</div>
+      </div>
+      <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Procesados Hermes</span>
         <div id="stat-processed" class="text-2xl font-bold text-emerald-400 mt-1">0</div>
       </div>
       <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
-        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Eventos Ignorados</span>
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Ecos/Ignorados/Bot</span>
         <div id="stat-ignored" class="text-2xl font-bold text-slate-400 mt-1">0</div>
-      </div>
-      <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
-        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Webhook URL</span>
-        <div id="stat-webhook-url" class="text-[10px] font-mono text-amber-500 mt-2 select-all overflow-hidden text-ellipsis">/webhooks/chatwoot</div>
       </div>
     </section>
 
@@ -286,6 +286,7 @@
 
         const stats = await res.json();
         document.getElementById('stat-received').innerText = stats.totalWebhooksReceived;
+        document.getElementById('stat-incoming').innerText = stats.incomingCount;
         document.getElementById('stat-processed').innerText = stats.totalMessagesProcessed;
         document.getElementById('stat-ignored').innerText = stats.totalEventsIgnored;
 
