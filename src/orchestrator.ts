@@ -33,6 +33,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       if (msg.trace_id) {
         debugTracker.updateEvent(msg.trace_id, { decision: 'processing' });
         debugTracker.addTimelineStep(msg.trace_id, 'buffer_consolidated', { conversationId });
+        debugTracker.addTimelineStep(msg.trace_id, 'action_executed', { action: 'BUFFER_FLUSH_STARTED' });
       }
     }
 
@@ -344,6 +345,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     for (const msg of rawMessages) {
       if (msg.trace_id) {
         debugTracker.updateEvent(msg.trace_id, { decision: finalDecision });
+        debugTracker.addTimelineStep(msg.trace_id, 'action_executed', { action: 'BUFFER_FLUSH_COMPLETED' });
       }
     }
 
