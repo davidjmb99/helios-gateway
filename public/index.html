@@ -619,11 +619,17 @@
           </div>
         `;
       } else if (activeTab === 'hermes_res') {
+        let textClass = 'text-purple-400';
+        let bgClass = 'bg-slate-950/70 border-slate-800/80';
+        if (ev.hermesResponse && ev.hermesResponse.error_type) {
+          textClass = 'text-red-400 font-semibold';
+          bgClass = 'bg-red-950/20 border-red-900/30';
+        }
         contentHtml = `
           <div class="p-5 flex-1 flex flex-col max-h-[580px]">
             <h3 class="font-bold text-xs uppercase tracking-wider text-slate-400 mb-2">Respuesta Recibida de Hermes</h3>
             ${ev.hermesResponse ? `
-              <pre onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" class="flex-1 max-h-[480px] overflow-auto text-[11px] code-font text-purple-400 bg-slate-950/70 p-4 rounded-xl border border-slate-800/80 leading-relaxed whitespace-pre select-text cursor-text">${JSON.stringify(ev.hermesResponse, null, 2)}</pre>
+              <pre onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" class="flex-1 max-h-[480px] overflow-auto text-[11px] code-font ${textClass} ${bgClass} p-4 rounded-xl border leading-relaxed whitespace-pre select-text cursor-text">${JSON.stringify(ev.hermesResponse, null, 2)}</pre>
             ` : `
               <div class="my-auto text-center text-slate-500 text-xs italic">No se ha recibido respuesta de Hermes para este evento.</div>
             `}
