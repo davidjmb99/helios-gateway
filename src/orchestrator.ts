@@ -61,7 +61,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     const consolidatedText = sortedMessages.map(m => m.body).join('\n');
 
     // 4. Consultar en Supabase el estado, perfil de paciente y caso de financiamiento
-    const state = await stateRepository.get(tenantId, conversationId) || {
+    const rawState = await stateRepository.get(tenantId, conversationId);
+    const state = rawState || {
       ai_enabled: true,
       status: 'new',
       pending_question: null,
@@ -73,11 +74,39 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       last_intent: null
     };
 
-    // Si la IA está pausada, no debemos procesar con Hermes ni responder de forma automática.
-    if (state.ai_enabled === false || state.human_handoff_active === true) {
+    // Asegurar defaults seguros si la fila de estado existe pero contiene nulos en esos campos
+    const aiEnabled = state.ai_enabled !== false;
+    const humanHandoffActive = !!state.human_handoff_active;
+
+    // Agregar log de timeline detallado AI_ENABLED_CHECK para depuración en todos los trace_ids consolidados
+    for (const msg of rawMessages) {
+      if (msg.trace_id) {
+        debugTracker.addTimelineStep(msg.trace_id, 'action_executed', {
+          action: "AI_ENABLED_CHECK",
+          trace_id: msg.trace_id,
+          tenant_id: tenantId,
+          conversation_id: conversationId,
+          contact_id: contact_id,
+          ai_enabled: aiEnabled,
+          ai_enabled_source: rawState ? "conversation_state" : "default_true",
+          human_handoff_active: humanHandoffActive,
+          human_handoff_source: rawState ? "conversation_state" : "default_false",
+          chat_control_found: false,
+          conversation_state_found: !!rawState,
+          tenant_config_found: true
+        });
+      }
+    }
+
+    // Si la IA está pausada o en modo Handoff, no debemos procesar con Hermes ni responder de forma automática.
+    if (!aiEnabled || humanHandoffActive) {
       console.log(`[Orchestrator] La IA está pausada o en modo Handoff para la conversación #${conversationId}. Ignorando.`);
-      debugTracker.updateEvent(traceId, { decision: 'ignored' });
-      debugTracker.addTimelineStep(traceId, 'action_executed', { action: 'ignored_by_ai_disabled' });
+      for (const msg of rawMessages) {
+        if (msg.trace_id) {
+          debugTracker.updateEvent(msg.trace_id, { decision: 'ignored' });
+          debugTracker.addTimelineStep(msg.trace_id, 'action_executed', { action: 'ignored_by_ai_disabled' });
+        }
+      }
       // Marcamos los mensajes del buffer como procesados para que no se queden acumulados
       const ids = rawMessages.map(m => m.id);
       await bufferRepository.markProcessed(ids);
@@ -371,7 +400,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     // Si Hermes falló (timeout o error de conexión), registrar como ignorado debido a error
     console.warn(`[Orchestrator] CHATWOOT_REPLY_SKIPPED_DUE_TO_HERMES_ERROR: Evitando respuesta mock a Chatwoot para Conv #${conversationId}`);
 
-    // Modificar estado en la conversación a error
+    // Modificar estado en la conversación a error (pero manteniendo IA activada y sin handoff forzado por error transitorio)
     await stateRepository.upsert({
       tenant_id: tenantId,
       conversation_id: conversationId,
@@ -379,7 +408,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       inbox_id: 'unknown',
       status: 'error',
       ai_enabled: true,
-      human_handoff_active: true // Derivación opcional por seguridad en caso de fallo crítico
+      human_handoff_active: false
     });
 
     // Registrar el error en base de datos con los nombres clave requeridos
