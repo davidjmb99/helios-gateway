@@ -61,7 +61,13 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     const consolidatedText = sortedMessages.map(m => m.body).join('\n');
 
     // 4. Consultar en Supabase el estado, perfil de paciente y caso de financiamiento
-    const rawState = await stateRepository.get(tenantId, conversationId);
+    let rawState: any = null;
+    try {
+      rawState = await stateRepository.get(tenantId, conversationId);
+    } catch (e: any) {
+      console.warn('[Orchestrator] Error leyendo conversation_state de Supabase. Usando fallback true:', e.message);
+    }
+
     const state = rawState || {
       ai_enabled: true,
       status: 'new',
@@ -74,7 +80,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       last_intent: null
     };
 
-    // Asegurar defaults seguros si la fila de estado existe pero contiene nulos en esos campos
+    // Asegurar defaults seguros si la fila de estado existe pero contiene nulos o vacíos
     const aiEnabled = state.ai_enabled !== false;
     const humanHandoffActive = !!state.human_handoff_active;
 
@@ -91,9 +97,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
           ai_enabled_source: rawState ? "conversation_state" : "default_true",
           human_handoff_active: humanHandoffActive,
           human_handoff_source: rawState ? "conversation_state" : "default_false",
-          chat_control_found: false,
-          conversation_state_found: !!rawState,
-          tenant_config_found: true
+          will_process: aiEnabled && !humanHandoffActive,
+          skip_reason: !aiEnabled ? "explicit_ai_disabled" : (humanHandoffActive ? "human_handoff_active" : null)
         });
       }
     }
@@ -103,7 +108,12 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       console.log(`[Orchestrator] La IA está pausada o en modo Handoff para la conversación #${conversationId}. Ignorando.`);
       for (const msg of rawMessages) {
         if (msg.trace_id) {
-          debugTracker.updateEvent(msg.trace_id, { decision: 'ignored' });
+          debugTracker.updateEvent(msg.trace_id, { 
+            decision: 'ignored',
+            reason: !aiEnabled ? 'explicit_ai_disabled' : 'human_handoff_active',
+            source: 'conversation_state',
+            ai_enabled: aiEnabled
+          } as any);
           debugTracker.addTimelineStep(msg.trace_id, 'action_executed', { action: 'ignored_by_ai_disabled' });
         }
       }
@@ -113,36 +123,29 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       return;
     }
 
-    const patientProfile = await patientRepository.get(tenantId, contact_id);
+    let patientProfile = null;
+    try {
+      patientProfile = await patientRepository.get(tenantId, contact_id);
+    } catch (e: any) {
+      console.warn('[Orchestrator] Error leyendo patientProfile de Supabase:', e.message);
+    }
+
     const activeFinancing = await financingRepository.getActive(tenantId, contact_id);
 
     // Detección de identidad incompleta
-    // No confiamos en el name visual de Chatwoot; el paciente es nuevo/incompleto si no tiene registro de perfil guardado en helios_patient_profiles.
+    // El paciente es nuevo/incompleto si no tiene registro de perfil guardado en helios_patient_profiles.
     const isProfileComplete = !!(patientProfile?.name && patientProfile?.email);
     const isNewPatient = !patientProfile || !isProfileComplete;
-
-    if (isNewPatient) {
-      console.log(`[Orchestrator] PATIENT_PROFILE_INCOMPLETE: El perfil del paciente está incompleto o es nuevo.`);
-      await logsRepository.save({
-        trace_id: traceId,
-        tenant_id: tenantId,
-        conversation_id: conversationId,
-        contact_id: contact_id,
-        event_type: 'PATIENT_PROFILE_INCOMPLETE',
-        metadata: { phone, is_new: true }
-      });
-    }
-
-    // 5. Construir los flags / señales basados en los mensajes recibidos
-    const possibleFrustration = rawMessages.some(m => m.signals?.possible_frustration || false);
-    const possibleEmergency = rawMessages.some(m => m.signals?.possible_emergency || false);
-    const asksForHuman = rawMessages.some(m => m.signals?.asks_for_human || false);
-    const asksForFinancing = rawMessages.some(m => m.signals?.asks_for_financing || false);
 
     // Chatwoot display name no verificado
     const chatwootDisplayName = firstMsg.raw_payload?.sender?.name || 
                                  firstMsg.raw_payload?.conversation?.meta?.sender?.name || 
                                  '';
+
+    const possibleFrustration = rawMessages.some(m => m.signals?.possible_frustration || false);
+    const possibleEmergency = rawMessages.some(m => m.signals?.possible_emergency || false);
+    const asksForHuman = rawMessages.some(m => m.signals?.asks_for_human || false);
+    const asksForFinancing = rawMessages.some(m => m.signals?.asks_for_financing || false);
 
     // 6. Preparar el payload limpio para Hermes
     const payload = {
@@ -204,47 +207,44 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       }
     };
 
-    // Actualizar datos de depuración
-    debugTracker.updateEvent(traceId, { decision: 'sent_to_hermes', hermesRequest: payload });
-    debugTracker.addTimelineStep(traceId, 'hermes_request', payload);
+    let replyText = '';
 
-    // 7. Registrar en el log que se llamará a Hermes
-    console.log(`[Orchestrator] HERMES_CALL_STARTED: Iniciando llamada a Hermes. TraceId: ${traceId}, Phone: ${phone}`);
-    await logsRepository.save({
-      trace_id: traceId,
-      tenant_id: tenantId,
-      conversation_id: conversationId,
-      contact_id: contact_id,
-      event_type: 'HERMES_CALL_STARTED',
-      metadata: { message_count: rawMessages.length, phone }
-    });
+    if (isNewPatient) {
+      console.log(`[Orchestrator] PATIENT_PROFILE_INCOMPLETE: El perfil del paciente está incompleto o es nuevo.`);
+      
+      // Registrar log correspondiente
+      await logsRepository.save({
+        trace_id: traceId,
+        tenant_id: tenantId,
+        conversation_id: conversationId,
+        contact_id: contact_id,
+        event_type: 'PATIENT_PROFILE_INCOMPLETE',
+        metadata: { phone, is_new: true }
+      });
 
-    // 8. Llamar a Hermes
-    const hermesResponse = await callHermes(payload, traceId);
-    
-    // Si la llamada fue exitosa, marcar que no hay fallos
-    hermesStatusTracker.lastCallFailed = false;
-    
-    // Actualizar respuesta en el tracker
-    debugTracker.updateEvent(traceId, { hermesResponse });
-    debugTracker.addTimelineStep(traceId, 'hermes_response', hermesResponse);
+      // FALLBACK LOCAL OBLIGATORIO PARA PACIENTE NUEVO:
+      // Respondemos directamente pidiendo Nombre, Apellido y Correo sin arriesgar bloqueos con llamadas a Hermes.
+      replyText = "¡Hola! Gracias por escribir al Centro Odontológico Integral. Para ayudarte mejor, ¿me indicas por favor tu nombre, apellido y correo electrónico?";
 
-    console.log(`[Orchestrator] HERMES_CALL_SUCCESS: Llamada a Hermes completada con éxito. TraceId: ${traceId}`);
+      console.log(`[Orchestrator] PATIENT_IDENTITY_REQUIRED: Identidad requerida. Omitiendo llamada externa a Hermes.`);
+      
+      const skippedHermesObj = {
+        skipped_hermes: true,
+        reason: "PATIENT_PROFILE_INCOMPLETE",
+        decision: "IDENTITY_REQUIRED",
+        reply_text: replyText
+      };
 
-    // 9. Registrar la respuesta recibida
-    await logsRepository.save({
-      trace_id: traceId,
-      tenant_id: tenantId,
-      conversation_id: conversationId,
-      contact_id: contact_id,
-      event_type: 'HERMES_CALL_SUCCESS',
-      route: hermesResponse.route,
-      intent: hermesResponse.intent,
-      metadata: hermesResponse
-    });
+      // Guardar detalle local simulado en el debugger
+      for (const msg of rawMessages) {
+        if (msg.trace_id) {
+          debugTracker.updateEvent(msg.trace_id, { 
+            hermesRequest: skippedHermesObj,
+            hermesResponse: skippedHermesObj
+          });
+        }
+      }
 
-    if (isNewPatient || hermesResponse.intent === 'collect_patient_identity') {
-      console.log(`[Orchestrator] PATIENT_IDENTITY_REQUESTED: Solicitando identidad al paciente nuevo.`);
       await logsRepository.save({
         trace_id: traceId,
         tenant_id: tenantId,
@@ -253,104 +253,138 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         event_type: 'PATIENT_IDENTITY_REQUESTED',
         metadata: { phone }
       });
-    }
 
-    // 10. Ejecutar las herramientas (tool_calls) dictadas por Hermes (Excluyendo agenda si el perfil está incompleto)
-    let filteredToolCalls = hermesResponse.tool_calls || [];
-    if (isNewPatient) {
-      // Filtrar herramientas de agenda / cal.com por seguridad
-      filteredToolCalls = filteredToolCalls.filter(tc => !tc.name.startsWith('calcom') && !tc.name.includes('book') && !tc.name.includes('slot'));
-    }
+    } else {
+      // PACIENTE REGISTRADO: Llamamos a Hermes Real
+      debugTracker.updateEvent(traceId, { decision: 'sent_to_hermes', hermesRequest: payload });
+      debugTracker.addTimelineStep(traceId, 'hermes_request', payload);
 
-    const normalizedToolCalls = filteredToolCalls.map(tc => ({
-      name: tc.name,
-      arguments: tc.arguments || {}
-    }));
-
-    const toolResults = await runTools(normalizedToolCalls, {
-      tenant_id: tenantId,
-      conversation_id: conversationId,
-      contact_id: contact_id,
-      phone: phone,
-      trace_id: traceId
-    });
-
-    // Registrar los resultados de las herramientas en las acciones ejecutadas
-    for (const tr of toolResults) {
-      debugTracker.addAction(traceId, `tool:${tr.name}`, !tr.error, tr.result || { error: tr.error });
-    }
-
-    // 11. Actualizar el perfil del paciente si se detectaron nuevos datos
-    if (hermesResponse.patient_profile_update) {
-      const up = hermesResponse.patient_profile_update;
-      if (up.name || up.email) {
-        await patientRepository.upsert({
-          tenant_id: tenantId,
-          contact_id: contact_id,
-          phone: phone,
-          name: up.name || patientProfile?.name,
-          email: up.email || patientProfile?.email
-        });
-
-        debugTracker.addAction(traceId, 'patient_profile_updated_in_supabase', true, up);
-
-        await logsRepository.save({
-          trace_id: traceId,
-          tenant_id: tenantId,
-          conversation_id: conversationId,
-          contact_id: contact_id,
-          event_type: 'patient_profile_updated',
-          metadata: up
-        });
-      }
-    }
-
-    // 12. Actualizar el estado de la conversación en base a la respuesta de Hermes
-    if (hermesResponse.state_update) {
-      const su = hermesResponse.state_update;
-      
-      let nextAiEnabled = state.ai_enabled;
-      let nextHandoffActive = state.human_handoff_active;
-      
-      const stateUpdateTool = normalizedToolCalls.find(tc => tc.name === 'state.update');
-      if (stateUpdateTool) {
-        if (stateUpdateTool.arguments.ai_enabled !== undefined) nextAiEnabled = stateUpdateTool.arguments.ai_enabled;
-        if (stateUpdateTool.arguments.human_handoff_active !== undefined) nextHandoffActive = stateUpdateTool.arguments.human_handoff_active;
-      }
-      
-      await stateRepository.upsert({
+      console.log(`[Orchestrator] HERMES_CALL_STARTED: Iniciando llamada a Hermes. TraceId: ${traceId}, Phone: ${phone}`);
+      await logsRepository.save({
+        trace_id: traceId,
         tenant_id: tenantId,
         conversation_id: conversationId,
         contact_id: contact_id,
-        inbox_id: inboxId,
-        phone: phone,
-        status: su.status !== undefined ? su.status : state.status,
-        pending_question: su.pending_question !== undefined ? su.pending_question : state.pending_question,
-        pending_intent: su.pending_intent !== undefined ? su.pending_intent : state.pending_intent,
-        missing_fields: su.missing_fields !== undefined ? su.missing_fields : state.missing_fields,
-        ai_enabled: nextAiEnabled,
-        human_handoff_active: nextHandoffActive,
-        active_booking: su.active_booking !== undefined ? su.active_booking : state.active_booking,
-        financing: su.financing !== undefined ? su.financing : state.financing,
-        last_intent: hermesResponse.intent || state.last_intent
+        event_type: 'HERMES_CALL_STARTED',
+        metadata: { message_count: rawMessages.length, phone }
       });
 
-      debugTracker.addAction(traceId, 'state_saved_to_supabase', true, su);
+      const hermesResponse = await callHermes(payload, traceId);
+      hermesStatusTracker.lastCallFailed = false;
+      
+      replyText = hermesResponse.reply || '';
+
+      debugTracker.updateEvent(traceId, { hermesResponse });
+      debugTracker.addTimelineStep(traceId, 'hermes_response', hermesResponse);
+
+      console.log(`[Orchestrator] HERMES_CALL_SUCCESS: Llamada a Hermes completada con éxito. TraceId: ${traceId}`);
 
       await logsRepository.save({
         trace_id: traceId,
         tenant_id: tenantId,
         conversation_id: conversationId,
         contact_id: contact_id,
-        event_type: 'state_updated',
-        metadata: su
+        event_type: 'HERMES_CALL_SUCCESS',
+        route: hermesResponse.route,
+        intent: hermesResponse.intent,
+        metadata: hermesResponse
       });
+
+      // 10. Ejecutar las herramientas (tool_calls) dictadas por Hermes
+      const normalizedToolCalls = (hermesResponse.tool_calls || []).map(tc => ({
+        name: tc.name,
+        arguments: tc.arguments || {}
+      }));
+
+      const toolResults = await runTools(normalizedToolCalls, {
+        tenant_id: tenantId,
+        conversation_id: conversationId,
+        contact_id: contact_id,
+        phone: phone,
+        trace_id: traceId
+      });
+
+      for (const tr of toolResults) {
+        debugTracker.addAction(traceId, `tool:${tr.name}`, !tr.error, tr.result || { error: tr.error });
+      }
+
+      // 11. Actualizar el perfil del paciente si se detectaron nuevos datos
+      if (hermesResponse.patient_profile_update) {
+        const up = hermesResponse.patient_profile_update;
+        if (up.name || up.email) {
+          await patientRepository.upsert({
+            tenant_id: tenantId,
+            contact_id: contact_id,
+            phone: phone,
+            name: up.name || patientProfile?.name,
+            email: up.email || patientProfile?.email
+          });
+
+          debugTracker.addAction(traceId, 'patient_profile_updated_in_supabase', true, up);
+
+          await logsRepository.save({
+            trace_id: traceId,
+            tenant_id: tenantId,
+            conversation_id: conversationId,
+            contact_id: contact_id,
+            event_type: 'patient_profile_updated',
+            metadata: up
+          });
+        }
+      }
+
+      // 12. Actualizar el estado de la conversación en base a la respuesta de Hermes
+      if (hermesResponse.state_update) {
+        const su = hermesResponse.state_update;
+        
+        let nextAiEnabled = state.ai_enabled;
+        let nextHandoffActive = state.human_handoff_active;
+        
+        const stateUpdateTool = normalizedToolCalls.find(tc => tc.name === 'state.update');
+        if (stateUpdateTool) {
+          if (stateUpdateTool.arguments.ai_enabled !== undefined) nextAiEnabled = stateUpdateTool.arguments.ai_enabled;
+          if (stateUpdateTool.arguments.human_handoff_active !== undefined) nextHandoffActive = stateUpdateTool.arguments.human_handoff_active;
+        }
+        
+        await stateRepository.upsert({
+          tenant_id: tenantId,
+          conversation_id: conversationId,
+          contact_id: contact_id,
+          inbox_id: inboxId,
+          phone: phone,
+          status: su.status !== undefined ? su.status : state.status,
+          pending_question: su.pending_question !== undefined ? su.pending_question : state.pending_question,
+          pending_intent: su.pending_intent !== undefined ? su.pending_intent : state.pending_intent,
+          missing_fields: su.missing_fields !== undefined ? su.missing_fields : state.missing_fields,
+          ai_enabled: nextAiEnabled,
+          human_handoff_active: nextHandoffActive,
+          active_booking: su.active_booking !== undefined ? su.active_booking : state.active_booking,
+          financing: su.financing !== undefined ? su.financing : state.financing,
+          last_intent: hermesResponse.intent || state.last_intent
+        });
+
+        debugTracker.addAction(traceId, 'state_saved_to_supabase', true, su);
+
+        await logsRepository.save({
+          trace_id: traceId,
+          tenant_id: tenantId,
+          conversation_id: conversationId,
+          contact_id: contact_id,
+          event_type: 'state_updated',
+          metadata: su
+        });
+      }
     }
 
-    // 13. Si Hermes entrega una respuesta de texto ("reply"), enviarla a Chatwoot
-    if (hermesResponse.reply) {
-      await chatwootClient.sendMessage(conversationId, hermesResponse.reply);
-      debugTracker.addAction(traceId, 'reply_sent_to_chatwoot', true, { reply: hermesResponse.reply });
+    // 13. Enviar la respuesta a Chatwoot
+    if (replyText) {
+      await chatwootClient.sendMessage(conversationId, replyText);
+      
+      for (const msg of rawMessages) {
+        if (msg.trace_id) {
+          debugTracker.addAction(msg.trace_id, 'reply_sent_to_chatwoot', true, { reply: replyText });
+        }
+      }
 
       console.log(`[Orchestrator] CHATWOOT_REPLY_SENT: Mensaje enviado exitosamente a Chatwoot para Conv #${conversationId}`);
 
@@ -360,7 +394,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         conversation_id: conversationId,
         contact_id: contact_id,
         event_type: 'CHATWOOT_REPLY_SENT',
-        metadata: { reply: hermesResponse.reply }
+        metadata: { reply: replyText }
       });
     }
 
