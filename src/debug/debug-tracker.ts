@@ -14,7 +14,7 @@ export interface DebugEvent {
   text: string;
   phone: string;
   patient_name: string;
-  decision: 'ignored' | 'accepted' | 'buffered' | 'duplicate' | 'error' | 'sent_to_hermes';
+  decision: 'ignored' | 'accepted' | 'buffered' | 'duplicate' | 'error' | 'sent_to_hermes' | 'processing' | 'identity_required' | 'processed';
   normalizedPayload?: any;
   hermesRequest?: any;
   hermesResponse?: any;

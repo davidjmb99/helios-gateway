@@ -16,6 +16,7 @@ import { hermesStatusTracker } from './server.js';
 export async function processBufferEvent(tenantId: string, conversationId: string, traceId: string): Promise<void> {
   console.log(`[Orchestrator] Iniciando procesamiento de buffer para Conv #${conversationId}`);
   debugTracker.addTimelineStep(traceId, 'buffer_consolidated', { conversationId });
+  debugTracker.updateEvent(traceId, { decision: 'processing' });
 
   let phone = '';
 
@@ -330,6 +331,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     const ids = rawMessages.map(m => m.id);
     await bufferRepository.markProcessed(ids);
     console.log(`[Orchestrator] Procesamiento exitoso para la conversación #${conversationId}.`);
+
+    // Actualizar la decisión del debugger en el tracker de forma visual
+    debugTracker.updateEvent(traceId, { decision: isNewPatient ? 'identity_required' : 'processed' });
 
   } catch (error: any) {
     console.error(`[Orchestrator Error] Error procesando la conversación #${conversationId}:`, error.message);
