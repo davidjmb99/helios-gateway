@@ -15,18 +15,25 @@ import { hermesStatusTracker } from './server.js';
 
 export async function processBufferEvent(tenantId: string, conversationId: string, traceId: string): Promise<void> {
   console.log(`[Orchestrator] Iniciando procesamiento de buffer para Conv #${conversationId}`);
-  debugTracker.addTimelineStep(traceId, 'buffer_consolidated', { conversationId });
-  debugTracker.updateEvent(traceId, { decision: 'processing' });
-
+  
   let phone = '';
+  let rawMessages: any[] = [];
 
   try {
     // 1. Obtener mensajes no procesados de esta conversación en el buffer
-    const rawMessages = await bufferRepository.getUnprocessed(tenantId, conversationId);
+    rawMessages = await bufferRepository.getUnprocessed(tenantId, conversationId);
     if (rawMessages.length === 0) {
       console.log(`[Orchestrator] No hay mensajes pendientes en el buffer para la conversación #${conversationId}.`);
       debugTracker.addTimelineStep(traceId, 'error', { message: 'No hay mensajes en buffer para consolidar.' });
       return;
+    }
+
+    // Actualizar el estado de depuración de todos los mensajes consolidados en este buffer
+    for (const msg of rawMessages) {
+      if (msg.trace_id) {
+        debugTracker.updateEvent(msg.trace_id, { decision: 'processing' });
+        debugTracker.addTimelineStep(msg.trace_id, 'buffer_consolidated', { conversationId });
+      }
     }
 
     // 2. Extraer metadatos básicos para construir la consulta
@@ -332,13 +339,29 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     await bufferRepository.markProcessed(ids);
     console.log(`[Orchestrator] Procesamiento exitoso para la conversación #${conversationId}.`);
 
-    // Actualizar la decisión del debugger en el tracker de forma visual
-    debugTracker.updateEvent(traceId, { decision: isNewPatient ? 'identity_required' : 'processed' });
+    // Actualizar la decisión de todos los trace_ids consolidados en el debugger de forma visual
+    const finalDecision = isNewPatient ? 'identity_required' : 'processed';
+    for (const msg of rawMessages) {
+      if (msg.trace_id) {
+        debugTracker.updateEvent(msg.trace_id, { decision: finalDecision });
+      }
+    }
 
   } catch (error: any) {
     console.error(`[Orchestrator Error] Error procesando la conversación #${conversationId}:`, error.message);
-    debugTracker.updateEvent(traceId, { decision: 'error' });
-    debugTracker.addTimelineStep(traceId, 'error', { message: error.message });
+    
+    // Propagar error a todos los trace_ids consolidados
+    if (typeof rawMessages !== 'undefined' && Array.isArray(rawMessages)) {
+      for (const msg of rawMessages) {
+        if (msg.trace_id) {
+          debugTracker.updateEvent(msg.trace_id, { decision: 'error' });
+          debugTracker.addTimelineStep(msg.trace_id, 'error', { message: error.message });
+        }
+      }
+    } else {
+      debugTracker.updateEvent(traceId, { decision: 'error' });
+      debugTracker.addTimelineStep(traceId, 'error', { message: error.message });
+    }
     
     // Indicar que la última llamada falló
     hermesStatusTracker.lastCallFailed = true;
