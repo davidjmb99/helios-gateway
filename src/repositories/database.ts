@@ -96,6 +96,24 @@ export const stateRepository = {
     return data;
   },
 
+  async getRefined(tenant_id: string, conversation_id: string, contact_id: string): Promise<any | null> {
+    // Buscar primero con el contact_id específico para saltar filas 'unknown' corruptas
+    const { data, error } = await supabase
+      .from('helios_conversation_state')
+      .select('*')
+      .eq('tenant_id', tenant_id)
+      .eq('conversation_id', conversation_id)
+      .eq('contact_id', contact_id)
+      .maybeSingle();
+
+    if (!error && data) {
+      return data;
+    }
+
+    // Fallback de búsqueda general si no existe
+    return this.get(tenant_id, conversation_id);
+  },
+
   async upsert(state: {
     tenant_id: string;
     conversation_id: string;

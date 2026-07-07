@@ -18,6 +18,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
   
   let phone = '';
   let rawMessages: any[] = [];
+  let contact_id = '';
+  let inboxId = '';
 
   try {
     // 1. Obtener mensajes no procesados de esta conversación en el buffer
@@ -39,8 +41,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
 
     // 2. Extraer metadatos básicos para construir la consulta
     const firstMsg = rawMessages[0];
-    const contact_id = firstMsg.contact_id;
-    const inboxId = firstMsg.inbox_id;
+    contact_id = firstMsg.contact_id;
+    inboxId = firstMsg.inbox_id;
     
     // Recuperar y normalizar el teléfono de forma robusta
     phone = firstMsg.phone || 
@@ -63,7 +65,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     // 4. Consultar en Supabase el estado, perfil de paciente y caso de financiamiento
     let rawState: any = null;
     try {
-      rawState = await stateRepository.get(tenantId, conversationId);
+      rawState = await stateRepository.getRefined(tenantId, conversationId, contact_id);
     } catch (e: any) {
       console.warn('[Orchestrator] Error leyendo conversation_state de Supabase. Usando fallback true:', e.message);
     }
@@ -80,9 +82,13 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       last_intent: null
     };
 
-    // Asegurar defaults seguros si la fila de estado existe pero contiene nulos o vacíos
+    // Asegurar defaults seguros
     const aiEnabled = state.ai_enabled !== false;
-    const humanHandoffActive = !!state.human_handoff_active;
+    
+    // Si la conversación tiene human_handoff_active=true pero el estado es "error", 
+    // asumimos que fue un fallo técnico y NO un handoff humano manual real. Por tanto, no bloqueamos la IA.
+    const isTechnicalErrorHandoff = state.status === 'error' && state.human_handoff_active === true;
+    const humanHandoffActive = isTechnicalErrorHandoff ? false : !!state.human_handoff_active;
 
     // Agregar log de timeline detallado AI_ENABLED_CHECK para depuración en todos los trace_ids consolidados
     for (const msg of rawMessages) {
@@ -96,7 +102,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
           ai_enabled: aiEnabled,
           ai_enabled_source: rawState ? "conversation_state" : "default_true",
           human_handoff_active: humanHandoffActive,
-          human_handoff_source: rawState ? "conversation_state" : "default_false",
+          human_handoff_source: isTechnicalErrorHandoff ? "recovered_from_technical_error" : (rawState ? "conversation_state" : "default_false"),
           will_process: aiEnabled && !humanHandoffActive,
           skip_reason: !aiEnabled ? "explicit_ai_disabled" : (humanHandoffActive ? "human_handoff_active" : null)
         });
@@ -438,8 +444,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     await stateRepository.upsert({
       tenant_id: tenantId,
       conversation_id: conversationId,
-      contact_id: 'unknown',
-      inbox_id: 'unknown',
+      contact_id: contact_id || 'unknown',
+      inbox_id: inboxId || 'unknown',
       status: 'error',
       ai_enabled: true,
       human_handoff_active: false
@@ -461,7 +467,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       trace_id: traceId,
       tenant_id: tenantId,
       conversation_id: conversationId,
-      contact_id: 'unknown',
+      contact_id: contact_id || 'unknown',
       event_type: event_type,
       error: error.message,
       metadata: { code: error.code, phone }
@@ -471,7 +477,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       trace_id: traceId,
       tenant_id: tenantId,
       conversation_id: conversationId,
-      contact_id: 'unknown',
+      contact_id: contact_id || 'unknown',
       event_type: 'CHATWOOT_REPLY_SKIPPED_DUE_TO_HERMES_ERROR',
       metadata: { error: error.message, event_type }
     });
