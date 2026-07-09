@@ -54,14 +54,19 @@ export const bufferRepository = {
       });
   },
 
-  async getUnprocessed(tenant_id: string, conversation_id: string): Promise<any[]> {
-    const { data, error } = await supabase
+  async getUnprocessed(tenant_id: string, conversation_id: string, trace_id?: string): Promise<any[]> {
+    let query = supabase
       .from('helios_inbound_buffer')
       .select('*')
       .eq('tenant_id', tenant_id)
       .eq('conversation_id', conversation_id)
-      .is('processed_at', null)
-      .order('created_at', { ascending: true });
+      .is('processed_at', null);
+
+    if (trace_id) {
+      query = query.eq('trace_id', trace_id);
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: true });
 
     if (error) {
       console.error('[Repository Error] getUnprocessed buffer failed:', error);

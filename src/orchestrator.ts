@@ -39,8 +39,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
   let inboxId = '';
 
   try {
-    // 1. Obtener mensajes no procesados de esta conversación en el buffer
-    rawMessages = await bufferRepository.getUnprocessed(tenantId, conversationId);
+    // 1. Obtener mensajes no procesados de esta conversación en el buffer correspondientes a la ráfaga (traceId)
+    rawMessages = await bufferRepository.getUnprocessed(tenantId, conversationId, traceId);
     if (rawMessages.length === 0) {
       console.log(`[Orchestrator] No hay mensajes pendientes en el buffer para la conversación #${conversationId}.`);
       debugTracker.addTimelineStep(traceId, 'error', { message: 'No hay mensajes en buffer para consolidar.' });
@@ -437,6 +437,13 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       ai_enabled: true,
       human_handoff_active: false
     });
+
+    // Marcar los mensajes del buffer como procesados en el catch por regla del problema 2
+    if (typeof rawMessages !== 'undefined' && Array.isArray(rawMessages) && rawMessages.length > 0) {
+      const ids = rawMessages.map(m => m.id);
+      await bufferRepository.markProcessed(ids);
+      console.log(`[Orchestrator Catch] Marcados ${ids.length} mensajes como procesados tras error.`);
+    }
 
     // Registrar el error en base de datos con los nombres clave requeridos
     let event_type = 'HERMES_CALL_FAILED';

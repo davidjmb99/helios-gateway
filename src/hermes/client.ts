@@ -118,14 +118,19 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
     
     if (responseData.reply_text) {
       replyText = responseData.reply_text;
-    } else if (responseData.output_text) {
-      replyText = responseData.output_text;
     } else if (responseData.reply) {
       replyText = responseData.reply;
+    } else if (responseData.output_text) {
+      replyText = responseData.output_text;
     } else if (responseData.message && typeof responseData.message === 'string') {
       replyText = responseData.message;
     } else if (responseData.choices?.[0]?.message?.content) {
       replyText = responseData.choices[0].message.content;
+      try {
+        const parsed = JSON.parse(replyText);
+        if (parsed.reply_text) replyText = parsed.reply_text;
+        else if (parsed.reply) replyText = parsed.reply;
+      } catch (e) {}
     }
 
     if (!replyText) {
@@ -133,17 +138,27 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
       throw new Error('HERMES_RESPONSE_EMPTY');
     }
 
+    // Detectar si la estructura de respuesta proviene del adapter
+    const isAdapterShape = responseData.ok === true && responseData.reply !== undefined;
+    if (isAdapterShape) {
+      console.log(`[Hermes Client] Detected adapter response shape (ok + reply) for trace ${traceId}`);
+    }
+
     // Formatear respuesta al esquema HermesResponse esperado por el orquestador
     const normalizedResponse: HermesResponse = {
       route: responseData.route || (isNew ? 'collect_profile' : 'faq'),
       intent: responseData.intent || (isNew ? 'collect_patient_identity' : 'general_query'),
+      decision: responseData.decision || (isNew ? 'identity_required' : 'processed'),
       reply: replyText,
-      handoff_required: responseData.handoff_required || responseData.handoff || false,
+      reply_text: replyText,
+      safe_to_send: responseData.safe_to_send !== false,
+      handoff_required: responseData.requires_handoff || responseData.handoff_required || responseData.handoff || false,
       reason: responseData.reason || '',
-      state_update: responseData.state_update || {
-        status: isNew ? 'collecting_profile' : 'active',
-        missing_fields: isNew ? ['first_name', 'last_name', 'email'] : []
-      },
+      profile_patch: responseData.profile_patch || responseData.patient_profile_update || null,
+      state_patch: responseData.state_patch || responseData.state_update || (isNew ? {
+        status: 'collecting_profile',
+        missing_fields: ['first_name', 'last_name', 'email']
+      } : null),
       tool_calls: responseData.tool_calls || []
     };
 
@@ -161,6 +176,14 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
       body: responseData
     };
     debugTracker.updateEvent(traceId, { hermesResponse: debugResponseObj });
+
+    // Logs seguros requeridos por regla del problema 1
+    console.log(`[Hermes Client] HERMES_RESPONSE_METADATA:`, JSON.stringify({
+      hermes_final_url: url,
+      hermes_response_status: response.status,
+      hermes_response_shape: isAdapterShape ? "adapter_reply" : "standard_reply",
+      trace_id: traceId
+    }));
 
     return parsed.data;
 

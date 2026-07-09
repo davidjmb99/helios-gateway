@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const HermesResponseSchema = z.object({
-  route: z.enum(['collect_profile', 'faq', 'agenda', 'mixto', 'clarificar', 'handoff', 'financing', 'ignorar']).optional(),
+  route: z.string().optional(),
   intent: z.string().optional(),
   decision: z.string().optional(),
   reply: z.string().nullable().optional(),

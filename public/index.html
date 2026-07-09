@@ -623,8 +623,9 @@
 
       let contentHtml = '';
       if (activeTab === 'timeline') {
+        // Filtrar timeline por el trace_id del evento seleccionado para no mezclar historial de ráfagas viejas
         const convEvents = allEvents
-          .filter(e => e.conversation_id === ev.conversation_id)
+          .filter(e => e.trace_id === ev.trace_id)
           .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
         contentHtml = `
@@ -783,6 +784,8 @@
         });
         activeEventId = null;
         expandedConversationId = null;
+        lastRenderedTraceId = null;
+        lastRenderedTab = null;
         document.getElementById('inspector-panel').innerHTML = `
           <div class="px-6 py-4 bg-slate-950/60 border-b border-slate-800">
             <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">DETALLE DEL EVENTO SELECCIONADO</h2>

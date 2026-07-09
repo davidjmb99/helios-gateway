@@ -7,6 +7,8 @@ type BufferCallback = (tenantId: string, conversationId: string, traceId: string
 class BufferService {
   // Almacena los timers de ejecución por cada conversación
   private activeTimers: Map<string, NodeJS.Timeout> = new Map();
+  // Almacena el trace_id grupal activo por cada conversación para consolidar la ráfaga
+  private activeGroupTraces: Map<string, string> = new Map();
   private callback: BufferCallback | null = null;
 
   public setCallback(cb: BufferCallback) {
@@ -20,6 +22,15 @@ class BufferService {
   public async addMessage(msg: NormalizedMessage): Promise<void> {
     const key = `${msg.tenant_id}:${msg.conversation_id}`;
     
+    // Si no hay un grupo de ráfaga activo, asignamos el trace_id del mensaje actual como el ID del grupo
+    if (!this.activeGroupTraces.has(key)) {
+      this.activeGroupTraces.set(key, msg.trace_id);
+    }
+    
+    // Sobrescribimos el trace_id del mensaje actual con el del grupo activo para enlazarlos
+    const activeGroupTrace = this.activeGroupTraces.get(key)!;
+    msg.trace_id = activeGroupTrace;
+
     // 1. Persistimos el mensaje en la base de datos de respaldo
     await bufferRepository.save(msg);
 
@@ -32,9 +43,10 @@ class BufferService {
     // 3. Agendamos un nuevo timer de 5 segundos
     const timer = setTimeout(async () => {
       this.activeTimers.delete(key);
+      this.activeGroupTraces.delete(key); // Limpiamos el trace de grupo al hacer el flush
       if (this.callback) {
         try {
-          await this.callback(msg.tenant_id, msg.conversation_id, msg.trace_id);
+          await this.callback(msg.tenant_id, msg.conversation_id, activeGroupTrace);
         } catch (error) {
           console.error(`[Buffer Error] Error procesando callback para la clave ${key}:`, error);
         }
