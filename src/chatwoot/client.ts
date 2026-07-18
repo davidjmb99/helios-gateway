@@ -23,14 +23,22 @@ export class ChatwootClient {
       return;
     }
 
-    try {
-      await axios.post(
-        `${this.baseUrl}/conversations/${conversationId}/messages`,
-        { content, message_type: 'outgoing' },
-        { headers: this.headers }
-      );
-    } catch (error: any) {
-      console.error(`[Chatwoot Client Error] sendMessage:`, error.message);
+    const maxRetries = 2;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await axios.post(
+          `${this.baseUrl}/conversations/${conversationId}/messages`,
+          { content, message_type: 'outgoing' },
+          { headers: this.headers }
+        );
+        return; // Éxito
+      } catch (error: any) {
+        console.error(`[Chatwoot Client Error] sendMessage (intento ${attempt}/${maxRetries}):`, error.message);
+        if (attempt === maxRetries) {
+          throw error; // Re-throw en el último intento para que el orquestador lo sepa
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Esperar 1s antes de reintentar
+      }
     }
   }
 

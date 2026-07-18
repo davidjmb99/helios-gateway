@@ -15,20 +15,37 @@ import { hermesStatusTracker } from './server.js';
 
 // Control de idempotencia en memoria para evitar flushes duplicados redundantes de la misma conversación en ventanas muy cortas de tiempo
 const lastProcessedFlushes = new Map<string, number>();
+// Lock por conversación: evita procesamiento paralelo de la misma conversación (respuestas duplicadas)
+const activeProcessing = new Set<string>();
 
 export async function processBufferEvent(tenantId: string, conversationId: string, traceId: string): Promise<void> {
   const key = `${tenantId}:${conversationId}`;
+
+  // Lock: si esta conversación ya está siendo procesada, re-encolar con delay
+  if (activeProcessing.has(key)) {
+    console.log(`[Orchestrator] Conv #${conversationId} ya en proceso. Reintento programado en 5s.`);
+    setTimeout(() => processBufferEvent(tenantId, conversationId, traceId), 5000);
+    return;
+  }
+  activeProcessing.add(key);
+
   const now = Date.now();
   
   if (lastProcessedFlushes.has(key)) {
     const lastTime = lastProcessedFlushes.get(key) || 0;
     if (now - lastTime < 2500) {
       console.log(`[Orchestrator] Ignorando ejecución de flush duplicada para Conv #${conversationId} (última hace menos de 2.5s)`);
+      activeProcessing.delete(key);
       return;
     }
   }
   
   lastProcessedFlushes.set(key, now);
+
+  // Limpiar entradas antiguas (>60s) para evitar fuga de memoria
+  for (const [k, v] of lastProcessedFlushes) {
+    if (now - v > 60000) lastProcessedFlushes.delete(k);
+  }
 
   console.log(`[Orchestrator] Iniciando procesamiento de buffer para Conv #${conversationId}`);
   
@@ -79,13 +96,18 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     const sortedMessages = rawMessages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const consolidatedText = sortedMessages.map(m => m.body).join('\n');
 
-    // 4. Consultar en Supabase el estado, perfil de paciente y caso de financiamiento
-    let rawState: any = null;
-    try {
-      rawState = await stateRepository.getRefined(tenantId, conversationId, contact_id);
-    } catch (e: any) {
-      console.warn('[Orchestrator] Error leyendo conversation_state de Supabase. Usando fallback true:', e.message);
-    }
+    // 4. Consultar en Supabase el estado, perfil de paciente y caso de financiamiento EN PARALELO
+    const [rawState, patientProfile, activeFinancing] = await Promise.all([
+      stateRepository.getRefined(tenantId, conversationId, contact_id).catch((e: any) => {
+        console.warn('[Orchestrator] Error leyendo conversation_state de Supabase. Usando fallback true:', e.message);
+        return null;
+      }),
+      patientRepository.get(tenantId, contact_id).catch((e: any) => {
+        console.warn('[Orchestrator] Error leyendo patientProfile de Supabase:', e.message);
+        return null;
+      }),
+      financingRepository.getActive(tenantId, contact_id)
+    ]);
 
     const state = rawState || {
       ai_enabled: true,
@@ -146,20 +168,11 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       return;
     }
 
-    let patientProfile = null;
-    try {
-      patientProfile = await patientRepository.get(tenantId, contact_id);
-    } catch (e: any) {
-      console.warn('[Orchestrator] Error leyendo patientProfile de Supabase:', e.message);
-    }
-
     // Resolver de forma robusta el número de teléfono con prioridades
     // Prioridad 1: state.phone (guardado en base de datos al recibir webhook)
     // Prioridad 2: patientProfile.phone (guardado proactivamente al recibir webhook)
     // Prioridad 3: normalización directa de primer mensaje del buffer
     resolvedPhone = state.phone || patientProfile?.phone || phone;
-
-    const activeFinancing = await financingRepository.getActive(tenantId, contact_id);
 
     // Detección de identidad incompleta
     // Para considerarse completo, el paciente debe tener perfil con nombre real y correo (no el default de Chatwoot)
@@ -268,6 +281,57 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       metadata: hermesResponse
     });
 
+    // ⚡ PRIORIDAD: Enviar respuesta a Chatwoot INMEDIATAMENTE (antes de post-procesamiento)
+    const replyText = hermesResponse.reply_text || hermesResponse.reply || '';
+    const safeToSend = hermesResponse.safe_to_send !== false;
+
+    if (replyText && safeToSend) {
+      try {
+        await chatwootClient.sendMessage(conversationId, replyText);
+        
+        for (const msg of rawMessages) {
+          if (msg.trace_id) {
+            debugTracker.addAction(msg.trace_id, 'reply_sent_to_chatwoot', true, { 
+              reply: replyText,
+              delivery_mode: 'unified_buffer_consolidated_reply',
+              messages_consolidated_count: rawMessages.length
+            });
+          }
+        }
+
+        console.log(`[Orchestrator] CHATWOOT_REPLY_SENT: Mensaje enviado exitosamente a Chatwoot para Conv #${conversationId}`);
+
+        await logsRepository.save({
+          trace_id: traceId,
+          tenant_id: tenantId,
+          conversation_id: conversationId,
+          contact_id: contact_id,
+          event_type: 'CHATWOOT_REPLY_SENT',
+          metadata: { reply: replyText }
+        });
+      } catch (chatwootError: any) {
+        console.error(`[Orchestrator] CHATWOOT_REPLY_FAILED: Error enviando respuesta a Chatwoot para Conv #${conversationId}:`, chatwootError.message);
+        
+        for (const msg of rawMessages) {
+          if (msg.trace_id) {
+            debugTracker.addAction(msg.trace_id, 'reply_sent_to_chatwoot', false, { error: chatwootError.message });
+          }
+        }
+
+        await logsRepository.save({
+          trace_id: traceId,
+          tenant_id: tenantId,
+          conversation_id: conversationId,
+          contact_id: contact_id,
+          event_type: 'CHATWOOT_REPLY_FAILED',
+          error: chatwootError.message,
+          metadata: { reply: replyText }
+        });
+      }
+    }
+
+    // Post-procesamiento: estado, perfil y herramientas (ya no bloquea la respuesta al paciente)
+
     // A. Aplicar parches de identidad si Hermes los retorna (profile_patch)
     if (hermesResponse.profile_patch) {
       const up = hermesResponse.profile_patch;
@@ -358,35 +422,6 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       }
     }
 
-    // D. Enviar la respuesta a Chatwoot si Hermes tiene reply y es seguro
-    const replyText = hermesResponse.reply_text || hermesResponse.reply || '';
-    const safeToSend = hermesResponse.safe_to_send !== false;
-
-    if (replyText && safeToSend) {
-      await chatwootClient.sendMessage(conversationId, replyText);
-      
-      for (const msg of rawMessages) {
-        if (msg.trace_id) {
-          debugTracker.addAction(msg.trace_id, 'reply_sent_to_chatwoot', true, { 
-            reply: replyText,
-            delivery_mode: 'unified_buffer_consolidated_reply',
-            messages_consolidated_count: rawMessages.length
-          });
-        }
-      }
-
-      console.log(`[Orchestrator] CHATWOOT_REPLY_SENT: Mensaje enviado exitosamente a Chatwoot para Conv #${conversationId}`);
-
-      await logsRepository.save({
-        trace_id: traceId,
-        tenant_id: tenantId,
-        conversation_id: conversationId,
-        contact_id: contact_id,
-        event_type: 'CHATWOOT_REPLY_SENT',
-        metadata: { reply: replyText }
-      });
-    }
-
     // 14. Marcar todos los mensajes procesados del buffer
     const ids = rawMessages.map(m => m.id);
     await bufferRepository.markProcessed(ids);
@@ -475,5 +510,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       event_type: 'CHATWOOT_REPLY_SKIPPED_DUE_TO_HERMES_ERROR',
       metadata: { error: error.message, event_type }
     });
+  } finally {
+    activeProcessing.delete(key);
   }
 }
