@@ -379,18 +379,57 @@
       }
     }
 
-    function resolvePatientName(ev) {
-      if (ev.patient_name && ev.patient_name !== 'Paciente') return ev.patient_name;
-      
-      const raw = ev.normalizedPayload?.raw_payload || {};
-      if (raw.sender?.name) return raw.sender.name;
-      if (raw.conversation?.meta?.sender?.name) return raw.conversation.meta.sender.name;
-      
-      const messages = raw.conversation?.messages || raw.messages || [];
-      if (messages[0]?.sender?.name) return messages[0].sender.name;
-      if (messages[0]?.sender_name) return messages[0].sender_name;
+    // Cache de perfiles verificados desde Supabase (indexado por contact_id)
+    let contactProfiles = {};
 
-      return "Paciente sin nombre";
+    async function fetchContacts() {
+      if (!getSessionToken()) return;
+      try {
+        const res = await fetch('/admin/contacts', {
+          headers: { 'Authorization': `Bearer ${getSessionToken()}` }
+        });
+        if (res.status === 401) { handleLogout(); return; }
+        const profiles = await res.json();
+        contactProfiles = {};
+        (profiles || []).forEach(p => {
+          contactProfiles[p.contact_id] = p;
+        });
+      } catch (e) {
+        console.error('[Dashboard] Error cargando perfiles:', e);
+      }
+    }
+
+    function resolvePatientName(ev) {
+      const contactId = ev.contact_id;
+
+      // 1. Nombre verificado desde Supabase (tenant_id + contact_id)
+      const verified = contactProfiles[contactId];
+      if (verified && verified.display_name) {
+        return verified.display_name;
+      }
+
+      // 2. chatwoot_display_name del webhook de ESA conversación (provisional)
+      if (ev.patient_name && ev.patient_name !== 'Paciente' && ev.patient_name !== 'Paciente de Chatwoot') {
+        return ev.patient_name;
+      }
+
+      const raw = ev.normalizedPayload?.raw_payload || {};
+      if (raw.sender?.name && raw.sender.name !== 'Paciente de Chatwoot') return raw.sender.name;
+
+      // 3. Teléfono enmascarado o fallback
+      if (ev.phone && ev.phone.length > 5) {
+        return ev.phone.slice(0, 5) + '***' + ev.phone.slice(-2);
+      }
+
+      return "Contacto sin identificar";
+    }
+
+    function resolveDisplayNameSource(ev) {
+      const contactId = ev.contact_id;
+      const verified = contactProfiles[contactId];
+      if (verified) return verified.display_name_source || 'unknown';
+      if (ev.patient_name && ev.patient_name !== 'Paciente') return 'chatwoot';
+      return 'unknown';
     }
 
     function toggleExpandConv(convId, traceId) {
@@ -805,6 +844,7 @@
     const hasSession = checkSession();
     if (hasSession) {
       fetchStats();
+      fetchContacts();
       fetchDebugEvents();
     }
     
@@ -812,6 +852,7 @@
     setInterval(() => {
       if (getSessionToken()) {
         fetchStats();
+        fetchContacts();
         fetchDebugEvents();
       }
     }, 3000);

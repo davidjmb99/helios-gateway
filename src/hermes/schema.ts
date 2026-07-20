@@ -1,5 +1,17 @@
 import { z } from 'zod';
 
+// Schema ampliado del profile_patch para aceptar todos los campos que Hermes/Adapter puede devolver.
+// Incluye first_name, last_name, profile_complete y hubspot_contact_id que antes se descartaban por .strip().
+const ProfilePatchSchema = z.object({
+  first_name: z.string().nullable().optional(),
+  last_name: z.string().nullable().optional(),
+  name: z.string().nullable().optional(),
+  email: z.string().nullable().optional(),
+  phone: z.string().nullable().optional(),
+  profile_complete: z.boolean().nullable().optional(),
+  hubspot_contact_id: z.string().nullable().optional(),
+}).nullable().optional();
+
 export const HermesResponseSchema = z.object({
   route: z.string().optional(),
   intent: z.string().optional(),
@@ -7,14 +19,8 @@ export const HermesResponseSchema = z.object({
   reply: z.string().nullable().optional(),
   reply_text: z.string().nullable().optional(),
   safe_to_send: z.boolean().optional(),
-  profile_patch: z.object({
-    name: z.string().nullable().optional(),
-    email: z.string().nullable().optional()
-  }).nullable().optional(),
-  patient_profile_update: z.object({
-    name: z.string().nullable().optional(),
-    email: z.string().nullable().optional()
-  }).optional(),
+  profile_patch: ProfilePatchSchema,
+  patient_profile_update: ProfilePatchSchema,
   state_patch: z.object({
     status: z.string().optional(),
     pending_question: z.string().nullable().optional(),

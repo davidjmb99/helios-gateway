@@ -242,6 +242,63 @@ server.get('/admin/logs', async (request, reply) => {
   }
 });
 
+// Endpoint para el Dashboard: Perfiles de pacientes verificados desde Supabase
+// Devuelve los perfiles con PII enmascarada para display seguro
+server.get('/admin/contacts', async (request, reply) => {
+  try {
+    const tenantId = await checkAuth(request, reply);
+    const { data, error } = await supabase
+      .from('helios_patient_profiles')
+      .select('contact_id, first_name, last_name, name, phone, email, profile_complete, crm_contact_id, updated_at')
+      .eq('tenant_id', tenantId);
+
+    if (error) throw error;
+
+    // Enmascarar PII para el dashboard
+    const masked = (data || []).map(p => {
+      const maskedEmail = p.email
+        ? p.email.replace(/^(.{2})(.*)(@.*)$/, '$1***$3')
+        : null;
+      const maskedPhone = p.phone
+        ? p.phone.slice(0, 5) + '***' + p.phone.slice(-2)
+        : null;
+
+      // Determinar fuente del nombre
+      let displayName = null;
+      let displayNameSource = 'unknown';
+
+      if (p.first_name || p.last_name) {
+        displayName = [p.first_name, p.last_name].filter(Boolean).join(' ');
+        displayNameSource = 'gateway_profile';
+      } else if (p.name && p.name !== 'Paciente de Chatwoot') {
+        displayName = p.name;
+        displayNameSource = 'chatwoot';
+      }
+
+      if (p.crm_contact_id) {
+        displayNameSource = 'hubspot_crm';
+      }
+
+      return {
+        contact_id: p.contact_id,
+        display_name: displayName,
+        display_name_source: displayNameSource,
+        first_name: p.first_name || null,
+        last_name: p.last_name || null,
+        email_masked: maskedEmail,
+        phone_masked: maskedPhone,
+        profile_complete: p.profile_complete || false,
+        has_crm_id: !!p.crm_contact_id,
+        updated_at: p.updated_at
+      };
+    });
+
+    return masked;
+  } catch (error: any) {
+    return reply.status(500).send({ error: error.message });
+  }
+});
+
 // Helper interno para procesar webhook
 async function handleChatwootWebhook(payload: any, urlTenantId: string | undefined, log: any) {
   const normalized = normalizeChatwootPayload(payload);

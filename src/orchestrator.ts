@@ -12,6 +12,7 @@ import { runTools } from './tools/tool-runner.js';
 import { chatwootClient } from './chatwoot/client.js';
 import { debugTracker } from './debug/debug-tracker.js';
 import { hermesStatusTracker } from './server.js';
+import { normalizeProfilePatch } from './utils/normalizeProfilePatch.js';
 
 // Control de idempotencia en memoria para evitar flushes duplicados redundantes de la misma conversación en ventanas muy cortas de tiempo
 const lastProcessedFlushes = new Map<string, number>();
@@ -174,24 +175,21 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     // Prioridad 3: normalización directa de primer mensaje del buffer
     resolvedPhone = state.phone || patientProfile?.phone || phone;
 
-    // Detección de identidad incompleta
-    // Para considerarse completo, el paciente debe tener perfil con nombre real y correo (no el default de Chatwoot)
-    const isProfileComplete = !!(patientProfile?.name && patientProfile?.email && patientProfile.name !== 'Paciente de Chatwoot');
+    // Detección de identidad: usar campos verificados de Supabase
+    const isProfileComplete = patientProfile?.profile_complete === true ||
+      !!(patientProfile?.first_name && patientProfile?.last_name && patientProfile?.email && resolvedPhone);
 
-    // Resolver de forma robusta el nombre del paciente de Chatwoot
-    // Prioridad 1: patientProfile.name (inicializado al recibir webhook)
-    // Prioridad 2: metadatos del webhook original (si están disponibles)
-    const chatwootDisplayName = patientProfile?.name || 
-                                 firstMsg.raw_payload?.sender?.name || 
+    // Resolver nombre de Chatwoot (solo como metadata provisional, NO identidad verificada)
+    const chatwootDisplayName = firstMsg.raw_payload?.sender?.name || 
                                  firstMsg.raw_payload?.conversation?.meta?.sender?.name || 
-                                 'David Mercado';
+                                 'Contacto sin identificar';
 
     const possibleFrustration = rawMessages.some(m => m.signals?.possible_frustration || false);
     const possibleEmergency = rawMessages.some(m => m.signals?.possible_emergency || false);
     const asksForHuman = rawMessages.some(m => m.signals?.asks_for_human || false);
     const asksForFinancing = rawMessages.some(m => m.signals?.asks_for_financing || false);
 
-    // 6. Preparar el payload limpio para Hermes con la arquitectura correcta
+    // 6. Preparar el payload limpio para Hermes con identidad real desde Supabase
     const payload = {
       event: "patient_message_ready",
       tenant_id: tenantId,
@@ -206,7 +204,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       patient: {
         profile_exists: !!patientProfile,
         profile_complete: isProfileComplete,
-        name: isProfileComplete ? patientProfile.name : null,
+        first_name: patientProfile?.first_name || null,
+        last_name: patientProfile?.last_name || null,
+        name: patientProfile?.name || null,
         email: patientProfile?.email || null,
         phone: resolvedPhone,
         chatwoot_display_name: chatwootDisplayName
@@ -333,27 +333,72 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     // Post-procesamiento: estado, perfil y herramientas (ya no bloquea la respuesta al paciente)
 
     // A. Aplicar parches de identidad si Hermes los retorna (profile_patch)
-    if (hermesResponse.profile_patch) {
-      const up = hermesResponse.profile_patch;
-      if (up.name || up.email) {
-        await patientRepository.upsert({
+    const incomingPatch = hermesResponse.profile_patch || hermesResponse.patient_profile_update;
+    if (incomingPatch) {
+      const normalized = normalizeProfilePatch(patientProfile, incomingPatch, resolvedPhone);
+
+      if (normalized.has_changes) {
+        const upsertOk = await patientRepository.upsert({
           tenant_id: tenantId,
           contact_id: contact_id,
-          phone: phone,
-          name: up.name || patientProfile?.name,
-          email: up.email || patientProfile?.email
+          phone: normalized.phone,
+          first_name: normalized.first_name,
+          last_name: normalized.last_name,
+          name: normalized.name,
+          email: normalized.email,
+          profile_complete: normalized.profile_complete,
+          crm_contact_id: normalized.crm_contact_id
         });
 
-        debugTracker.addAction(traceId, 'patient_profile_updated_in_supabase', true, up);
+        if (upsertOk) {
+          // Actualizar representación local para reconocer identidad en el mismo turno
+          if (patientProfile) {
+            patientProfile.first_name = normalized.first_name;
+            patientProfile.last_name = normalized.last_name;
+            patientProfile.name = normalized.name;
+            patientProfile.email = normalized.email;
+            patientProfile.profile_complete = normalized.profile_complete;
+            patientProfile.crm_contact_id = normalized.crm_contact_id;
+          }
 
-        await logsRepository.save({
-          trace_id: traceId,
-          tenant_id: tenantId,
-          conversation_id: conversationId,
-          contact_id: contact_id,
-          event_type: 'patient_profile_updated',
-          metadata: up
-        });
+          debugTracker.addAction(traceId, 'patient_profile_updated_in_supabase', true, {
+            profile_complete: normalized.profile_complete,
+            has_first_name: !!normalized.first_name,
+            has_last_name: !!normalized.last_name,
+            has_email: !!normalized.email,
+            has_crm_id: !!normalized.crm_contact_id
+          });
+
+          await logsRepository.save({
+            trace_id: traceId,
+            tenant_id: tenantId,
+            conversation_id: conversationId,
+            contact_id: contact_id,
+            event_type: 'patient_profile_updated',
+            metadata: {
+              profile_complete: normalized.profile_complete,
+              has_first_name: !!normalized.first_name,
+              has_last_name: !!normalized.last_name,
+              has_email: !!normalized.email,
+              has_crm_id: !!normalized.crm_contact_id
+            }
+          });
+        } else {
+          // Upsert falló — NO afirmar que el perfil fue sincronizado
+          console.error(`[Orchestrator] PROFILE_UPSERT_FAILED: No se pudo persistir identidad para Conv #${conversationId}`);
+          debugTracker.addAction(traceId, 'patient_profile_updated_in_supabase', false, {
+            error: 'SUPABASE_UPSERT_FAILED'
+          });
+
+          await logsRepository.save({
+            trace_id: traceId,
+            tenant_id: tenantId,
+            conversation_id: conversationId,
+            contact_id: contact_id,
+            event_type: 'PROFILE_UPSERT_FAILED',
+            error: 'Supabase upsert returned error'
+          });
+        }
       }
     }
 

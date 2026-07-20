@@ -169,10 +169,13 @@ export const patientRepository = {
     tenant_id: string;
     contact_id: string;
     phone: string;
+    first_name?: string | null;
+    last_name?: string | null;
     name?: string | null;
     email?: string | null;
+    profile_complete?: boolean;
     crm_contact_id?: string | null;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const { error } = await supabase
       .from('helios_patient_profiles')
       .upsert({
@@ -181,8 +184,10 @@ export const patientRepository = {
       }, { onConflict: 'tenant_id,contact_id' });
 
     if (error) {
-      console.error('[Repository Error] Upsert patient profile failed:', error);
+      console.error('[Repository Error] Upsert patient profile failed:', error.code, error.message);
+      return false;
     }
+    return true;
   }
 };
 
