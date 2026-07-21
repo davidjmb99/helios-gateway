@@ -11,6 +11,7 @@ import { bufferService } from './buffer/buffer-service.js';
 import { processBufferEvent } from './orchestrator.js';
 import { debugTracker } from './debug/debug-tracker.js';
 import { startRecoveryWorker } from './services/inbound-recovery-worker.js';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -482,7 +483,7 @@ server.post('/test/chatwoot-message', async (request, reply) => {
   const body = request.body as any;
   const targetTenant = body.tenant_id || 'debug_tenant';
   
-  const uuid = require('crypto').randomUUID().substring(0, 8);
+  const uuid = crypto.randomUUID().substring(0, 8);
   const contactId = body.contact_id || `debug_contact_${uuid}`;
   const conversationId = body.conversation_id || `debug_conversation_${uuid}`;
   const patientName = body.name;
