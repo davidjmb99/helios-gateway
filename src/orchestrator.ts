@@ -19,6 +19,11 @@ const lastProcessedFlushes = new Map<string, number>();
 // Lock por conversación: evita procesamiento paralelo de la misma conversación (respuestas duplicadas)
 const activeProcessing = new Set<string>();
 
+export function clearOrchestratorCache() {
+  lastProcessedFlushes.clear();
+  activeProcessing.clear();
+}
+
 export async function processBufferEvent(tenantId: string, conversationId: string, traceId: string): Promise<void> {
   const key = `${tenantId}:${conversationId}`;
 
@@ -327,6 +332,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
           error: chatwootError.message,
           metadata: { reply: replyText }
         });
+
+        // Lanzar el error para que la conversación NO se marque como procesada si Chatwoot falló
+        throw chatwootError;
       }
     }
 
@@ -518,11 +526,37 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       human_handoff_active: false
     });
 
-    // Marcar los mensajes del buffer como procesados en el catch por regla del problema 2
+    // Clasificar y procesar el error según su tipo (Recuperable o Definitivo)
     if (typeof rawMessages !== 'undefined' && Array.isArray(rawMessages) && rawMessages.length > 0) {
       const ids = rawMessages.map(m => m.id);
-      await bufferRepository.markProcessed(ids);
-      console.log(`[Orchestrator Catch] Marcados ${ids.length} mensajes como procesados tras error.`);
+      const errStr = (error.message || '').toLowerCase();
+      
+      const isRecoverable = 
+        errStr.includes('503') || errStr.includes('502') || errStr.includes('504') || 
+        errStr.includes('500') || errStr.includes('429') || errStr.includes('timeout') || errStr.includes('econnrefused');
+      
+      let errorCode = 'HERMES_CALL_FAILED';
+      if (errStr.includes('timeout') && errStr.includes('chatwoot')) errorCode = 'CHATWOOT_TIMEOUT';
+      else if (errStr.includes('timeout')) errorCode = 'HERMES_TIMEOUT';
+      else if (errStr.includes('504')) errorCode = 'CHATWOOT_TIMEOUT';
+      else if (errStr.includes('500')) errorCode = 'CHATWOOT_UNAVAILABLE';
+      else if (errStr.includes('401') || errStr.includes('403') || errStr.includes('409')) errorCode = 'HERMES_CALL_FAILED';
+      else if (errStr.includes('503') || errStr.includes('502')) errorCode = 'HERMES_UNAVAILABLE';
+
+      if (isRecoverable) {
+        // Obtener el retry_count máximo actual
+        const maxRetryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
+        if (maxRetryCount < 5) {
+          await bufferRepository.markRecoverableError(ids, errorCode, maxRetryCount);
+          console.log(`[Orchestrator Catch] Error recuperable (${errorCode}). Incrementando retry_count para ${ids.length} mensajes.`);
+        } else {
+          await bufferRepository.markFailed(ids, errorCode);
+          console.error(`[Orchestrator Catch] Máximo de reintentos excedido (5) para la ráfaga. Marcando como FALLO DEFINITIVO.`);
+        }
+      } else {
+        await bufferRepository.markFailed(ids, errorCode);
+        console.error(`[Orchestrator Catch] Error definitivo no recuperable (${errorCode}). Marcando como fallido.`);
+      }
     }
 
     // Registrar el error en base de datos con los nombres clave requeridos

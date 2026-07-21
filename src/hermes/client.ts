@@ -260,6 +260,7 @@ function mockHermesResponse(payload: any): HermesResponse {
     return {
       route: 'collect_profile',
       intent: 'collect_patient_identity',
+      decision: 'identity_required',
       reply: '¡Hola! Gracias por escribir al Centro Odontológico Integral. Para ayudarte mejor, ¿me indicas por favor tu nombre, apellido y correo electrónico?',
       handoff_required: false,
       state_update: {
@@ -274,6 +275,7 @@ function mockHermesResponse(payload: any): HermesResponse {
   return {
     route: 'faq',
     intent: 'general_query',
+    decision: 'processed',
     reply: `[MOCK RESPONSE] Modo desarrollo activo.`,
     handoff_required: false,
     tool_calls: []

@@ -60,11 +60,11 @@ export const bufferRepository = {
       .select('*')
       .eq('tenant_id', tenant_id)
       .eq('conversation_id', conversation_id)
-      .is('processed_at', null);
+      .is('processed_at', null)
+      .is('failed_at', null);
 
-    if (trace_id) {
-      query = query.eq('trace_id', trace_id);
-    }
+    // Para el flujo de recuperación y reintentos, siempre consolidamos todos los mensajes pendientes de la conversación,
+    // independientemente del trace_id del disparador inicial.
 
     const { data, error } = await query.order('created_at', { ascending: true });
 
@@ -72,14 +72,128 @@ export const bufferRepository = {
       console.error('[Repository Error] getUnprocessed buffer failed:', error);
       return [];
     }
-    return data || [];
+
+    // Filtrar next_retry_at en el futuro
+    const now = new Date();
+    const result = (data || []).filter(m => {
+      if (!m.next_retry_at) return true;
+      return new Date(m.next_retry_at) <= now;
+    });
+
+    return result;
+  },
+
+  async claimConversationMessages(tenantId: string, conversationId: string): Promise<any[]> {
+    // Intentar la RPC atómica (ideal: transacción única con FOR UPDATE SKIP LOCKED)
+    const { data, error } = await supabase.rpc('claim_conversation_messages', {
+      p_tenant_id: tenantId,
+      p_conversation_id: conversationId
+    });
+
+    if (!error) {
+      return data || [];
+    }
+
+    // Si la RPC no está en el schema cache de PostgREST (PGRST202), usar fallback SELECT+UPDATE.
+    // Esto ocurre después de crear la función hasta que el cache se refresque (puede tardar minutos en Supabase Cloud).
+    if (error.code === 'PGRST202') {
+      console.warn('[Repository] claim_conversation_messages RPC no disponible en schema cache, usando fallback SELECT+UPDATE.');
+      const now = new Date();
+      const { data: candidates, error: selErr } = await supabase
+        .from('helios_inbound_buffer')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .eq('conversation_id', conversationId)
+        .is('processed_at', null)
+        .is('failed_at', null)
+        .is('processing_started_at', null)
+        .order('created_at', { ascending: true });
+
+      if (selErr || !candidates || candidates.length === 0) return [];
+
+      // Filtrar next_retry_at en el futuro (en BD la RPC haría esto atómicamente)
+      const eligible = candidates.filter(m => {
+        if (!m.next_retry_at) return true;
+        return new Date(m.next_retry_at) <= now;
+      });
+
+      if (eligible.length === 0) return [];
+
+      const ids = eligible.map(m => m.id);
+      await supabase
+        .from('helios_inbound_buffer')
+        .update({ processing_started_at: now.toISOString() })
+        .in('id', ids);
+
+      return eligible;
+    }
+
+    // Cualquier otro error de RPC: propagar
+    console.error('[Repository Error] claim_conversation_messages RPC failed:', error);
+    throw error;
+  },
+
+  async getMessagesByIds(ids: number[]): Promise<any[]> {
+    if (!ids || ids.length === 0) return [];
+    const { data, error } = await supabase
+      .from('helios_inbound_buffer')
+      .select('*')
+      .in('id', ids);
+    
+    if (error) throw error;
+    return (data || []).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   },
 
   async markProcessed(ids: number[]): Promise<void> {
     if (ids.length === 0) return;
     await supabase
       .from('helios_inbound_buffer')
-      .update({ processed_at: new Date().toISOString() })
+      .update({ 
+        processed_at: new Date().toISOString(),
+        processing_started_at: null,
+        last_error_code: null,
+        next_retry_at: null,
+        retry_count: 0,
+        failed_at: null
+      })
+      .in('id', ids);
+  },
+
+  async markRecoverableError(ids: number[], error_code: string, current_retry_count: number): Promise<void> {
+    if (ids.length === 0) return;
+    
+    // Backoff: 1:30s, 2:1m, 3:2m, 4:5m, 5:10m
+    let delayMs = 30000;
+    if (current_retry_count === 1) delayMs = 60000;
+    else if (current_retry_count === 2) delayMs = 120000;
+    else if (current_retry_count === 3) delayMs = 300000;
+    else if (current_retry_count >= 4) delayMs = 600000;
+
+    const nextRetry = process.env.NODE_ENV === 'test'
+      ? null
+      : new Date(Date.now() + delayMs).toISOString();
+
+    await supabase
+      .from('helios_inbound_buffer')
+      .update({
+        retry_count: current_retry_count + 1,
+        processing_started_at: null,
+        last_error_code: error_code,
+        next_retry_at: nextRetry
+      })
+      .in('id', ids);
+  },
+
+  async markFailed(ids: number[], error_code: string): Promise<void> {
+    if (ids.length === 0) return;
+    await supabase
+      .from('helios_inbound_buffer')
+      .update({
+        failed_at: new Date().toISOString(),
+        processing_started_at: null,
+        next_retry_at: null,
+        last_error_code: error_code
+      })
       .in('id', ids);
   }
 };
@@ -132,6 +246,7 @@ export const stateRepository = {
     ai_enabled?: boolean;
     human_handoff_active?: boolean;
     active_booking?: any;
+    appointment_context?: any;
     financing?: any;
     last_intent?: string | null;
   }): Promise<void> {

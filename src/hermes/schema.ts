@@ -15,7 +15,6 @@ const ProfilePatchSchema = z.object({
 export const HermesResponseSchema = z.object({
   route: z.string().optional(),
   intent: z.string().optional(),
-  decision: z.string().optional(),
   reply: z.string().nullable().optional(),
   reply_text: z.string().nullable().optional(),
   safe_to_send: z.boolean().optional(),
@@ -29,6 +28,7 @@ export const HermesResponseSchema = z.object({
     human_handoff_active: z.boolean().optional(),
     active_booking: z.any().optional(),
     financing: z.any().optional(),
+    appointment_context: z.any().optional(),
     last_intent: z.string().nullable().optional()
   }).nullable().optional(),
   state_update: z.object({
@@ -39,13 +39,16 @@ export const HermesResponseSchema = z.object({
     human_handoff_active: z.boolean().optional(),
     active_booking: z.any().optional(),
     financing: z.any().optional(),
+    appointment_context: z.any().optional(),
     last_intent: z.string().nullable().optional()
   }).optional(),
   tool_calls: z.array(z.object({
     name: z.string(),
     arguments: z.any()
   })).default([]),
-  handoff_required: z.boolean().default(false),
+  decision: z.enum(['processed', 'identity_required', 'needs_handoff', 'error']).optional().default('processed'),
+  response_sent: z.boolean().optional(),
+  handoff_required: z.boolean().optional().default(false),
   reason: z.string().optional()
 });
 
