@@ -131,9 +131,15 @@
         
         <div class="p-3 bg-slate-950/50 border-t border-slate-800">
           <span class="text-[10px] uppercase font-bold text-slate-500 block mb-1">Simulador de mensaje</span>
-          <form onsubmit="sendSimulated(event)" class="flex gap-1.5">
-            <input type="text" id="sim-text" placeholder="Escribe un mensaje de prueba..." class="flex-1 bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500">
-            <button type="submit" class="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg transition-colors">Enviar</button>
+          <form onsubmit="sendSimulated(event)" class="flex flex-col gap-1.5">
+            <div class="flex gap-1.5">
+              <input type="text" id="sim-name" placeholder="Nombre completo" required class="flex-1 bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500">
+              <input type="text" id="sim-phone" placeholder="Teléfono" required class="flex-1 bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500">
+            </div>
+            <div class="flex gap-1.5">
+              <input type="text" id="sim-text" placeholder="Escribe un mensaje de prueba..." class="flex-1 bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500">
+              <button type="submit" class="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg transition-colors">Enviar</button>
+            </div>
           </form>
         </div>
       </section>
@@ -789,8 +795,17 @@
     async function sendSimulated(e) {
       e.preventDefault();
       const input = document.getElementById('sim-text');
+      const nameInput = document.getElementById('sim-name');
+      const phoneInput = document.getElementById('sim-phone');
+      
       const text = input.value.trim();
-      if (!text) return;
+      const name = nameInput.value.trim();
+      const phone = phoneInput.value.trim();
+      
+      if (!text || !name || !phone) {
+         alert("Nombre, teléfono y texto son obligatorios.");
+         return;
+      }
 
       input.value = '';
 
@@ -800,10 +815,8 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             text: text,
-            conversation_id: 'debug_conv_1',
-            contact_id: 'debug_contact_1',
-            name: 'David Mercado',
-            phone: '+584125207119',
+            name: name,
+            phone: phone,
             tenant_id: getSessionToken() // Enviar token activo de sesión como tenant_id
           })
         });

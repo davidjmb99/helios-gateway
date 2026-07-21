@@ -10,6 +10,7 @@ import { supabase } from './supabase/client.js';
 import { bufferService } from './buffer/buffer-service.js';
 import { processBufferEvent } from './orchestrator.js';
 import { debugTracker } from './debug/debug-tracker.js';
+import { startRecoveryWorker } from './services/inbound-recovery-worker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -474,22 +475,39 @@ server.post('/webhooks/chatwoot/:tenant_id', async (request, reply) => {
 
 // Simulación de Chatwoot
 server.post('/test/chatwoot-message', async (request, reply) => {
+  if (process.env.NODE_ENV === 'production') {
+    return reply.status(403).send({ ok: false, error: 'Simulator disabled in production.' });
+  }
+
   const body = request.body as any;
-  const targetTenant = body.tenant_id || 'democoi1';
+  const targetTenant = body.tenant_id || 'debug_tenant';
+  
+  const uuid = require('crypto').randomUUID().substring(0, 8);
+  const contactId = body.contact_id || `debug_contact_${uuid}`;
+  const conversationId = body.conversation_id || `debug_conversation_${uuid}`;
+  const patientName = body.name;
+
+  if (!patientName) {
+     return reply.status(400).send({ ok: false, error: 'name is strictly required for simulator' });
+  }
+
+  if (!body.phone) {
+     return reply.status(400).send({ ok: false, error: 'phone is strictly required for simulator' });
+  }
   
   const mockPayload = {
     event: 'message_created',
     account: { id: targetTenant },
     conversation: {
-      id: body.conversation_id || '23',
-      contact_inbox: { contact_id: body.contact_id || '7' },
+      id: conversationId,
+      contact_inbox: { contact_id: contactId },
       inbox_id: body.inbox_id || '7'
     },
     sender: {
-      id: body.contact_id || '7',
-      name: body.name || 'David Mercado',
+      id: contactId,
+      name: patientName,
       email: body.email || null,
-      phone_number: body.phone || '+584125207119'
+      phone_number: body.phone
     },
     message: {
       id: body.message_id || `msg_${Date.now()}`,
@@ -553,6 +571,10 @@ server.get('/healthz', async (request, reply) => {
   return { ok: true, status: 'healthy' };
 });
 
+const stopRecoveryWorker = process.env.NODE_ENV !== 'test' 
+  ? startRecoveryWorker() 
+  : () => Promise.resolve();
+
 const start = async () => {
   try {
     console.log("[BOOT] Helios Gateway starting...");
@@ -569,5 +591,28 @@ const start = async () => {
     process.exit(1);
   }
 };
+
+async function gracefulShutdown(signal: string) {
+  console.log(`\n[Helios Gateway] Received ${signal}, starting graceful shutdown...`);
+  
+  await stopRecoveryWorker();
+  
+  server.close().then(() => {
+    console.log('[Helios Gateway] Fastify server closed.');
+    process.exit(0);
+  }, (err) => {
+    console.error('[Helios Gateway] Error closing Fastify server:', err);
+    process.exit(1);
+  });
+
+  // Force exit if taking too long
+  setTimeout(() => {
+    console.error('[Helios Gateway] Forced shutdown due to timeout.');
+    process.exit(1);
+  }, 20000);
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 start();
