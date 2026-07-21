@@ -408,19 +408,20 @@
     function resolvePatientName(ev) {
       const contactId = ev.contact_id;
 
-      // 1. Nombre verificado desde Supabase (tenant_id + contact_id)
+      // 1. Nombre verificado desde Supabase (solo si profile_complete = true)
       const verified = contactProfiles[contactId];
-      if (verified && verified.display_name) {
+      if (verified && verified.profile_complete === true && verified.display_name) {
         return verified.display_name;
       }
 
-      // 2. chatwoot_display_name del webhook de ESA conversación (provisional)
+      // 2. chatwoot_display_name o meta.sender.name del webhook más reciente DEL MISMO contact_id
       if (ev.patient_name && ev.patient_name !== 'Paciente' && ev.patient_name !== 'Paciente de Chatwoot') {
         return ev.patient_name;
       }
 
       const raw = ev.normalizedPayload?.raw_payload || {};
       if (raw.sender?.name && raw.sender.name !== 'Paciente de Chatwoot') return raw.sender.name;
+      if (raw.conversation?.meta?.sender?.name && raw.conversation.meta.sender.name !== 'Paciente de Chatwoot') return raw.conversation.meta.sender.name;
 
       // 3. Teléfono enmascarado o fallback
       if (ev.phone && ev.phone.length > 5) {
@@ -520,17 +521,23 @@
         const groups = {};
         filteredRaw.forEach(ev => {
           const convId = ev.conversation_id || 'unknown';
+          const tenantId = ev.tenant_id || 'unknown';
+          const contactId = ev.contact_id || 'unknown';
+          
           if (convId === 'unknown' || !convId) {
             // Bug 2: Ignorar eventos salientes huérfanos sin ID de conversación para no contaminar la lista
             return;
           }
 
+          const groupKey = `${tenantId}_${convId}_${contactId}`;
           const isIncoming = ev.message_type === 'incoming' || ev.normalizedPayload?.direction === 'incoming';
 
-          if (!groups[convId]) {
-            groups[convId] = {
+          if (!groups[groupKey]) {
+            groups[groupKey] = {
+              groupKey: groupKey,
               conversation_id: convId,
-              contact_id: ev.contact_id,
+              tenant_id: tenantId,
+              contact_id: contactId,
               patient_name: resolvePatientName(ev),
               phone: ev.phone || ev.normalizedPayload?.phone || 'N/A',
               messages: [],
@@ -540,17 +547,19 @@
             };
           }
           
-          groups[convId].messages.unshift(ev); 
+          groups[groupKey].messages.unshift(ev); 
           
           // Priorizar actualizaciones de timestamps
-          if (new Date(ev.timestamp) > new Date(groups[convId].lastTimestamp)) {
-            groups[convId].lastTimestamp = ev.timestamp;
-            groups[convId].latestText = ev.text;
+          if (new Date(ev.timestamp) > new Date(groups[groupKey].lastTimestamp)) {
+            groups[groupKey].lastTimestamp = ev.timestamp;
+            groups[groupKey].latestText = ev.text;
+            // Al llegar un evento más reciente del mismo contacto, reevaluar el nombre
+            groups[groupKey].patient_name = resolvePatientName(ev);
             
             // Bug 1: Solo sobreescribir la decisión de la tarjeta principal si es incoming o si no tiene estado previo válido.
             // Esto evita que el eco del bot ('ignored') pise estados como 'identity_required' o 'processed'.
-            if (isIncoming || groups[convId].decision === 'ignored') {
-              groups[convId].decision = ev.decision;
+            if (isIncoming || groups[groupKey].decision === 'ignored') {
+              groups[groupKey].decision = ev.decision;
             }
           }
         });
@@ -570,7 +579,7 @@
           if (c.decision === 'ignored') stateBadge = 'bg-slate-800/85 text-slate-400 border border-slate-700/40';
           if (c.decision === 'error') stateBadge = 'bg-red-500/15 text-red-400 border border-red-500/20';
 
-          const isExpanded = c.conversation_id === expandedConversationId;
+          const isExpanded = c.groupKey === expandedConversationId;
           const cardActive = isExpanded ? 'bg-slate-900 border-l-4 border-amber-500' : 'hover:bg-slate-900/20';
           const latestTraceId = c.messages[c.messages.length - 1].trace_id;
 
@@ -618,7 +627,7 @@
           }
 
           return `
-            <div onclick="toggleExpandConv('${c.conversation_id}', '${latestTraceId}')" class="p-3.5 cursor-pointer transition-all border-b border-slate-800/60 ${cardActive} flex flex-col gap-1">
+            <div onclick="toggleExpandConv('${c.groupKey}', '${latestTraceId}')" class="p-3.5 cursor-pointer transition-all border-b border-slate-800/60 ${cardActive} flex flex-col gap-1">
               <div class="flex justify-between items-start">
                 <div>
                   <h3 class="text-xs font-bold text-slate-200">${c.patient_name}</h3>

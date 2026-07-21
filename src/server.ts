@@ -269,7 +269,8 @@ server.get('/admin/contacts', async (request, reply) => {
       let displayName = null;
       let displayNameSource = 'unknown';
 
-      if (p.first_name || p.last_name) {
+      // Solo usar first/last_name si el perfil está completo
+      if (p.profile_complete === true && (p.first_name || p.last_name)) {
         displayName = [p.first_name, p.last_name].filter(Boolean).join(' ');
         displayNameSource = 'gateway_profile';
       } else if (p.name && p.name !== 'Paciente de Chatwoot') {
