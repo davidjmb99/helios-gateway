@@ -209,12 +209,13 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       patient: {
         profile_exists: !!patientProfile,
         profile_complete: isProfileComplete,
-        first_name: patientProfile?.first_name || null,
-        last_name: patientProfile?.last_name || null,
-        name: patientProfile?.name || null,
+        first_name: isProfileComplete ? (patientProfile?.first_name || null) : null,
+        last_name: isProfileComplete ? (patientProfile?.last_name || null) : null,
+        name: isProfileComplete ? [patientProfile?.first_name, patientProfile?.last_name].filter(Boolean).join(' ') || patientProfile?.name : null,
         email: patientProfile?.email || null,
         phone: resolvedPhone,
-        chatwoot_display_name: chatwootDisplayName
+        chatwoot_display_name: chatwootDisplayName,
+        display_name_source: isProfileComplete ? "verified_profile" : "chatwoot"
       },
       state: {
         ai_enabled: state.ai_enabled,
