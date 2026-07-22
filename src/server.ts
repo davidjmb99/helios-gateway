@@ -386,7 +386,8 @@ async function handleChatwootWebhook(payload: any, urlTenantId: string | undefin
     normalized.trace_id
   );
 
-  // Inicializar de forma proactiva el perfil del paciente con el teléfono y nombre de Chatwoot si no existe
+  // Inicializar de forma proactiva el perfil del paciente con el teléfono si no existe
+  // NO guardar el alias de Chatwoot en name; name solo se llena con identidad verificada
   try {
     const existingPatient = await patientRepository.get(normalized.tenant_id, normalized.contact_id);
     if (!existingPatient && normalized.phone) {
@@ -394,9 +395,9 @@ async function handleChatwootWebhook(payload: any, urlTenantId: string | undefin
         tenant_id: normalized.tenant_id,
         contact_id: normalized.contact_id,
         phone: normalized.phone,
-        name: normalized.patient_name || 'Paciente de Chatwoot'
+        name: null // name solo se llena cuando Hermes devuelve identidad verificada
       });
-      log.info({ contact_id: normalized.contact_id }, 'Perfil del paciente inicializado con datos de Chatwoot.');
+      log.info({ contact_id: normalized.contact_id }, 'Perfil del paciente inicializado con teléfono.');
     }
   } catch (err: any) {
     log.warn({ err: err.message }, 'No se pudo inicializar proactivamente el perfil de paciente.');

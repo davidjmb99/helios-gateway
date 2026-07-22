@@ -184,9 +184,11 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     const isProfileComplete = patientProfile?.profile_complete === true ||
       !!(patientProfile?.first_name && patientProfile?.last_name && patientProfile?.email && resolvedPhone);
 
-    // Resolver nombre de Chatwoot (solo como metadata provisional, NO identidad verificada)
-    const chatwootDisplayName = firstMsg.raw_payload?.sender?.name || 
-                                 firstMsg.raw_payload?.conversation?.meta?.sender?.name || 
+    // Resolver alias provisional de Chatwoot — misma fuente para payload y dashboard
+    // Prioridad: sender.name del webhook > meta.sender.name > nombre provisional en Supabase > fallback
+    const chatwootDisplayName = firstMsg.raw_payload?.sender?.name ||
+                                 firstMsg.raw_payload?.conversation?.meta?.sender?.name ||
+                                 (patientProfile?.name && patientProfile.name !== 'Paciente de Chatwoot' ? patientProfile.name : null) ||
                                  'Contacto sin identificar';
 
     const possibleFrustration = rawMessages.some(m => m.signals?.possible_frustration || false);
@@ -258,23 +260,26 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     debugTracker.addTimelineStep(traceId, 'hermes_request', payload);
 
     console.log(`[Orchestrator] HERMES_CALL_STARTED: Llamando a Hermes. TraceId: ${traceId}, Phone: ${phone}`);
+    const adapterStartedAt = Date.now();
     await logsRepository.save({
       trace_id: traceId,
       tenant_id: tenantId,
       conversation_id: conversationId,
       contact_id: contact_id,
       event_type: 'HERMES_CALL_STARTED',
-      metadata: { message_count: rawMessages.length, phone }
+      metadata: { message_count: rawMessages.length, phone, adapter_started_at: new Date(adapterStartedAt).toISOString() }
     });
 
     // Llamada HTTP real a Hermes
     const hermesResponse = await callHermes(payload, traceId);
+    const adapterFinishedAt = Date.now();
+    const adapterDurationMs = adapterFinishedAt - adapterStartedAt;
     hermesStatusTracker.lastCallFailed = false;
 
     debugTracker.updateEvent(traceId, { hermesResponse });
     debugTracker.addTimelineStep(traceId, 'hermes_response', hermesResponse);
 
-    console.log(`[Orchestrator] HERMES_CALL_SUCCESS: Recibida respuesta de Hermes. TraceId: ${traceId}`);
+    console.log(`[Orchestrator] HERMES_CALL_SUCCESS: Recibida respuesta de Hermes. TraceId: ${traceId}, adapter_duration_ms: ${adapterDurationMs}`);
 
     await logsRepository.save({
       trace_id: traceId,
@@ -284,28 +289,69 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       event_type: 'HERMES_CALL_SUCCESS',
       route: hermesResponse.route,
       intent: hermesResponse.intent,
-      metadata: hermesResponse
+      metadata: {
+        ...hermesResponse,
+        adapter_started_at: new Date(adapterStartedAt).toISOString(),
+        adapter_finished_at: new Date(adapterFinishedAt).toISOString(),
+        adapter_duration_ms: adapterDurationMs
+      }
     });
 
-    // ⚡ PRIORIDAD: Enviar respuesta a Chatwoot INMEDIATAMENTE (antes de post-procesamiento)
+    // Interpretar resultados del Adapter: si safe_to_send=false o error_code presente, NO publicar
     const replyText = hermesResponse.reply_text || hermesResponse.reply || '';
     const safeToSend = hermesResponse.safe_to_send !== false;
+    const hasErrorCode = !!hermesResponse.error_code;
+
+    // Si safe_to_send=false o error_code presente: operación no completada
+    if (!safeToSend || hasErrorCode) {
+      const errorCode = hermesResponse.error_code || 'ADAPTER_UNSAFE_RESPONSE';
+      console.warn(`[Orchestrator] ADAPTER_RESPONSE_INCOMPLETE: safe_to_send=${safeToSend}, error_code=${errorCode}. No publicar en Chatwoot. TraceId: ${traceId}`);
+
+      // Si es ACTIVE_STREAM_CONFLICT: recoverable, no handoff, programar retry
+      if (errorCode === 'ACTIVE_STREAM_CONFLICT') {
+        const ids = rawMessages.map(m => m.id);
+        const retryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
+        await bufferRepository.markRecoverableError(ids, errorCode, retryCount);
+        debugTracker.addAction(traceId, 'active_stream_conflict', true, { recoverable: true, requires_handoff: false });
+        await logsRepository.save({
+          trace_id: traceId, tenant_id: tenantId, conversation_id: conversationId, contact_id: contact_id,
+          event_type: 'ACTIVE_STREAM_CONFLICT',
+          metadata: { recoverable: true, requires_handoff: false, adapter_duration_ms: adapterDurationMs }
+        });
+        return; // No marcar processed, no publicar, no handoff
+      }
+
+      // Otro error no completado: dejar recuperable
+      const ids = rawMessages.map(m => m.id);
+      const retryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
+      await bufferRepository.markRecoverableError(ids, errorCode, retryCount);
+      await logsRepository.save({
+        trace_id: traceId, tenant_id: tenantId, conversation_id: conversationId, contact_id: contact_id,
+        event_type: 'ADAPTER_RESPONSE_INCOMPLETE',
+        metadata: { error_code: errorCode, safe_to_send: safeToSend, adapter_duration_ms: adapterDurationMs }
+      });
+      return; // No marcar processed, no publicar
+    }
 
     if (replyText && safeToSend) {
       try {
+        const chatwootSendStartedAt = Date.now();
         await chatwootClient.sendMessage(conversationId, replyText);
+        const chatwootSendFinishedAt = Date.now();
+        const chatwootSendDurationMs = chatwootSendFinishedAt - chatwootSendStartedAt;
         
         for (const msg of rawMessages) {
           if (msg.trace_id) {
             debugTracker.addAction(msg.trace_id, 'reply_sent_to_chatwoot', true, { 
               reply: replyText,
               delivery_mode: 'unified_buffer_consolidated_reply',
-              messages_consolidated_count: rawMessages.length
+              messages_consolidated_count: rawMessages.length,
+              chatwoot_send_duration_ms: chatwootSendDurationMs
             });
           }
         }
 
-        console.log(`[Orchestrator] CHATWOOT_REPLY_SENT: Mensaje enviado exitosamente a Chatwoot para Conv #${conversationId}`);
+        console.log(`[Orchestrator] CHATWOOT_REPLY_SENT: Conv #${conversationId}, chatwoot_send_duration_ms: ${chatwootSendDurationMs}`);
 
         await logsRepository.save({
           trace_id: traceId,
@@ -313,7 +359,13 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
           conversation_id: conversationId,
           contact_id: contact_id,
           event_type: 'CHATWOOT_REPLY_SENT',
-          metadata: { reply: replyText }
+          metadata: {
+            reply: replyText,
+            adapter_duration_ms: adapterDurationMs,
+            chatwoot_send_started_at: new Date(chatwootSendStartedAt).toISOString(),
+            chatwoot_send_finished_at: new Date(chatwootSendFinishedAt).toISOString(),
+            chatwoot_send_duration_ms: chatwootSendDurationMs
+          }
         });
       } catch (chatwootError: any) {
         console.error(`[Orchestrator] CHATWOOT_REPLY_FAILED: Error enviando respuesta a Chatwoot para Conv #${conversationId}:`, chatwootError.message);
