@@ -17,6 +17,7 @@ export const HermesResponseSchema = z.object({
   intent: z.string().optional(),
   reply: z.string().nullable().optional(),
   reply_text: z.string().nullable().optional(),
+  message_for_client: z.string().nullable().optional(),
   safe_to_send: z.boolean().optional(),
   profile_patch: ProfilePatchSchema,
   patient_profile_update: ProfilePatchSchema,
@@ -31,20 +32,29 @@ export const HermesResponseSchema = z.object({
     appointment_context: z.any().optional(),
     last_intent: z.string().nullable().optional()
   }).nullable().optional(),
-  state_update: z.object({
+  state_update: z.any().optional(),
+  booking_patch: z.object({
+    booking_uid: z.string().optional(),
     status: z.string().optional(),
-    pending_question: z.string().nullable().optional(),
-    pending_intent: z.string().nullable().optional(),
-    missing_fields: z.array(z.string()).optional(),
-    human_handoff_active: z.boolean().optional(),
-    active_booking: z.any().optional(),
-    financing: z.any().optional(),
-    appointment_context: z.any().optional(),
-    last_intent: z.string().nullable().optional()
-  }).optional(),
+    start_time: z.string().optional(),
+    timezone: z.string().optional(),
+    service: z.string().optional(),
+    last_action: z.string().optional()
+  }).nullable().optional(),
+  operation: z.object({
+    type: z.string().optional(),
+    status: z.string().optional(),
+    summary: z.string().optional(),
+    last_tool_name: z.string().optional(),
+    last_tool_status: z.string().optional(),
+    last_operation_at: z.string().optional()
+  }).nullable().optional(),
   tool_calls: z.array(z.object({
     name: z.string(),
-    arguments: z.any()
+    arguments: z.any().optional(),
+    status: z.string().optional(),
+    duration_ms: z.number().optional(),
+    result_code: z.string().optional()
   })).default([]),
   decision: z.enum(['processed', 'identity_required', 'needs_handoff', 'error']).optional().default('processed'),
   response_sent: z.boolean().optional(),

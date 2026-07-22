@@ -155,7 +155,8 @@ export function normalizeProfilePatch(
     finalFirstName &&
     finalLastName &&
     finalEmail &&
-    finalPhone
+    finalPhone &&
+    finalCrmId
   );
 
   // --- Determinar si hay cambios ---

@@ -156,14 +156,14 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
       decision: responseData.decision || (isNew ? 'identity_required' : 'processed'),
       reply: replyText,
       reply_text: replyText,
+      message_for_client: responseData.message_for_client,
       safe_to_send: responseData.safe_to_send !== false,
       handoff_required: responseData.requires_handoff || responseData.handoff_required || responseData.handoff || false,
       reason: responseData.reason || '',
       profile_patch: responseData.profile_patch || responseData.patient_profile_update || null,
-      state_patch: responseData.state_patch || responseData.state_update || (isNew ? {
-        status: 'collecting_profile',
-        missing_fields: ['first_name', 'last_name', 'email']
-      } : null),
+      state_patch: responseData.state_patch || responseData.state_update || null,
+      booking_patch: responseData.booking_patch || null,
+      operation: responseData.operation || null,
       tool_calls: responseData.tool_calls || [],
       error_code: responseData.error_code,
       recoverable: responseData.recoverable

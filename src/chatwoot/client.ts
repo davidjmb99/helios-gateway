@@ -17,21 +17,21 @@ export class ChatwootClient {
     return !!(config.CHATWOOT_ACCOUNT_ID && config.CHATWOOT_API_TOKEN);
   }
 
-  public async sendMessage(conversationId: string, content: string): Promise<void> {
+  public async sendMessage(conversationId: string, content: string): Promise<any> {
     if (!this.isConfigured()) {
       console.log(`[Chatwoot Client MOCK] Enviando mensaje a conv #${conversationId}: "${content}"`);
-      return;
+      return { id: `mock-${Date.now()}` };
     }
 
     const maxRetries = 2;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        await axios.post(
+        const response = await axios.post(
           `${this.baseUrl}/conversations/${conversationId}/messages`,
           { content, message_type: 'outgoing' },
           { headers: this.headers }
         );
-        return; // Éxito
+        return response.data; // Éxito
       } catch (error: any) {
         console.error(`[Chatwoot Client Error] sendMessage (intento ${attempt}/${maxRetries}):`, error.message);
         if (attempt === maxRetries) {

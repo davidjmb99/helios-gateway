@@ -294,7 +294,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     });
 
     // Interpretar resultados del Adapter: si safe_to_send=false o error_code presente, NO publicar
-    const replyText = hermesResponse.reply_text || hermesResponse.reply || '';
+    const replyText = hermesResponse.message_for_client || '';
     const safeToSend = hermesResponse.safe_to_send !== false;
     const hasErrorCode = !!hermesResponse.error_code;
 
@@ -331,38 +331,49 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
 
     if (replyText && safeToSend) {
       try {
-        const chatwootSendStartedAt = Date.now();
-        await chatwootClient.sendMessage(conversationId, replyText);
-        const chatwootSendFinishedAt = Date.now();
-        const chatwootSendDurationMs = chatwootSendFinishedAt - chatwootSendStartedAt;
-        
-        for (const msg of rawMessages) {
-          if (msg.trace_id) {
-            debugTracker.addAction(msg.trace_id, 'reply_sent_to_chatwoot', true, { 
-              reply: replyText,
-              delivery_mode: 'unified_buffer_consolidated_reply',
-              messages_consolidated_count: rawMessages.length,
-              chatwoot_send_duration_ms: chatwootSendDurationMs
+        // Idempotency check para Chatwoot message
+        // Buscamos si ya se envi en la db un event_type 'CHATWOOT_REPLY_SENT' para este trace_id
+        // Para simplificar, usaremos un check en memoria con el traceId como response_idempotency_key
+        const cacheKey = `chatwoot_reply_${traceId}`;
+        if (lastProcessedFlushes.has(cacheKey)) {
+            console.log(`[Orchestrator] Idempotency check: Chatwoot message ya enviado para trace ${traceId}`);
+        } else {
+            lastProcessedFlushes.set(cacheKey, Date.now());
+            const chatwootSendStartedAt = Date.now();
+            const messageObj = await chatwootClient.sendMessage(conversationId, replyText);
+            const chatwootSendFinishedAt = Date.now();
+            const chatwootSendDurationMs = chatwootSendFinishedAt - chatwootSendStartedAt;
+            
+            for (const msg of rawMessages) {
+              if (msg.trace_id) {
+                debugTracker.addAction(msg.trace_id, 'reply_sent_to_chatwoot', true, { 
+                  reply: replyText,
+                  delivery_mode: 'unified_buffer_consolidated_reply',
+                  messages_consolidated_count: rawMessages.length,
+                  chatwoot_send_duration_ms: chatwootSendDurationMs
+                });
+              }
+            }
+
+            console.log(`[Orchestrator] CHATWOOT_REPLY_SENT: Conv #${conversationId}, chatwoot_send_duration_ms: ${chatwootSendDurationMs}`);
+
+            await logsRepository.save({
+              trace_id: traceId,
+              tenant_id: tenantId,
+              conversation_id: conversationId,
+              contact_id: contact_id,
+              event_type: 'CHATWOOT_REPLY_SENT',
+              metadata: {
+                reply: replyText,
+                chatwoot_message_id: messageObj?.id,
+                adapter_duration_ms: adapterDurationMs,
+                chatwoot_send_started_at: new Date(chatwootSendStartedAt).toISOString(),
+                chatwoot_send_finished_at: new Date(chatwootSendFinishedAt).toISOString(),
+                chatwoot_send_duration_ms: chatwootSendDurationMs
+              }
             });
-          }
         }
 
-        console.log(`[Orchestrator] CHATWOOT_REPLY_SENT: Conv #${conversationId}, chatwoot_send_duration_ms: ${chatwootSendDurationMs}`);
-
-        await logsRepository.save({
-          trace_id: traceId,
-          tenant_id: tenantId,
-          conversation_id: conversationId,
-          contact_id: contact_id,
-          event_type: 'CHATWOOT_REPLY_SENT',
-          metadata: {
-            reply: replyText,
-            adapter_duration_ms: adapterDurationMs,
-            chatwoot_send_started_at: new Date(chatwootSendStartedAt).toISOString(),
-            chatwoot_send_finished_at: new Date(chatwootSendFinishedAt).toISOString(),
-            chatwoot_send_duration_ms: chatwootSendDurationMs
-          }
-        });
       } catch (chatwootError: any) {
         console.error(`[Orchestrator] CHATWOOT_REPLY_FAILED: Error enviando respuesta a Chatwoot para Conv #${conversationId}:`, chatwootError.message);
         
@@ -469,12 +480,17 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       
       // Si hay herramientas que indiquen deshabilitar IA
       const toolCalls = hermesResponse.tool_calls || [];
-      const stateUpdateTool = toolCalls.find(tc => tc.name === 'state.update');
-      if (stateUpdateTool) {
+      const stateUpdateTool = toolCalls.find((tc: any) => tc.name === 'state.update');
+      if (stateUpdateTool && stateUpdateTool.arguments) {
         if (stateUpdateTool.arguments.ai_enabled !== undefined) nextAiEnabled = stateUpdateTool.arguments.ai_enabled;
         if (stateUpdateTool.arguments.human_handoff_active !== undefined) nextHandoffActive = stateUpdateTool.arguments.human_handoff_active;
       }
       
+      // Validar handoff: "Solo activar handoff cuando requires_handoff=true y la causa no sea tcnica"
+      if (hermesResponse.handoff_required && !hasErrorCode) {
+        nextHandoffActive = true;
+      }
+
       await stateRepository.upsert({
         tenant_id: tenantId,
         conversation_id: conversationId,
@@ -484,29 +500,77 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         status: su.status !== undefined ? su.status : state.status,
         pending_question: su.pending_question !== undefined ? su.pending_question : state.pending_question,
         pending_intent: su.pending_intent !== undefined ? su.pending_intent : state.pending_intent,
-        missing_fields: su.missing_fields !== undefined ? su.missing_fields : state.missing_fields,
         ai_enabled: nextAiEnabled,
         human_handoff_active: nextHandoffActive,
-        active_booking: su.active_booking !== undefined ? su.active_booking : state.active_booking,
-        financing: su.financing !== undefined ? su.financing : state.financing,
         last_intent: hermesResponse.intent || state.last_intent
       });
 
-      debugTracker.addAction(traceId, 'state_saved_to_supabase', true, su);
-
+      debugTracker.addAction(traceId, 'state_saved_to_supabase', true, {
+          status: su.status,
+          pending_question: su.pending_question,
+          pending_intent: su.pending_intent,
+          human_handoff_active: nextHandoffActive
+      });
       await logsRepository.save({
-        trace_id: traceId,
-        tenant_id: tenantId,
-        conversation_id: conversationId,
-        contact_id: contact_id,
-        event_type: 'state_updated',
-        metadata: su
+        trace_id: traceId, tenant_id: tenantId, conversation_id: conversationId, contact_id: contact_id,
+        event_type: 'state_updated', metadata: su
       });
     }
 
-    // C. Ejecutar las herramientas si Hermes las indica
-    if (hermesResponse.tool_calls && hermesResponse.tool_calls.length > 0) {
-      const normalizedToolCalls = hermesResponse.tool_calls.map(tc => ({
+    // C. Booking Patch
+    if (hermesResponse.booking_patch && hermesResponse.booking_patch.booking_uid) {
+        const bp = hermesResponse.booking_patch;
+        await stateRepository.upsert({
+          tenant_id: tenantId,
+          conversation_id: conversationId,
+          contact_id: contact_id,
+          inbox_id: inboxId,
+          phone: phone,
+          active_booking: {
+            booking_uid: bp.booking_uid,
+            status: bp.status,
+            start_time: bp.start_time,
+            timezone: bp.timezone,
+            service: bp.service,
+            last_action: bp.last_action
+          }
+        });
+        debugTracker.addAction(traceId, 'booking_saved', true, bp);
+        await logsRepository.save({
+            trace_id: traceId, tenant_id: tenantId, conversation_id: conversationId, contact_id: contact_id,
+            event_type: 'booking_updated', metadata: bp
+        });
+    }
+
+    // D. Operation & Tool Calls (Solo guardar metadatos seguros)
+    if (hermesResponse.operation || (hermesResponse.tool_calls && hermesResponse.tool_calls.length > 0)) {
+        const safeToolCalls = (hermesResponse.tool_calls || []).map((tc: any) => ({
+            name: tc.name,
+            status: tc.status,
+            duration_ms: tc.duration_ms,
+            result_code: tc.result_code
+        }));
+        
+        const operationSummary = hermesResponse.operation ? {
+            type: hermesResponse.operation.type,
+            status: hermesResponse.operation.status,
+            summary: hermesResponse.operation.summary,
+            last_tool_name: hermesResponse.operation.last_tool_name,
+            last_tool_status: hermesResponse.operation.last_tool_status,
+            last_operation_at: hermesResponse.operation.last_operation_at
+        } : null;
+
+        debugTracker.addAction(traceId, 'operation_executed', true, { operation: operationSummary, tools: safeToolCalls });
+        await logsRepository.save({
+            trace_id: traceId, tenant_id: tenantId, conversation_id: conversationId, contact_id: contact_id,
+            event_type: 'operation_log', metadata: { operation: operationSummary, tools: safeToolCalls }
+        });
+    }
+
+    // E. Ejecutar las herramientas locales (legacy support)
+    const localTools = (hermesResponse.tool_calls || []).filter((tc: any) => tc.name === 'handoff.create' || tc.name === 'state.update');
+    if (localTools && localTools.length > 0) {
+      const normalizedToolCalls = localTools.map((tc: any) => ({
         name: tc.name,
         arguments: tc.arguments || {}
       }));
