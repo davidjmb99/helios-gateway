@@ -185,7 +185,19 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       !!(patientProfile?.first_name && patientProfile?.last_name && patientProfile?.email && resolvedPhone);
 
     // Resolver alias provisional de Chatwoot con función unificada
-    const chatwootDisplayName = resolveChatwootAlias(firstMsg.raw_payload, patientProfile?.name);
+    const chatwootDisplayName = resolveChatwootAlias(firstMsg.raw_payload, patientProfile, state);
+    
+    // Persistir el alias provisional si no existe o cambió (para reutilizarlo en futuros webhooks sin nombre)
+    if (chatwootDisplayName !== 'Contacto sin identificar' && patientProfile?.chatwoot_display_name !== chatwootDisplayName) {
+      await patientRepository.upsert({
+        tenant_id: tenantId,
+        contact_id: contact_id,
+        phone: resolvedPhone,
+        chatwoot_display_name: chatwootDisplayName
+      });
+      // Actualizar el objeto local para evitar falsos "no guardado" en logs
+      if (patientProfile) patientProfile.chatwoot_display_name = chatwootDisplayName;
+    }
 
     const possibleFrustration = rawMessages.some(m => m.signals?.possible_frustration || false);
     const possibleEmergency = rawMessages.some(m => m.signals?.possible_emergency || false);
@@ -209,7 +221,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         profile_complete: isProfileComplete,
         first_name: isProfileComplete ? (patientProfile?.first_name || null) : null,
         last_name: isProfileComplete ? (patientProfile?.last_name || null) : null,
-        name: isProfileComplete ? [patientProfile?.first_name, patientProfile?.last_name].filter(Boolean).join(' ') || patientProfile?.name : null,
+        name: isProfileComplete ? [patientProfile?.first_name, patientProfile?.last_name].filter(Boolean).join(' ') || patientProfile?.name || null : null,
         email: patientProfile?.email || null,
         phone: resolvedPhone,
         chatwoot_display_name: chatwootDisplayName,

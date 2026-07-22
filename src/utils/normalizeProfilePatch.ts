@@ -64,7 +64,7 @@ function isChatwootDefaultName(name: string | null | undefined): boolean {
 }
 
 /** Resuelve el alias de Chatwoot unificado para Dashboard y Payload */
-export function resolveChatwootAlias(rawPayload: any, persistedName?: string | null): string {
+export function resolveChatwootAlias(rawPayload: any, patientProfile?: any, conversationState?: any): string {
   // 1. sender.name / meta.sender.name del webhook
   const webhookName = rawPayload?.sender?.name || 
                       rawPayload?.meta?.sender?.name ||
@@ -75,12 +75,17 @@ export function resolveChatwootAlias(rawPayload: any, persistedName?: string | n
     return webhookName;
   }
   
-  // 2. nombre provisional persistido
-  if (persistedName && !isChatwootDefaultName(persistedName)) {
-    return persistedName;
+  // 2. nombre provisional persistido en tenant_id + contact_id
+  if (patientProfile?.chatwoot_display_name && !isChatwootDefaultName(patientProfile.chatwoot_display_name)) {
+    return patientProfile.chatwoot_display_name;
+  }
+
+  // 3. nombre provisional ya presente en estado o metadata
+  if (conversationState?.meta?.sender?.name && !isChatwootDefaultName(conversationState.meta.sender.name)) {
+    return conversationState.meta.sender.name;
   }
   
-  // 3. Fallback
+  // 4. Fallback
   return 'Contacto sin identificar';
 }
 

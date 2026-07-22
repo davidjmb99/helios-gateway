@@ -290,6 +290,7 @@ export const patientRepository = {
     email?: string | null;
     profile_complete?: boolean;
     crm_contact_id?: string | null;
+    chatwoot_display_name?: string | null;
   }): Promise<boolean> {
     const { error } = await supabase
       .from('helios_patient_profiles')

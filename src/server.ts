@@ -3,6 +3,7 @@ import formbody from '@fastify/formbody';
 import fastifyStatic from '@fastify/static';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { resolveChatwootAlias } from './utils/normalizeProfilePatch.js';
 import { config } from './config.js';
 import { normalizeChatwootPayload } from './chatwoot/normalizer.js';
 import { idempotencyRepository, stateRepository, logsRepository, patientRepository } from './repositories/database.js';
@@ -265,16 +266,14 @@ server.get('/admin/contacts', async (request, reply) => {
         ? p.phone.slice(0, 5) + '***' + p.phone.slice(-2)
         : null;
 
-      // Determinar fuente del nombre
       let displayName = null;
       let displayNameSource = 'unknown';
 
-      // Solo usar first/last_name si el perfil está completo
       if (p.profile_complete === true && (p.first_name || p.last_name)) {
         displayName = [p.first_name, p.last_name].filter(Boolean).join(' ');
-        displayNameSource = 'gateway_profile';
-      } else if (p.name && p.name !== 'Paciente de Chatwoot') {
-        displayName = p.name;
+        displayNameSource = 'verified_profile';
+      } else {
+        displayName = resolveChatwootAlias(null, p, null);
         displayNameSource = 'chatwoot';
       }
 
