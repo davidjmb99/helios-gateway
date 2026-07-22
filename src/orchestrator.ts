@@ -12,7 +12,7 @@ import { runTools } from './tools/tool-runner.js';
 import { chatwootClient } from './chatwoot/client.js';
 import { debugTracker } from './debug/debug-tracker.js';
 import { hermesStatusTracker } from './server.js';
-import { normalizeProfilePatch } from './utils/normalizeProfilePatch.js';
+import { normalizeProfilePatch, resolveChatwootAlias } from './utils/normalizeProfilePatch.js';
 
 // Control de idempotencia en memoria para evitar flushes duplicados redundantes de la misma conversación en ventanas muy cortas de tiempo
 const lastProcessedFlushes = new Map<string, number>();
@@ -184,12 +184,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     const isProfileComplete = patientProfile?.profile_complete === true ||
       !!(patientProfile?.first_name && patientProfile?.last_name && patientProfile?.email && resolvedPhone);
 
-    // Resolver alias provisional de Chatwoot — misma fuente para payload y dashboard
-    // Prioridad: sender.name del webhook > meta.sender.name > nombre provisional en Supabase > fallback
-    const chatwootDisplayName = firstMsg.raw_payload?.sender?.name ||
-                                 firstMsg.raw_payload?.conversation?.meta?.sender?.name ||
-                                 (patientProfile?.name && patientProfile.name !== 'Paciente de Chatwoot' ? patientProfile.name : null) ||
-                                 'Contacto sin identificar';
+    // Resolver alias provisional de Chatwoot con función unificada
+    const chatwootDisplayName = resolveChatwootAlias(firstMsg.raw_payload, patientProfile?.name);
 
     const possibleFrustration = rawMessages.some(m => m.signals?.possible_frustration || false);
     const possibleEmergency = rawMessages.some(m => m.signals?.possible_emergency || false);

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
+import { resolveChatwootAlias } from '../utils/normalizeProfilePatch.js';
 
 export interface NormalizedMessage {
   tenant_id: string;
@@ -51,14 +52,8 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
     phone = `+${phone}`;
   }
 
-  // 2. Resolver el nombre del paciente con prioridades
-  const patient_name = contact.name || 
-                        body.meta?.sender?.name || 
-                        body.sender?.name || 
-                        conversation.meta?.sender?.name || 
-                        body.messages?.[0]?.sender?.name || 
-                        body.messages?.[0]?.sender_name || 
-                        null;
+  // 2. Resolver el nombre del paciente con prioridades unificadas
+  const patient_name = resolveChatwootAlias(body, contact?.name);
 
   // 1. Detección robusta de la dirección del mensaje
   let direction: 'incoming' | 'outgoing' = 'outgoing';

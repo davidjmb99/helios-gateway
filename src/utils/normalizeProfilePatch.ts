@@ -63,6 +63,27 @@ function isChatwootDefaultName(name: string | null | undefined): boolean {
   return CHATWOOT_DEFAULT_NAMES.includes(name.trim().toLowerCase());
 }
 
+/** Resuelve el alias de Chatwoot unificado para Dashboard y Payload */
+export function resolveChatwootAlias(rawPayload: any, persistedName?: string | null): string {
+  // 1. sender.name / meta.sender.name del webhook
+  const webhookName = rawPayload?.sender?.name || 
+                      rawPayload?.meta?.sender?.name ||
+                      rawPayload?.conversation?.meta?.sender?.name ||
+                      rawPayload?.messages?.[0]?.sender?.name;
+                      
+  if (webhookName && !isChatwootDefaultName(webhookName)) {
+    return webhookName;
+  }
+  
+  // 2. nombre provisional persistido
+  if (persistedName && !isChatwootDefaultName(persistedName)) {
+    return persistedName;
+  }
+  
+  // 3. Fallback
+  return 'Contacto sin identificar';
+}
+
 /** Validación básica de email */
 function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
