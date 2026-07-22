@@ -103,7 +103,10 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
   try {
     const response = await axios.post(url, requestBody, {
       headers,
-      timeout: config.HERMES_TIMEOUT_MS
+      timeout: config.HERMES_TIMEOUT_MS,
+      validateStatus: function (status) {
+        return (status >= 200 && status < 300) || status === 502;
+      }
     });
 
     console.log(`[Hermes Client] HERMES_CALL_SUCCESS: Respuesta recibida de Hermes.`);
@@ -133,7 +136,9 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
       } catch (e) {}
     }
 
-    if (!replyText) {
+    const isErrorRoute = responseData.route === 'error' || responseData.ok === false;
+    
+    if (!replyText && !isErrorRoute) {
       console.error('[Hermes Client] Estructura de respuesta inesperada:', JSON.stringify(responseData));
       throw new Error('HERMES_RESPONSE_EMPTY');
     }
@@ -159,7 +164,9 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
         status: 'collecting_profile',
         missing_fields: ['first_name', 'last_name', 'email']
       } : null),
-      tool_calls: responseData.tool_calls || []
+      tool_calls: responseData.tool_calls || [],
+      error_code: responseData.error_code,
+      recoverable: responseData.recoverable
     };
 
     // Validar con Zod

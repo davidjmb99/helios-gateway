@@ -49,7 +49,9 @@ export const HermesResponseSchema = z.object({
   decision: z.enum(['processed', 'identity_required', 'needs_handoff', 'error']).optional().default('processed'),
   response_sent: z.boolean().optional(),
   handoff_required: z.boolean().optional().default(false),
-  reason: z.string().optional()
+  reason: z.string().optional(),
+  error_code: z.string().optional(),
+  recoverable: z.boolean().optional()
 });
 
 export type HermesResponse = z.infer<typeof HermesResponseSchema>;
