@@ -30,9 +30,10 @@ async function claimUnprocessedMessages(maxConversations = 20) {
     });
 
     if (!error) {
-        // Filtrar por lease: no reclamar mensajes con processing_started_at reciente
+        // Filtrar por lease y retry_count
         const staleThreshold = new Date(Date.now() - RECOVERY_STALE_AFTER_MS);
         return (data || []).filter((claim: any) => {
+            if (claim.retry_count >= 5) return false;
             if (!claim.processing_started_at) return true;
             return new Date(claim.processing_started_at) < staleThreshold;
         });
@@ -48,6 +49,7 @@ async function claimUnprocessedMessages(maxConversations = 20) {
             .select('tenant_id, conversation_id, processing_started_at, next_retry_at, failed_at, retry_count')
             .is('processed_at', null)
             .is('failed_at', null)
+            .lt('retry_count', 5)
             .order('created_at', { ascending: true })
             .limit(200);
 

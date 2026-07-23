@@ -13,6 +13,7 @@ const ProfilePatchSchema = z.object({
 }).nullable().optional();
 
 export const HermesResponseSchema = z.object({
+  ok: z.boolean().optional(),
   route: z.string().optional(),
   intent: z.string().optional(),
   reply: z.string().nullable().optional(),

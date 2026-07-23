@@ -204,6 +204,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     const asksForHuman = rawMessages.some(m => m.signals?.asks_for_human || false);
     const asksForFinancing = rawMessages.some(m => m.signals?.asks_for_financing || false);
 
+    const retryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
+    const parentTraceId = retryCount > 0 ? rawMessages[0]?.trace_id : null;
+
     // 6. Preparar el payload limpio para Hermes con identidad real desde Supabase
     const payload = {
       event: "patient_message_ready",
@@ -259,7 +262,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       },
       metadata: {
         trace_id: traceId,
-        source: "helios_gateway"
+        source: "helios_gateway",
+        retry_count: retryCount,
+        parent_trace_id: parentTraceId
       }
     };
 
@@ -305,40 +310,28 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       }
     });
 
-    // Interpretar resultados del Adapter: si safe_to_send=false o error_code presente, NO publicar
+    // Interpretar resultados del Adapter: si safe_to_send=false o error_code presente o message_for_client vacío, NO publicar
     const replyText = hermesResponse.message_for_client || '';
     const safeToSend = hermesResponse.safe_to_send !== false;
     const hasErrorCode = !!hermesResponse.error_code;
+    const ok = hermesResponse.ok !== false;
 
-    // Si safe_to_send=false o error_code presente: operación no completada
-    if (!safeToSend || hasErrorCode) {
+    // Si hay algún error según la regla estricta: operación no completada
+    if (!ok || !safeToSend || hasErrorCode || typeof replyText !== 'string' || replyText.trim() === '') {
       const errorCode = hermesResponse.error_code || 'ADAPTER_UNSAFE_RESPONSE';
-      console.warn(`[Orchestrator] ADAPTER_RESPONSE_INCOMPLETE: safe_to_send=${safeToSend}, error_code=${errorCode}. No publicar en Chatwoot. TraceId: ${traceId}`);
+      console.warn(`[Orchestrator] ADAPTER_RESPONSE_INCOMPLETE: ok=${ok}, safe_to_send=${safeToSend}, error_code=${errorCode}. No publicar en Chatwoot. TraceId: ${traceId}`);
 
-      // Si es ACTIVE_STREAM_CONFLICT: recoverable, no handoff, programar retry
-      if (errorCode === 'ACTIVE_STREAM_CONFLICT') {
-        const ids = rawMessages.map(m => m.id);
-        const retryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
-        await bufferRepository.markRecoverableError(ids, errorCode, retryCount);
-        debugTracker.addAction(traceId, 'active_stream_conflict', true, { recoverable: true, requires_handoff: false });
-        await logsRepository.save({
-          trace_id: traceId, tenant_id: tenantId, conversation_id: conversationId, contact_id: contact_id,
-          event_type: 'ACTIVE_STREAM_CONFLICT',
-          metadata: { recoverable: true, requires_handoff: false, adapter_duration_ms: adapterDurationMs }
-        });
-        return; // No marcar processed, no publicar, no handoff
-      }
-
-      // Otro error no completado: dejar recuperable
+      // Dejar recuperable sin handoff técnico
       const ids = rawMessages.map(m => m.id);
       const retryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
       await bufferRepository.markRecoverableError(ids, errorCode, retryCount);
+      
       await logsRepository.save({
         trace_id: traceId, tenant_id: tenantId, conversation_id: conversationId, contact_id: contact_id,
         event_type: 'ADAPTER_RESPONSE_INCOMPLETE',
-        metadata: { error_code: errorCode, safe_to_send: safeToSend, adapter_duration_ms: adapterDurationMs }
+        metadata: { error_code: errorCode, safe_to_send: safeToSend, ok: ok, recoverable: hermesResponse.recoverable, adapter_duration_ms: adapterDurationMs }
       });
-      return; // No marcar processed, no publicar
+      return; // No marcar processed, no publicar, no handoff técnico
     }
 
     if (replyText && safeToSend) {
@@ -602,7 +595,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
 
     // 14. Marcar todos los mensajes procesados del buffer
     const ids = rawMessages.map(m => m.id);
-    await bufferRepository.markProcessed(ids);
+    await bufferRepository.markProcessed(ids, traceId);
     console.log(`[Orchestrator] Procesamiento exitoso para la conversación #${conversationId}.`);
 
     // Decidir visualmente el badge final de la conversación en base a la decisión/status que devuelva Hermes

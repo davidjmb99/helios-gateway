@@ -106,13 +106,19 @@ export const bufferRepository = {
         .eq('conversation_id', conversationId)
         .is('processed_at', null)
         .is('failed_at', null)
-        .is('processing_started_at', null)
+        .lt('retry_count', 5)
         .order('created_at', { ascending: true });
 
       if (selErr || !candidates || candidates.length === 0) return [];
 
-      // Filtrar next_retry_at en el futuro (en BD la RPC haría esto atómicamente)
       const eligible = candidates.filter(m => {
+        // Lease check
+        if (m.processing_started_at) {
+          const staleThreshold = new Date(Date.now() - 90000); // HERMES_TIMEOUT_MS (30000) + 60000
+          if (new Date(m.processing_started_at) >= staleThreshold) {
+            return false;
+          }
+        }
         if (!m.next_retry_at) return true;
         return new Date(m.next_retry_at) <= now;
       });
@@ -144,30 +150,46 @@ export const bufferRepository = {
     return (data || []).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   },
 
-  async markProcessed(ids: number[]): Promise<void> {
+  async markProcessed(ids: number[], response_idempotency_key?: string): Promise<void> {
     if (ids.length === 0) return;
+    const payload: any = { 
+      processed_at: new Date().toISOString(),
+      processing_started_at: null,
+      last_error_code: null,
+      next_retry_at: null,
+      retry_count: 0,
+      failed_at: null
+    };
+    if (response_idempotency_key) {
+      payload.response_idempotency_key = response_idempotency_key;
+    }
+    
     await supabase
       .from('helios_inbound_buffer')
-      .update({ 
-        processed_at: new Date().toISOString(),
-        processing_started_at: null,
-        last_error_code: null,
-        next_retry_at: null,
-        retry_count: 0,
-        failed_at: null
-      })
+      .update(payload)
       .in('id', ids);
   },
 
   async markRecoverableError(ids: number[], error_code: string, current_retry_count: number): Promise<void> {
     if (ids.length === 0) return;
     
-    // Backoff: 1:30s, 2:1m, 3:2m, 4:5m, 5:10m
-    let delayMs = 30000;
-    if (current_retry_count === 1) delayMs = 60000;
-    else if (current_retry_count === 2) delayMs = 120000;
-    else if (current_retry_count === 3) delayMs = 300000;
-    else if (current_retry_count >= 4) delayMs = 600000;
+    // Si ya alcanzó o superó el máximo de reintentos (5), marcar como fallido definitivo.
+    if (current_retry_count >= 5) {
+      await this.markFailed(ids, error_code);
+      return;
+    }
+    
+    // Backoff especificado por requerimiento: 
+    // retry 1: +1 minuto (60000ms)
+    // retry 2: +2 minutos (120000ms)
+    // retry 3: +5 minutos (300000ms)
+    // retry 4: +10 minutos (600000ms)
+    // retry 5: +15 minutos (900000ms)
+    let delayMs = 60000;
+    if (current_retry_count === 1) delayMs = 120000;
+    else if (current_retry_count === 2) delayMs = 300000;
+    else if (current_retry_count === 3) delayMs = 600000;
+    else if (current_retry_count >= 4) delayMs = 900000;
 
     const nextRetry = process.env.NODE_ENV === 'test'
       ? null

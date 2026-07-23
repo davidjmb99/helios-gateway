@@ -151,6 +151,7 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
 
     // Formatear respuesta al esquema HermesResponse esperado por el orquestador
     const normalizedResponse: HermesResponse = {
+      ok: responseData.ok,
       route: responseData.route || (isNew ? 'collect_profile' : 'faq'),
       intent: responseData.intent || (isNew ? 'collect_patient_identity' : 'general_query'),
       decision: responseData.decision || (isNew ? 'identity_required' : 'processed'),
