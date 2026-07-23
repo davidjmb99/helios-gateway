@@ -1,57 +1,67 @@
-CREATE OR REPLACE FUNCTION public.claim_unprocessed_messages(p_max_conversations integer)
+CREATE OR REPLACE FUNCTION public.claim_unprocessed_messages(p_max_conversations integer DEFAULT 20)
 RETURNS TABLE (
     tenant_id text,
     conversation_id text,
-    message_ids bigint[],
-    retry_count integer,
-    processing_started_at timestamp with time zone,
-    created_at timestamp with time zone
+    message_ids bigint[]
 )
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO 'pg_catalog', 'public'
 AS $function
+DECLARE
+    v_actual_limit integer;
+    v_now timestamp with time zone := NOW();
 BEGIN
+    -- Sanitización del límite
+    v_actual_limit := LEAST(GREATEST(p_max_conversations, 1), 100);
+
     RETURN QUERY
-    WITH candidates AS (
+    WITH eligible_conversations AS (
         SELECT 
-            b.tenant_id, 
-            b.conversation_id, 
-            array_agg(b.id ORDER BY b.created_at) as message_ids,
-            MAX(COALESCE(b.retry_count, 0)) as retry_count,
-            MIN(b.processing_started_at) as processing_started_at,
-            MIN(b.created_at) as created_at
+            b.tenant_id,
+            b.conversation_id
         FROM public.helios_inbound_buffer b
         WHERE b.processed_at IS NULL
           AND b.failed_at IS NULL
           AND COALESCE(b.retry_count, 0) < 5
-          AND (b.next_retry_at IS NULL OR b.next_retry_at <= NOW())
-          AND (b.processing_started_at IS NULL OR b.processing_started_at <= NOW() - INTERVAL '3 minutes')
-          AND b.created_at <= NOW() - INTERVAL '10 seconds'
+          AND (b.next_retry_at IS NULL OR b.next_retry_at <= v_now)
+          AND (b.processing_started_at IS NULL OR b.processing_started_at <= v_now - INTERVAL '3 minutes')
+          AND b.created_at <= v_now - INTERVAL '10 seconds'
         GROUP BY b.tenant_id, b.conversation_id
         ORDER BY MIN(b.created_at) ASC
-        LIMIT p_max_conversations
+        LIMIT v_actual_limit
     ),
-    updated AS (
-        UPDATE public.helios_inbound_buffer t
-        SET processing_started_at = NOW()
-        FROM candidates c
-        WHERE t.tenant_id = c.tenant_id
-          AND t.conversation_id = c.conversation_id
-          AND t.processed_at IS NULL
-          AND t.failed_at IS NULL
-          AND COALESCE(t.retry_count, 0) < 5
-          AND (t.next_retry_at IS NULL OR t.next_retry_at <= NOW())
-          AND (t.processing_started_at IS NULL OR t.processing_started_at <= NOW() - INTERVAL '3 minutes')
-          AND t.created_at <= NOW() - INTERVAL '10 seconds'
-        RETURNING t.tenant_id, t.conversation_id, t.processing_started_at
+    rows_to_claim AS (
+        SELECT b.id, b.tenant_id, b.conversation_id
+        FROM public.helios_inbound_buffer b
+        INNER JOIN eligible_conversations e 
+            ON b.tenant_id = e.tenant_id AND b.conversation_id = e.conversation_id
+        WHERE b.processed_at IS NULL
+          AND b.failed_at IS NULL
+          AND COALESCE(b.retry_count, 0) < 5
+          AND (b.next_retry_at IS NULL OR b.next_retry_at <= v_now)
+          AND (b.processing_started_at IS NULL OR b.processing_started_at <= v_now - INTERVAL '3 minutes')
+          AND b.created_at <= v_now - INTERVAL '10 seconds'
+        FOR UPDATE OF b SKIP LOCKED
+    ),
+    updated_rows AS (
+        UPDATE public.helios_inbound_buffer u
+        SET processing_started_at = v_now
+        FROM rows_to_claim r
+        WHERE u.id = r.id
+          AND u.processed_at IS NULL
+          AND u.failed_at IS NULL
+          AND COALESCE(u.retry_count, 0) < 5
+        RETURNING r.tenant_id, r.conversation_id, r.id
     )
-    SELECT DISTINCT ON (c.tenant_id, c.conversation_id)
-        c.tenant_id, 
-        c.conversation_id, 
-        c.message_ids,
-        c.retry_count,
-        u.processing_started_at,
-        c.created_at
-    FROM candidates c
-    JOIN updated u ON c.tenant_id = u.tenant_id AND c.conversation_id = u.conversation_id;
+    SELECT 
+        u.tenant_id,
+        u.conversation_id,
+        array_agg(u.id ORDER BY u.id ASC) as message_ids
+    FROM updated_rows u
+    GROUP BY u.tenant_id, u.conversation_id;
 END;
 $function;
+
+REVOKE ALL ON FUNCTION public.claim_unprocessed_messages(integer) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.claim_unprocessed_messages(integer) TO service_role;
