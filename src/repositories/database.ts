@@ -1,5 +1,6 @@
 import { supabase } from '../supabase/client.js';
 import { NormalizedMessage } from '../chatwoot/normalizer.js';
+import { config } from '../config.js';
 
 // --- IDEMPOTENCIA ---
 export const idempotencyRepository = {
@@ -114,7 +115,8 @@ export const bufferRepository = {
       const eligible = candidates.filter(m => {
         // Lease check
         if (m.processing_started_at) {
-          const staleThreshold = new Date(Date.now() - 90000); // HERMES_TIMEOUT_MS (30000) + 60000
+          const RECOVERY_STALE_AFTER_MS = Math.max((config.HERMES_TIMEOUT_MS || 30000) + 60000, 180000);
+          const staleThreshold = new Date(Date.now() - RECOVERY_STALE_AFTER_MS);
           if (new Date(m.processing_started_at) >= staleThreshold) {
             return false;
           }
