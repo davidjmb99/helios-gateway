@@ -23,63 +23,115 @@ export const recoveryMetrics = {
     recovery_stale_after_ms: RECOVERY_STALE_AFTER_MS
 };
 
-async function claimUnprocessedMessages(maxConversations = 20) {
-    // Intentar la RPC atómica primero
+const MAX_RECOVERY_RETRIES = 5;
+
+async function claimViaRpc(maxConversations: number) {
     const { data, error } = await supabase.rpc('claim_unprocessed_messages', {
         p_max_conversations: maxConversations
     });
+    if (error) throw error;
+    
+    // Filtros estrictos posteriores a la RPC
+    const staleThreshold = new Date(Date.now() - RECOVERY_STALE_AFTER_MS);
+    return (data || []).filter((claim: any) => {
+        if (claim.retry_count >= MAX_RECOVERY_RETRIES) return false;
+        if (claim.failed_at) return false;
+        if (claim.processed_at) return false;
+        if (claim.processing_started_at && new Date(claim.processing_started_at) > staleThreshold) return false;
+        return true;
+    });
+}
 
-    if (!error) {
-        // Filtrar por lease y retry_count
-        const staleThreshold = new Date(Date.now() - RECOVERY_STALE_AFTER_MS);
-        return (data || []).filter((claim: any) => {
-            if (claim.retry_count >= 5) return false;
-            if (!claim.processing_started_at) return true;
-            return new Date(claim.processing_started_at) < staleThreshold;
-        });
-    }
+async function claimViaFallback(maxConversations: number) {
+    const staleThreshold = new Date(Date.now() - RECOVERY_STALE_AFTER_MS);
+    const tenSecondsAgo = new Date(Date.now() - 10000).toISOString();
+    
+    const { data: candidates, error: selErr } = await supabase
+        .from('helios_inbound_buffer')
+        .select('tenant_id, conversation_id, processing_started_at, next_retry_at, failed_at, retry_count, created_at')
+        .is('processed_at', null)
+        .is('failed_at', null)
+        .lt('retry_count', MAX_RECOVERY_RETRIES)
+        .lte('created_at', tenSecondsAgo)
+        .order('created_at', { ascending: true })
+        .limit(200);
 
-    // Fallback si la RPC no está disponible (PGRST202)
-    if (error.code === 'PGRST202') {
-        console.warn('[Recovery Worker] RPC claim_unprocessed_messages no disponible, usando fallback.');
-        const staleThreshold = new Date(Date.now() - RECOVERY_STALE_AFTER_MS);
-        
-        const { data: candidates, error: selErr } = await supabase
-            .from('helios_inbound_buffer')
-            .select('tenant_id, conversation_id, processing_started_at, next_retry_at, failed_at, retry_count')
-            .is('processed_at', null)
-            .is('failed_at', null)
-            .lt('retry_count', 5)
-            .order('created_at', { ascending: true })
-            .limit(200);
+    if (selErr || !candidates || candidates.length === 0) return [];
 
-        if (selErr || !candidates || candidates.length === 0) return [];
+    const now = new Date();
+    const seen = new Map<string, any>();
+    for (const m of candidates) {
+        const key = `${m.tenant_id}:${m.conversation_id}`;
+        if (seen.has(key)) continue;
 
-        const now = new Date();
-        // Agrupar por conversación, respetando lease y next_retry_at
-        const seen = new Map<string, any>();
-        for (const m of candidates) {
-            const key = `${m.tenant_id}:${m.conversation_id}`;
-            if (seen.has(key)) continue;
-
-            // Lease check: si processing_started_at es reciente, NO reclamar
-            if (m.processing_started_at && new Date(m.processing_started_at) >= staleThreshold) {
-                continue;
-            }
-
-            // next_retry_at check: no reclamar antes de tiempo
-            if (m.next_retry_at && new Date(m.next_retry_at) > now) {
-                continue;
-            }
-
-            seen.set(key, { tenant_id: m.tenant_id, conversation_id: m.conversation_id });
-            if (seen.size >= maxConversations) break;
+        if (m.processing_started_at && new Date(m.processing_started_at) > staleThreshold) {
+            continue;
         }
 
-        return Array.from(seen.values());
+        if (m.next_retry_at && new Date(m.next_retry_at) > now) {
+            continue;
+        }
+
+        seen.set(key, { 
+            tenant_id: m.tenant_id, 
+            conversation_id: m.conversation_id,
+            retry_count: m.retry_count,
+            processing_started_at: m.processing_started_at
+        });
+        if (seen.size >= maxConversations) break;
     }
 
-    throw error;
+    return Array.from(seen.values());
+}
+
+async function claimUnprocessedMessages(maxConversations = 20) {
+    let claims: any[] = [];
+    let claimSource: "rpc" | "fallback" = "rpc";
+    let rpcSucceeded = false;
+    let fallbackReason: string | null = null;
+    let rpcRowCount = 0;
+
+    try {
+        claims = await claimViaRpc(maxConversations);
+        rpcSucceeded = true;
+        rpcRowCount = claims.length;
+    } catch (error: any) {
+        rpcSucceeded = false;
+        fallbackReason = error.message;
+        claimSource = "fallback";
+        console.warn(`[Recovery Worker] RPC falló: ${error.message}. Ejecutando fallback.`);
+        claims = await claimViaFallback(maxConversations);
+    }
+
+    console.log(JSON.stringify({
+        event: "recovery_claim_attempt",
+        claim_source: claimSource,
+        rpc_succeeded: rpcSucceeded,
+        rpc_row_count: rpcRowCount,
+        fallback_reason: fallbackReason,
+        stale_after_ms: RECOVERY_STALE_AFTER_MS,
+        max_retries: MAX_RECOVERY_RETRIES
+    }));
+
+    if (claims.length > 0) {
+        for (const claim of claims) {
+            const ageMs = claim.processing_started_at 
+                ? Date.now() - new Date(claim.processing_started_at).getTime()
+                : 0;
+
+            console.log(JSON.stringify({
+                event: "recovery_message_claimed",
+                claim_source: claimSource,
+                tenant_id: claim.tenant_id,
+                conversation_id: claim.conversation_id,
+                message_ids: claim.message_ids || [],
+                retry_count: claim.retry_count || 0,
+                processing_age_ms: ageMs
+            }));
+        }
+    }
+
+    return claims;
 }
 
 async function runRecoveryTick() {
