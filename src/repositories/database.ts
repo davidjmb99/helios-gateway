@@ -1,6 +1,7 @@
 import { supabase } from '../supabase/client.js';
 import { NormalizedMessage } from '../chatwoot/normalizer.js';
 import { config } from '../config.js';
+import { sanitizeForLog } from '../utils/sanitizeForLog.js';
 
 // --- IDEMPOTENCIA ---
 export const idempotencyRepository = {
@@ -344,10 +345,15 @@ export const logsRepository = {
     metadata?: any;
     error?: string;
   }): Promise<void> {
+    const safeLog = {
+      ...log,
+      metadata: sanitizeForLog(log.metadata || {}),
+      error: log.error ? String(sanitizeForLog(log.error, 'body')) : log.error
+    };
     await supabase
       .from('helios_gateway_logs')
       .insert({
-        ...log,
+        ...safeLog,
         created_at: new Date().toISOString()
       });
   }

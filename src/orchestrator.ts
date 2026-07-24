@@ -13,6 +13,8 @@ import { chatwootClient } from './chatwoot/client.js';
 import { debugTracker } from './debug/debug-tracker.js';
 import { hermesStatusTracker } from './server.js';
 import { normalizeProfilePatch, resolveChatwootAlias } from './utils/normalizeProfilePatch.js';
+import { resolveTenantContextByTenantId } from './tenants/context.js';
+import { maskPhoneForLog } from './utils/sanitizeForLog.js';
 
 // Control de idempotencia en memoria para evitar flushes duplicados redundantes de la misma conversación en ventanas muy cortas de tiempo
 const lastProcessedFlushes = new Map<string, number>();
@@ -62,6 +64,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
   let inboxId = '';
 
   try {
+    const tenantContext = resolveTenantContextByTenantId(tenantId);
     // 1. Obtener mensajes no procesados de esta conversación en el buffer correspondientes a la ráfaga (traceId)
     rawMessages = await bufferRepository.getUnprocessed(tenantId, conversationId, traceId);
     if (rawMessages.length === 0) {
@@ -210,8 +213,10 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     // 6. Preparar el payload limpio para Hermes con identidad real desde Supabase
     const payload = {
       event: "patient_message_ready",
+      account_id: tenantContext.account_id,
       tenant_id: tenantId,
-      clinic_id: config.CLINIC_ID || "coi_demo",
+      clinic_id: tenantContext.clinic_id,
+      hermes_profile: tenantContext.hermes_profile,
       channel: "chatwoot",
       conversation: {
         conversation_id: conversationId,
@@ -272,7 +277,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     debugTracker.updateEvent(traceId, { decision: 'sent_to_hermes', hermesRequest: payload });
     debugTracker.addTimelineStep(traceId, 'hermes_request', payload);
 
-    console.log(`[Orchestrator] HERMES_CALL_STARTED: Llamando a Hermes. TraceId: ${traceId}, Phone: ${phone}`);
+    console.log(`[Orchestrator] HERMES_CALL_STARTED: Llamando a Hermes. TraceId: ${traceId}, Phone: ${maskPhoneForLog(resolvedPhone)}`);
     const adapterStartedAt = Date.now();
     await logsRepository.save({
       trace_id: traceId,
@@ -324,7 +329,11 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       // Dejar recuperable sin handoff técnico
       const ids = rawMessages.map(m => m.id);
       const retryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
-      await bufferRepository.markRecoverableError(ids, errorCode, retryCount);
+      if (hermesResponse.recoverable === false) {
+        await bufferRepository.markFailed(ids, errorCode);
+      } else {
+        await bufferRepository.markRecoverableError(ids, errorCode, retryCount);
+      }
       
       await logsRepository.save({
         trace_id: traceId, tenant_id: tenantId, conversation_id: conversationId, contact_id: contact_id,

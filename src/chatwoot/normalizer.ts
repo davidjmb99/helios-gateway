@@ -1,9 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
 import { resolveChatwootAlias } from '../utils/normalizeProfilePatch.js';
+import { resolveTenantContext } from '../tenants/context.js';
 
 export interface NormalizedMessage {
+  account_id: string;
   tenant_id: string;
+  clinic_id: string;
+  hermes_profile: string;
   provider: string;
   channel: string;
   event: string;
@@ -35,7 +39,9 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
   const conversation = body.conversation || {};
   const contact = body.sender || body.contact || {};
   
-  const tenant_id = String(body.account?.id || '1');
+  const tenantContext = resolveTenantContext(body.account?.id);
+  const account_id = tenantContext.account_id;
+  const tenant_id = tenantContext.tenant_id;
   const conversation_id = String(conversation.id || body.conversation_id || '');
   const contact_id = String(contact.id || conversation.contact_inbox?.contact_id || body.contact_id || body.messages?.[0]?.sender_id || '');
   const inbox_id = String(conversation.inbox_id || body.inbox_id || '');
@@ -134,7 +140,10 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
   const trace_id = body.trace_id || randomUUID();
 
   return {
+    account_id,
     tenant_id,
+    clinic_id: tenantContext.clinic_id,
+    hermes_profile: tenantContext.hermes_profile,
     provider: 'chatwoot',
     channel: body.meta?.channel || 'whatsapp',
     event,

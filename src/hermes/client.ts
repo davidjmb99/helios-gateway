@@ -4,11 +4,18 @@ import { HermesResponse, HermesResponseSchema } from './schema.js';
 import { debugTracker } from '../debug/debug-tracker.js';
 
 export async function callHermes(payload: any, traceId: string): Promise<HermesResponse> {
-  const tenantId = payload.metadata?.tenant_id || 'unknown';
-  const conversationId = payload.metadata?.conversation_id || 'unknown';
-  const contactId = payload.metadata?.contact_id || 'unknown';
-  const inboxId = payload.metadata?.inbox_id || 'unknown';
+  const accountId = payload.account_id || '';
+  const tenantId = payload.tenant_id || '';
+  const clinicId = payload.clinic_id || '';
+  const hermesProfile = payload.hermes_profile || '';
+  const conversationId = payload.conversation?.conversation_id || '';
+  const contactId = payload.conversation?.contact_id || '';
+  const inboxId = payload.conversation?.inbox_id || '';
   const phone = payload.patient?.phone || '';
+
+  if (!accountId || !tenantId || !clinicId || !hermesProfile) {
+    throw new Error('TENANT_NOT_CONFIGURED');
+  }
 
   // 1. Caso de Hermes Deshabilitado
   if (!config.HERMES_ENABLED) {
@@ -64,7 +71,10 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
       ],
       metadata: {
         trace_id: traceId,
+        account_id: accountId,
         tenant_id: tenantId,
+        clinic_id: clinicId,
+        hermes_profile: hermesProfile,
         conversation_id: conversationId,
         contact_id: contactId,
         phone: phone,
@@ -83,8 +93,8 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
   // Headers recomendados
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'x-hermes-profile': config.HERMES_PROFILE,
-    'x-hermes-session-key': `${tenantId}:${conversationId}:${contactId}`,
+    'x-hermes-profile': hermesProfile,
+    'x-hermes-session-key': `${tenantId}:${hermesProfile}:${conversationId}:${contactId}`,
     'x-trace-id': traceId
   };
 
@@ -105,7 +115,7 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
       headers,
       timeout: config.HERMES_TIMEOUT_MS,
       validateStatus: function (status) {
-        return (status >= 200 && status < 300) || status === 502;
+        return (status >= 200 && status < 300) || status === 422 || status === 502;
       }
     });
 
@@ -139,7 +149,10 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
     const isErrorRoute = responseData.route === 'error' || responseData.ok === false;
     
     if (!replyText && !isErrorRoute) {
-      console.error('[Hermes Client] Estructura de respuesta inesperada:', JSON.stringify(responseData));
+      console.error('[Hermes Client] Estructura de respuesta inesperada:', {
+        response_keys: typeof responseData === 'object' ? Object.keys(responseData) : [],
+        trace_id: traceId
+      });
       throw new Error('HERMES_RESPONSE_EMPTY');
     }
 

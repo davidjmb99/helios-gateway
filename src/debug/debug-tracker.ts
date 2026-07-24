@@ -1,3 +1,5 @@
+import { sanitizeForLog } from '../utils/sanitizeForLog.js';
+
 export interface DebugStep {
   timestamp: string;
   type: 'webhook_received' | 'normalized' | 'buffer_waiting' | 'buffer_consolidated' | 'hermes_request' | 'hermes_response' | 'action_executed' | 'error';
@@ -27,22 +29,23 @@ class DebugTracker {
   private maxEvents = 100; // Guardamos hasta 100 para un buen historial
 
   public addEvent(event: Omit<DebugEvent, 'actionsExecuted' | 'timeline'>) {
+    const safeEvent = sanitizeForLog(event) as Omit<DebugEvent, 'actionsExecuted' | 'timeline'>;
     const newEvent: DebugEvent = {
-      ...event,
+      ...safeEvent,
       actionsExecuted: [],
       timeline: [
         {
           timestamp: new Date().toISOString(),
           type: 'webhook_received',
-          data: { text: event.text, decision: event.decision }
+          data: { text: safeEvent.text, decision: safeEvent.decision }
         }
       ]
     };
     
     // Evitar duplicados por trace_id
-    const index = this.events.findIndex(e => e.trace_id === event.trace_id);
+    const index = this.events.findIndex(e => e.trace_id === safeEvent.trace_id);
     if (index !== -1) {
-      this.events[index] = { ...this.events[index], ...event };
+      this.events[index] = { ...this.events[index], ...safeEvent };
       return;
     }
 
@@ -55,7 +58,7 @@ class DebugTracker {
   public updateEvent(traceId: string, updates: Partial<DebugEvent>) {
     const event = this.events.find(e => e.trace_id === traceId);
     if (event) {
-      Object.assign(event, updates);
+      Object.assign(event, sanitizeForLog(updates));
     }
   }
 
@@ -65,7 +68,7 @@ class DebugTracker {
       event.timeline.push({
         timestamp: new Date().toISOString(),
         type,
-        data
+        data: sanitizeForLog(data)
       });
     }
   }
@@ -76,13 +79,13 @@ class DebugTracker {
       event.actionsExecuted.push({
         action,
         timestamp: new Date().toISOString(),
-        data,
+        data: sanitizeForLog(data),
         success
       });
       event.timeline.push({
         timestamp: new Date().toISOString(),
         type: 'action_executed',
-        data: { action, success, data }
+        data: { action, success, data: sanitizeForLog(data) }
       });
     }
   }

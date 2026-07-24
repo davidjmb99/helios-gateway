@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { resolveChatwootAlias } from './utils/normalizeProfilePatch.js';
 import { config } from './config.js';
 import { normalizeChatwootPayload } from './chatwoot/normalizer.js';
+import { TenantContextError, validateWebhookTenantRoute } from './tenants/context.js';
 import { idempotencyRepository, stateRepository, logsRepository, patientRepository } from './repositories/database.js';
 import { supabase } from './supabase/client.js';
 import { bufferService } from './buffer/buffer-service.js';
@@ -305,10 +306,8 @@ server.get('/admin/contacts', async (request, reply) => {
 async function handleChatwootWebhook(payload: any, urlTenantId: string | undefined, log: any) {
   const normalized = normalizeChatwootPayload(payload);
   
-  // Si vino el tenant_id en la ruta del webhook, forzarlo en el normalized
-  if (urlTenantId) {
-    normalized.tenant_id = urlTenantId;
-  }
+  // La ruta nunca puede sobrescribir el tenant resuelto desde account_id.
+  validateWebhookTenantRoute(normalized, urlTenantId);
 
   // Registrar evento inicial en el tracker de depuración
   debugTracker.addEvent({
@@ -454,6 +453,17 @@ server.post('/webhooks/chatwoot', async (request, reply) => {
     }
     return reply.status(200).send(result);
   } catch (error: any) {
+    if (error instanceof TenantContextError) {
+      server.log.warn({
+        error_code: error.code,
+        account_id: error.account_id
+      }, 'Webhook rechazado por contexto tenant');
+      return reply.status(422).send({
+        ok: false,
+        error_code: error.code,
+        recoverable: false
+      });
+    }
     server.log.error(error, 'Error procesando webhook de Chatwoot');
     return reply.status(500).send({ ok: false, error: error.message });
   }
@@ -470,6 +480,17 @@ server.post('/webhooks/chatwoot/:tenant_id', async (request, reply) => {
     }
     return reply.status(200).send(result);
   } catch (error: any) {
+    if (error instanceof TenantContextError) {
+      server.log.warn({
+        error_code: error.code,
+        account_id: error.account_id
+      }, 'Webhook rechazado por contexto tenant');
+      return reply.status(422).send({
+        ok: false,
+        error_code: error.code,
+        recoverable: false
+      });
+    }
     server.log.error(error, 'Error procesando webhook de Chatwoot');
     return reply.status(500).send({ ok: false, error: error.message });
   }
