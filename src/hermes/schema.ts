@@ -16,6 +16,7 @@ const ProfilePatchSchema = z.object({
 }).nullable().optional();
 
 export const HermesResponseSchema = z.object({
+  request_key: NullableStringSchema,
   ok: z.boolean().optional(),
   route: z.string().optional(),
   intent: z.string().optional(),

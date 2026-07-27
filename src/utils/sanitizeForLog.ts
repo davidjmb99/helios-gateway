@@ -10,6 +10,7 @@ const REDACTED_KEYS = new Set([
   'name',
   'patient_name',
   'text',
+  'message',
   'body',
   'content',
   'reply',

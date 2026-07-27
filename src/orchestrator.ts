@@ -9,12 +9,13 @@ import {
 } from './repositories/database.js';
 import { callHermes } from './hermes/client.js';
 import { runTools } from './tools/tool-runner.js';
-import { chatwootClient } from './chatwoot/client.js';
 import { debugTracker } from './debug/debug-tracker.js';
-import { hermesStatusTracker } from './server.js';
 import { normalizeProfilePatch, resolveChatwootAlias } from './utils/normalizeProfilePatch.js';
 import { resolveTenantContextByTenantId } from './tenants/context.js';
 import { maskPhoneForLog } from './utils/sanitizeForLog.js';
+import { createBatchIdentity, createOutboxIdentity } from './durable/identity.js';
+import { outboxRepository, processingBatchRepository } from './repositories/durable.js';
+import { recordComponentError, recordComponentSuccess } from './services/component-health.js';
 
 // Control de idempotencia en memoria para evitar flushes duplicados redundantes de la misma conversación en ventanas muy cortas de tiempo
 const lastProcessedFlushes = new Map<string, number>();
@@ -62,11 +63,13 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
   let rawMessages: any[] = [];
   let contact_id = '';
   let inboxId = '';
+  let durableBatchKey = '';
+  let durableBatchClaimed = false;
 
   try {
     const tenantContext = resolveTenantContextByTenantId(tenantId);
     // 1. Obtener mensajes no procesados de esta conversación en el buffer correspondientes a la ráfaga (traceId)
-    rawMessages = await bufferRepository.getUnprocessed(tenantId, conversationId, traceId);
+    rawMessages = await bufferRepository.claimConversationMessages(tenantId, conversationId);
     if (rawMessages.length === 0) {
       console.log(`[Orchestrator] No hay mensajes pendientes en el buffer para la conversación #${conversationId}.`);
       debugTracker.addTimelineStep(traceId, 'error', { message: 'No hay mensajes en buffer para consolidar.' });
@@ -104,6 +107,48 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     // 3. Consolidar el texto de todos los mensajes
     const sortedMessages = rawMessages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const consolidatedText = sortedMessages.map(m => m.body).join('\n');
+
+    const batchIdentity = createBatchIdentity({
+      tenant_id: tenantId,
+      account_id: tenantContext.account_id,
+      conversation_id: conversationId,
+      contact_id,
+      source_message_ids: sortedMessages.map(message => message.message_id)
+    });
+    durableBatchKey = batchIdentity.batch_key;
+    const batch = await processingBatchRepository.createOrGet({
+      ...batchIdentity,
+      tenant_id: tenantId,
+      account_id: tenantContext.account_id,
+      clinic_id: tenantContext.clinic_id,
+      hermes_profile: tenantContext.hermes_profile,
+      conversation_id: conversationId,
+      contact_id,
+      adapter_request_key: null
+    }, traceId);
+
+    if (batch.ai_status === 'completed' || batch.delivery_status === 'sent') {
+      await bufferRepository.markProcessed(rawMessages.map(message => message.id), batch.batch_key);
+      console.log(JSON.stringify({
+        event: 'processing_batch_deduplicated',
+        source_message_count: batchIdentity.source_message_count
+      }));
+      return;
+    }
+
+    const claimedBatch = await processingBatchRepository.claimAi(
+      batchIdentity.batch_key,
+      tenantId,
+      traceId
+    );
+    if (!claimedBatch) {
+      console.log(JSON.stringify({
+        event: 'processing_batch_claim_skipped',
+        reason: 'active_or_terminal'
+      }));
+      return;
+    }
+    durableBatchClaimed = true;
 
     // 4. Consultar en Supabase el estado, perfil de paciente y caso de financiamiento EN PARALELO
     const [rawState, patientProfile, activeFinancing] = await Promise.all([
@@ -269,7 +314,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         trace_id: traceId,
         source: "helios_gateway",
         retry_count: retryCount,
-        parent_trace_id: parentTraceId
+        parent_trace_id: parentTraceId,
+        batch_key: durableBatchKey,
+        source_message_ids_hash: batchIdentity.source_message_ids_hash
       }
     };
 
@@ -292,7 +339,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     const hermesResponse = await callHermes(payload, traceId);
     const adapterFinishedAt = Date.now();
     const adapterDurationMs = adapterFinishedAt - adapterStartedAt;
-    hermesStatusTracker.lastCallFailed = false;
+    recordComponentSuccess('adapter', adapterDurationMs);
+    recordComponentSuccess('hermes', adapterDurationMs);
 
     debugTracker.updateEvent(traceId, { hermesResponse });
     debugTracker.addTimelineStep(traceId, 'hermes_response', hermesResponse);
@@ -340,76 +388,67 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         event_type: 'ADAPTER_RESPONSE_INCOMPLETE',
         metadata: { error_code: errorCode, safe_to_send: safeToSend, ok: ok, recoverable: hermesResponse.recoverable, adapter_duration_ms: adapterDurationMs }
       });
+      if (durableBatchClaimed) {
+        await processingBatchRepository.markAiFailed(
+          durableBatchKey,
+          tenantId,
+          traceId,
+          errorCode,
+          hermesResponse.recoverable === false
+        );
+      }
       return; // No marcar processed, no publicar, no handoff técnico
     }
 
     if (replyText && safeToSend) {
-      try {
-        // Idempotency check para Chatwoot message
-        // Buscamos si ya se envi en la db un event_type 'CHATWOOT_REPLY_SENT' para este trace_id
-        // Para simplificar, usaremos un check en memoria con el traceId como response_idempotency_key
-        const cacheKey = `chatwoot_reply_${traceId}`;
-        if (lastProcessedFlushes.has(cacheKey)) {
-            console.log(`[Orchestrator] Idempotency check: Chatwoot message ya enviado para trace ${traceId}`);
-        } else {
-            lastProcessedFlushes.set(cacheKey, Date.now());
-            const chatwootSendStartedAt = Date.now();
-            const messageObj = await chatwootClient.sendMessage(conversationId, replyText);
-            const chatwootSendFinishedAt = Date.now();
-            const chatwootSendDurationMs = chatwootSendFinishedAt - chatwootSendStartedAt;
-            
-            for (const msg of rawMessages) {
-              if (msg.trace_id) {
-                debugTracker.addAction(msg.trace_id, 'reply_sent_to_chatwoot', true, { 
-                  reply: replyText,
-                  delivery_mode: 'unified_buffer_consolidated_reply',
-                  messages_consolidated_count: rawMessages.length,
-                  chatwoot_send_duration_ms: chatwootSendDurationMs
-                });
-              }
-            }
-
-            console.log(`[Orchestrator] CHATWOOT_REPLY_SENT: Conv #${conversationId}, chatwoot_send_duration_ms: ${chatwootSendDurationMs}`);
-
-            await logsRepository.save({
-              trace_id: traceId,
-              tenant_id: tenantId,
-              conversation_id: conversationId,
-              contact_id: contact_id,
-              event_type: 'CHATWOOT_REPLY_SENT',
-              metadata: {
-                reply: replyText,
-                chatwoot_message_id: messageObj?.id,
-                adapter_duration_ms: adapterDurationMs,
-                chatwoot_send_started_at: new Date(chatwootSendStartedAt).toISOString(),
-                chatwoot_send_finished_at: new Date(chatwootSendFinishedAt).toISOString(),
-                chatwoot_send_duration_ms: chatwootSendDurationMs
-              }
-            });
+      const outboxIdentity = createOutboxIdentity({
+        tenant_id: tenantId,
+        account_id: tenantContext.account_id,
+        conversation_id: conversationId,
+        contact_id,
+        source_message_ids_hash: batchIdentity.source_message_ids_hash,
+        content: replyText
+      });
+      const adapterRequestKey = (hermesResponse as any).request_key || durableBatchKey;
+      await outboxRepository.create({
+        ...outboxIdentity,
+        batch_key: durableBatchKey,
+        tenant_id: tenantId,
+        account_id: tenantContext.account_id,
+        conversation_id: conversationId,
+        contact_id,
+        source_message_ids_hash: batchIdentity.source_message_ids_hash,
+        adapter_request_key: adapterRequestKey,
+        content: replyText
+      }, traceId);
+      await processingBatchRepository.markAiCompleted(
+        durableBatchKey,
+        tenantId,
+        traceId,
+        outboxIdentity.outbox_key,
+        adapterRequestKey
+      );
+      for (const msg of rawMessages) {
+        if (msg.trace_id) {
+          debugTracker.addAction(msg.trace_id, 'reply_queued_for_chatwoot', true, {
+            delivery_mode: 'durable_outbox',
+            messages_consolidated_count: rawMessages.length
+          });
         }
-
-      } catch (chatwootError: any) {
-        console.error(`[Orchestrator] CHATWOOT_REPLY_FAILED: Error enviando respuesta a Chatwoot para Conv #${conversationId}:`, chatwootError.message);
-        
-        for (const msg of rawMessages) {
-          if (msg.trace_id) {
-            debugTracker.addAction(msg.trace_id, 'reply_sent_to_chatwoot', false, { error: chatwootError.message });
-          }
-        }
-
-        await logsRepository.save({
-          trace_id: traceId,
-          tenant_id: tenantId,
-          conversation_id: conversationId,
-          contact_id: contact_id,
-          event_type: 'CHATWOOT_REPLY_FAILED',
-          error: chatwootError.message,
-          metadata: { reply: replyText }
-        });
-
-        // Lanzar el error para que la conversación NO se marque como procesada si Chatwoot falló
-        throw chatwootError;
       }
+      await logsRepository.save({
+        trace_id: traceId,
+        tenant_id: tenantId,
+        conversation_id: conversationId,
+        contact_id,
+        event_type: 'CHATWOOT_OUTBOX_CREATED',
+        metadata: {
+          batch_key: durableBatchKey,
+          outbox_key: outboxIdentity.outbox_key,
+          adapter_request_key: adapterRequestKey,
+          message_count: rawMessages.length
+        }
+      });
     }
 
     // Post-procesamiento: estado, perfil y herramientas (ya no bloquea la respuesta al paciente)
@@ -636,8 +675,12 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       debugTracker.addTimelineStep(traceId, 'error', { message: error.message });
     }
     
-    // Indicar que la última llamada falló
-    hermesStatusTracker.lastCallFailed = true;
+    const componentErrorCode = error?.code || error?.message || 'ORCHESTRATOR_FAILED';
+    if (String(componentErrorCode).startsWith('SUPABASE_')) {
+      recordComponentError('supabase', String(componentErrorCode));
+    } else {
+      recordComponentError('adapter', String(componentErrorCode), 'UNAVAILABLE');
+    }
     
     // Si Hermes falló (timeout o error de conexión), evitar respuestas mock locales
     console.warn(`[Orchestrator] CHATWOOT_REPLY_SKIPPED_DUE_TO_HERMES_ERROR: Evitando respuesta mock a Chatwoot para Conv #${conversationId}`);
@@ -670,9 +713,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       else if (errStr.includes('401') || errStr.includes('403') || errStr.includes('409')) errorCode = 'HERMES_CALL_FAILED';
       else if (errStr.includes('503') || errStr.includes('502')) errorCode = 'HERMES_UNAVAILABLE';
 
+      const maxRetryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
       if (isRecoverable) {
-        // Obtener el retry_count máximo actual
-        const maxRetryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
         if (maxRetryCount < 5) {
           await bufferRepository.markRecoverableError(ids, errorCode, maxRetryCount);
           console.log(`[Orchestrator Catch] Error recuperable (${errorCode}). Incrementando retry_count para ${ids.length} mensajes.`);
@@ -683,6 +725,15 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       } else {
         await bufferRepository.markFailed(ids, errorCode);
         console.error(`[Orchestrator Catch] Error definitivo no recuperable (${errorCode}). Marcando como fallido.`);
+      }
+      if (durableBatchClaimed) {
+        await processingBatchRepository.markAiFailed(
+          durableBatchKey,
+          tenantId,
+          traceId,
+          errorCode,
+          !isRecoverable || maxRetryCount >= 5
+        );
       }
     }
 

@@ -3,7 +3,6 @@ import formbody from '@fastify/formbody';
 import fastifyStatic from '@fastify/static';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { resolveChatwootAlias } from './utils/normalizeProfilePatch.js';
 import { config } from './config.js';
 import { normalizeChatwootPayload } from './chatwoot/normalizer.js';
 import { TenantContextError, validateWebhookTenantRoute } from './tenants/context.js';
@@ -13,6 +12,11 @@ import { bufferService } from './buffer/buffer-service.js';
 import { processBufferEvent } from './orchestrator.js';
 import { debugTracker } from './debug/debug-tracker.js';
 import { startRecoveryWorker } from './services/inbound-recovery-worker.js';
+import { recoveryMetrics } from './services/inbound-recovery-worker.js';
+import { startOutboxWorker, outboxMetrics } from './services/chatwoot-outbox-worker.js';
+import { componentHealth } from './services/component-health.js';
+import { refreshDependencyHealth } from './services/health-probes.js';
+import { assertSupabaseSuccess } from './supabase/assert-success.js';
 import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -32,6 +36,14 @@ const server = fastify({
 
 server.register(formbody);
 
+server.addHook('onRequest', async (request, reply) => {
+  if (request.url.startsWith('/admin')) {
+    reply.header('Cache-Control', 'no-store, private, max-age=0');
+    reply.header('Pragma', 'no-cache');
+    reply.header('X-Robots-Tag', 'noindex, nofollow, noarchive');
+  }
+});
+
 // Registramos el soporte para servir la carpeta de archivos estáticos 'public'
 server.register(fastifyStatic, {
   root: path.join(__dirname, '../public'),
@@ -43,16 +55,40 @@ bufferService.setCallback(async (tenantId, conversationId, traceId) => {
   await processBufferEvent(tenantId, conversationId, traceId);
 });
 
-// Estado global en memoria para rastrear si la última llamada a Hermes falló
-export const hermesStatusTracker = {
-  lastCallFailed: false
-};
-
-function getHermesStatus(): 'CONNECTED' | 'MOCK' | 'DISABLED' | 'ERROR' {
+function getHermesStatus(): string {
   if (!config.HERMES_ENABLED) return 'DISABLED';
   if (config.HERMES_MOCK) return 'MOCK';
-  if (hermesStatusTracker.lastCallFailed) return 'ERROR';
-  return 'CONNECTED';
+  return componentHealth.hermes.state === 'OK' ? 'HERMES_OK' : componentHealth.hermes.state;
+}
+
+function createAdminSessionToken(tenantId: string): string {
+  const payload = Buffer.from(JSON.stringify({
+    tenant_id: tenantId,
+    exp: Date.now() + config.HELIOS_ADMIN_SESSION_TTL_MS
+  })).toString('base64url');
+  const secret = config.HELIOS_ADMIN_SESSION_SECRET || config.SUPABASE_SERVICE_ROLE_KEY;
+  const signature = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function verifyAdminSessionToken(token: string): string | null {
+  const [payload, signature] = token.split('.');
+  if (!payload || !signature) return null;
+  const secret = config.HELIOS_ADMIN_SESSION_SECRET || config.SUPABASE_SERVICE_ROLE_KEY;
+  const expected = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (
+    actualBuffer.length !== expectedBuffer.length ||
+    !crypto.timingSafeEqual(actualBuffer, expectedBuffer)
+  ) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!decoded.tenant_id || !decoded.exp || decoded.exp <= Date.now()) return null;
+    return String(decoded.tenant_id);
+  } catch {
+    return null;
+  }
 }
 
 // 1. GET /
@@ -63,10 +99,23 @@ server.get('/', async (request, reply) => {
 
 // 2. GET /health
 server.get('/health', async (request, reply) => {
+  await refreshDependencyHealth();
   return {
     ok: true,
     service: 'helios-gateway',
     version: '0.1.0',
+    recovery_mode: config.HELIOS_RECOVERY_MODE,
+    admin_pii_enabled: config.HELIOS_ADMIN_SHOW_PII,
+    components: {
+      hermes_agent_api: componentHealth.hermes,
+      adapter: componentHealth.adapter,
+      supabase: componentHealth.supabase,
+      chatwoot: {
+        ...componentHealth.chatwoot,
+        delivery_unknown_count: outboxMetrics.delivery_unknown
+      }
+    },
+    recovery: recoveryMetrics,
     hermesMode: getHermesStatus()
   };
 });
@@ -98,7 +147,7 @@ server.post('/api/auth/login', async (request, reply) => {
     // Retornamos el token (usamos el tenant_id como token para simplicidad en la demo)
     return {
       ok: true,
-      token: tenant.tenant_id,
+      token: createAdminSessionToken(tenant.tenant_id),
       tenant: {
         tenant_id: tenant.tenant_id,
         name: tenant.name,
@@ -119,12 +168,17 @@ async function checkAuth(request: any, reply: any) {
   }
 
   const token = authHeader.replace('Bearer ', '').trim();
+  const tenantId = verifyAdminSessionToken(token);
+  if (!tenantId) {
+    reply.status(401).send({ error: 'Token inválido o expirado.' });
+    throw new Error('Unauthorized');
+  }
   
   // Validamos si el token corresponde a un tenant registrado en la DB
   const { data: tenant, error } = await supabase
     .from('helios_tenants')
     .select('tenant_id')
-    .eq('tenant_id', token)
+    .eq('tenant_id', tenantId)
     .single();
 
   if (error || !tenant) {
@@ -132,63 +186,66 @@ async function checkAuth(request: any, reply: any) {
     throw new Error('Unauthorized');
   }
 
+  console.log(JSON.stringify({
+    event: 'admin_dashboard_access',
+    tenant_fingerprint: crypto.createHash('sha256').update(tenant.tenant_id).digest('hex').slice(0, 12),
+    path: request.url.split('?')[0]
+  }));
   return tenant.tenant_id; // Retorna el tenant_id validado
 }
 
 // Endpoint para obtener estadísticas del Gateway filtradas por Tenant
 server.get('/admin/stats', async (request, reply) => {
   const tenantId = await checkAuth(request, reply);
-
-  // 1. Total Global
-  const { count: receivedCount } = await supabase
-    .from('helios_gateway_logs')
-    .select('*', { count: 'exact', head: true })
-    .eq('tenant_id', tenantId);
-
-  // 2. Incoming de Pacientes
-  const { count: incomingCount } = await supabase
-    .from('helios_gateway_logs')
-    .select('*', { count: 'exact', head: true })
-    .eq('tenant_id', tenantId)
-    .eq('event_type', 'webhook_received');
-
-  // 3. Outgoing del Bot
-  const { count: outgoingCount } = await supabase
-    .from('helios_gateway_logs')
-    .select('*', { count: 'exact', head: true })
-    .eq('tenant_id', tenantId)
-    .eq('event_type', 'CHATWOOT_REPLY_SENT');
-
-  // 4. Ignorados
-  const { count: ignoredCount } = await supabase
-    .from('helios_gateway_logs')
-    .select('*', { count: 'exact', head: true })
-    .eq('tenant_id', tenantId)
-    .eq('event_type', 'event_ignored');
-
-  // 5. Duplicados
-  const { count: duplicateCount } = await supabase
-    .from('helios_gateway_logs')
-    .select('*', { count: 'exact', head: true })
-    .eq('tenant_id', tenantId)
-    .eq('event_type', 'duplicate_message');
-
-  // 6. Procesados exitosamente por Hermes
-  const { count: processedCount } = await supabase
-    .from('helios_gateway_logs')
-    .select('*', { count: 'exact', head: true })
-    .eq('tenant_id', tenantId)
-    .eq('event_type', 'HERMES_CALL_SUCCESS');
+  const results = await Promise.all([
+    supabase.from('helios_message_idempotency').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId),
+    supabase.from('helios_inbound_buffer').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId),
+    supabase.from('helios_processing_batches').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId),
+    supabase.from('helios_chatwoot_outbox').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('status', 'pending'),
+    supabase.from('helios_chatwoot_outbox').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('status', 'sent'),
+    supabase.from('helios_chatwoot_outbox').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('status', 'delivery_unknown'),
+    supabase.from('helios_adapter_executions').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId),
+    supabase.from('helios_adapter_events').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('idempotency_status', 'deduplicated'),
+    supabase.from('helios_adapter_events').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('idempotency_status', 'new'),
+    supabase.from('helios_adapter_events').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).in('status', ['completed', 'deduplicated']),
+    supabase.from('helios_gateway_logs').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('event_type', 'event_ignored')
+  ]);
+  results.forEach((result, index) => assertSupabaseSuccess(result, `admin.stats.${index}`, { tenant_id: tenantId }));
+  const [
+    uniqueWebhooks,
+    inboundMessages,
+    batches,
+    outboxPending,
+    outboxSent,
+    outboxUnknown,
+    adapterExecutions,
+    adapterDeduplicated,
+    hermesRequests,
+    hermesCompleted,
+    ignoredEvents
+  ] = results.map(result => result.count || 0);
 
   return {
     status: 'online',
     webhookUrl: `/webhooks/chatwoot/${tenantId}`,
-    totalWebhooksReceived: receivedCount || 0,
-    incomingCount: incomingCount || 0,
-    outgoingCount: outgoingCount || 0,
-    totalEventsIgnored: ignoredCount || 0,
-    duplicateCount: duplicateCount || 0,
-    totalMessagesProcessed: processedCount || 0,
+    totalWebhooksReceived: uniqueWebhooks,
+    incomingCount: inboundMessages,
+    outgoingCount: outboxSent,
+    totalEventsIgnored: ignoredEvents,
+    duplicateCount: adapterDeduplicated,
+    totalMessagesProcessed: batches,
+    batchesCreated: batches,
+    adapterExecutionsNew: adapterExecutions,
+    adapterExecutionsDeduplicated: adapterDeduplicated,
+    hermesRequestsReal: hermesRequests,
+    hermesResponsesCompleted: hermesCompleted,
+    outboxPending,
+    chatwootSent: outboxSent,
+    deliveryUnknown: outboxUnknown,
+    recoveryAi: recoveryMetrics.ai_recovery,
+    recoveryDelivery: recoveryMetrics.delivery_recovery,
+    duplicatesPrevented: outboxMetrics.deduplicated,
+    recoveryMode: config.HELIOS_RECOVERY_MODE,
     hermesMode: getHermesStatus()
   };
 });
@@ -202,8 +259,11 @@ server.get('/admin/debug/events', async (request, reply) => {
   const onlyErrors = query.onlyErrors === 'true';
 
   // Obtenemos los eventos y filtramos por tenant_id para asegurar la separación de datos
-  const events = debugTracker.getEvents({ conversation_id, decision, onlyErrors });
-  return events.filter(e => e.normalizedPayload?.tenant_id === tenantId);
+  const events = debugTracker.getEvents(
+    { conversation_id, decision, onlyErrors },
+    config.HELIOS_ADMIN_SHOW_PII
+  );
+  return events.filter((e: any) => e.normalizedPayload?.tenant_id === tenantId);
 });
 
 // Endpoint para limpiar la lista de depuración
@@ -258,7 +318,7 @@ server.get('/admin/contacts', async (request, reply) => {
 
     if (error) throw error;
 
-    // Enmascarar PII para el dashboard
+    // PII completa solo para el dashboard autenticado y con flag explícito.
     const masked = (data || []).map(p => {
       const maskedEmail = p.email
         ? p.email.replace(/^(.{2})(.*)(@.*)$/, '$1***$3')
@@ -274,8 +334,8 @@ server.get('/admin/contacts', async (request, reply) => {
         displayName = [p.first_name, p.last_name].filter(Boolean).join(' ');
         displayNameSource = 'verified_profile';
       } else {
-        displayName = resolveChatwootAlias(null, p, null);
-        displayNameSource = 'chatwoot';
+        displayName = null;
+        displayNameSource = 'unknown';
       }
 
       if (p.crm_contact_id) {
@@ -288,6 +348,8 @@ server.get('/admin/contacts', async (request, reply) => {
         display_name_source: displayNameSource,
         first_name: p.first_name || null,
         last_name: p.last_name || null,
+        email: config.HELIOS_ADMIN_SHOW_PII ? p.email || null : undefined,
+        phone: config.HELIOS_ADMIN_SHOW_PII ? p.phone || null : undefined,
         email_masked: maskedEmail,
         phone_masked: maskedPhone,
         profile_complete: p.profile_complete || false,
@@ -597,6 +659,9 @@ server.get('/healthz', async (request, reply) => {
 const stopRecoveryWorker = process.env.NODE_ENV !== 'test' 
   ? startRecoveryWorker() 
   : () => Promise.resolve();
+const stopOutboxWorker = process.env.NODE_ENV !== 'test'
+  ? startOutboxWorker()
+  : () => Promise.resolve();
 
 const start = async () => {
   try {
@@ -619,6 +684,7 @@ async function gracefulShutdown(signal: string) {
   console.log(`\n[Helios Gateway] Received ${signal}, starting graceful shutdown...`);
   
   await stopRecoveryWorker();
+  await stopOutboxWorker();
   
   server.close().then(() => {
     console.log('[Helios Gateway] Fastify server closed.');

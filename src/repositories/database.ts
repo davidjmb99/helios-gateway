@@ -2,6 +2,7 @@ import { supabase } from '../supabase/client.js';
 import { NormalizedMessage } from '../chatwoot/normalizer.js';
 import { config } from '../config.js';
 import { sanitizeForLog } from '../utils/sanitizeForLog.js';
+import { assertSupabaseSuccess } from '../supabase/assert-success.js';
 
 // --- IDEMPOTENCIA ---
 export const idempotencyRepository = {
@@ -22,7 +23,7 @@ export const idempotencyRepository = {
   },
 
   async markProcessed(tenant_id: string, provider: string, message_id: string, conversation_id: string, trace_id: string): Promise<void> {
-    await supabase
+    const result = await supabase
       .from('helios_message_idempotency')
       .insert({
         tenant_id,
@@ -33,13 +34,18 @@ export const idempotencyRepository = {
         status: 'processed',
         processed_at: new Date().toISOString()
       });
+    assertSupabaseSuccess(result, 'message_idempotency.mark_processed', {
+      tenant_id,
+      trace_id,
+      row_id: message_id
+    });
   }
 };
 
 // --- BUFFER DE MENSAJES ---
 export const bufferRepository = {
   async save(msg: NormalizedMessage): Promise<void> {
-    await supabase
+    const result = await supabase
       .from('helios_inbound_buffer')
       .insert({
         tenant_id: msg.tenant_id,
@@ -54,6 +60,11 @@ export const bufferRepository = {
         created_at: msg.created_at,
         trace_id: msg.trace_id
       });
+    assertSupabaseSuccess(result, 'inbound_buffer.save', {
+      tenant_id: msg.tenant_id,
+      trace_id: msg.trace_id,
+      row_id: msg.message_id
+    });
   },
 
   async getUnprocessed(tenant_id: string, conversation_id: string, trace_id?: string): Promise<any[]> {
@@ -87,59 +98,17 @@ export const bufferRepository = {
 
   async claimConversationMessages(tenantId: string, conversationId: string): Promise<any[]> {
     // Intentar la RPC atómica (ideal: transacción única con FOR UPDATE SKIP LOCKED)
-    const { data, error } = await supabase.rpc('claim_conversation_messages', {
+    const result = await supabase.rpc('claim_conversation_messages', {
       p_tenant_id: tenantId,
-      p_conversation_id: conversationId
+      p_conversation_id: conversationId,
+      p_lease_seconds: Math.ceil(config.HELIOS_BATCH_LEASE_MS / 1000)
     });
 
-    if (!error) {
-      return data || [];
-    }
-
-    // Si la RPC no está en el schema cache de PostgREST (PGRST202), usar fallback SELECT+UPDATE.
-    // Esto ocurre después de crear la función hasta que el cache se refresque (puede tardar minutos en Supabase Cloud).
-    if (error.code === 'PGRST202') {
-      console.warn('[Repository] claim_conversation_messages RPC no disponible en schema cache, usando fallback SELECT+UPDATE.');
-      const now = new Date();
-      const { data: candidates, error: selErr } = await supabase
-        .from('helios_inbound_buffer')
-        .select('*')
-        .eq('tenant_id', tenantId)
-        .eq('conversation_id', conversationId)
-        .is('processed_at', null)
-        .is('failed_at', null)
-        .lt('retry_count', 5)
-        .order('created_at', { ascending: true });
-
-      if (selErr || !candidates || candidates.length === 0) return [];
-
-      const eligible = candidates.filter(m => {
-        // Lease check
-        if (m.processing_started_at) {
-          const RECOVERY_STALE_AFTER_MS = Math.max((config.HERMES_TIMEOUT_MS || 30000) + 60000, 180000);
-          const staleThreshold = new Date(Date.now() - RECOVERY_STALE_AFTER_MS);
-          if (new Date(m.processing_started_at) >= staleThreshold) {
-            return false;
-          }
-        }
-        if (!m.next_retry_at) return true;
-        return new Date(m.next_retry_at) <= now;
-      });
-
-      if (eligible.length === 0) return [];
-
-      const ids = eligible.map(m => m.id);
-      await supabase
-        .from('helios_inbound_buffer')
-        .update({ processing_started_at: now.toISOString() })
-        .in('id', ids);
-
-      return eligible;
-    }
-
-    // Cualquier otro error de RPC: propagar
-    console.error('[Repository Error] claim_conversation_messages RPC failed:', error);
-    throw error;
+    assertSupabaseSuccess(result, 'inbound_buffer.claim_conversation', {
+      tenant_id: tenantId,
+      row_id: conversationId
+    });
+    return result.data || [];
   },
 
   async getMessagesByIds(ids: number[]): Promise<any[]> {
@@ -167,10 +136,13 @@ export const bufferRepository = {
       payload.response_idempotency_key = response_idempotency_key;
     }
     
-    await supabase
+    const result = await supabase
       .from('helios_inbound_buffer')
       .update(payload)
       .in('id', ids);
+    assertSupabaseSuccess(result, 'inbound_buffer.mark_processed', {
+      row_id: ids.join(',')
+    });
   },
 
   async markRecoverableError(ids: number[], error_code: string, current_retry_count: number): Promise<void> {
@@ -198,7 +170,7 @@ export const bufferRepository = {
       ? null
       : new Date(Date.now() + delayMs).toISOString();
 
-    await supabase
+    const result = await supabase
       .from('helios_inbound_buffer')
       .update({
         retry_count: current_retry_count + 1,
@@ -207,11 +179,14 @@ export const bufferRepository = {
         next_retry_at: nextRetry
       })
       .in('id', ids);
+    assertSupabaseSuccess(result, 'inbound_buffer.mark_recoverable', {
+      row_id: ids.join(',')
+    });
   },
 
   async markFailed(ids: number[], error_code: string): Promise<void> {
     if (ids.length === 0) return;
-    await supabase
+    const result = await supabase
       .from('helios_inbound_buffer')
       .update({
         failed_at: new Date().toISOString(),
@@ -220,6 +195,9 @@ export const bufferRepository = {
         last_error_code: error_code
       })
       .in('id', ids);
+    assertSupabaseSuccess(result, 'inbound_buffer.mark_failed', {
+      row_id: ids.join(',')
+    });
   }
 };
 
@@ -275,16 +253,16 @@ export const stateRepository = {
     financing?: any;
     last_intent?: string | null;
   }): Promise<void> {
-    const { error } = await supabase
+    const result = await supabase
       .from('helios_conversation_state')
       .upsert({
         ...state,
         updated_at: new Date().toISOString()
       }, { onConflict: 'tenant_id,conversation_id' });
-
-    if (error) {
-      console.error('[Repository Error] Upsert state failed:', error);
-    }
+    assertSupabaseSuccess(result, 'conversation_state.upsert', {
+      tenant_id: state.tenant_id,
+      row_id: state.conversation_id
+    });
   }
 };
 
@@ -317,17 +295,16 @@ export const patientRepository = {
     crm_contact_id?: string | null;
     chatwoot_display_name?: string | null;
   }): Promise<boolean> {
-    const { error } = await supabase
+    const result = await supabase
       .from('helios_patient_profiles')
       .upsert({
         ...profile,
         updated_at: new Date().toISOString()
       }, { onConflict: 'tenant_id,contact_id' });
-
-    if (error) {
-      console.error('[Repository Error] Upsert patient profile failed:', error.code, error.message);
-      return false;
-    }
+    assertSupabaseSuccess(result, 'patient_profile.upsert', {
+      tenant_id: profile.tenant_id,
+      row_id: profile.contact_id
+    });
     return true;
   }
 };
@@ -350,12 +327,17 @@ export const logsRepository = {
       metadata: sanitizeForLog(log.metadata || {}),
       error: log.error ? String(sanitizeForLog(log.error, 'body')) : log.error
     };
-    await supabase
+    const result = await supabase
       .from('helios_gateway_logs')
       .insert({
         ...safeLog,
         created_at: new Date().toISOString()
       });
+    assertSupabaseSuccess(result, 'gateway_logs.insert', {
+      tenant_id: log.tenant_id,
+      trace_id: log.trace_id,
+      row_id: log.event_type
+    });
   }
 };
 
@@ -369,12 +351,16 @@ export const handoffRepository = {
     message?: string;
     status?: string;
   }): Promise<void> {
-    await supabase
+    const result = await supabase
       .from('helios_handoff_events')
       .insert({
         ...event,
         created_at: new Date().toISOString()
       });
+    assertSupabaseSuccess(result, 'handoff_events.create', {
+      tenant_id: event.tenant_id,
+      row_id: event.conversation_id
+    });
   }
 };
 
@@ -410,22 +396,27 @@ export const financingRepository = {
     status?: string;
     notes?: string;
   }): Promise<void> {
-    await supabase
+    const result = await supabase
       .from('helios_financing_cases')
       .insert({
         ...caseData,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       });
+    assertSupabaseSuccess(result, 'financing_cases.create', {
+      tenant_id: caseData.tenant_id,
+      row_id: caseData.conversation_id
+    });
   },
 
   async updateCase(id: number, updates: any): Promise<void> {
-    await supabase
+    const result = await supabase
       .from('helios_financing_cases')
       .update({
         ...updates,
         updated_at: new Date().toISOString()
       })
       .eq('id', id);
+    assertSupabaseSuccess(result, 'financing_cases.update', { row_id: id });
   }
 };

@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex,nofollow,noarchive">
   <title>Helios Gateway Inspector</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
@@ -69,19 +70,19 @@
     <!-- Métricas Generales -->
     <section class="max-w-7xl w-full mx-auto px-6 pt-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
       <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
-        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Webhooks Recibidos</span>
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Webhooks únicos</span>
         <div id="stat-received" class="text-2xl font-bold text-blue-400 mt-1">0</div>
       </div>
       <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
-        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Mensajes Recibidos (Incoming)</span>
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Mensajes inbound únicos</span>
         <div id="stat-incoming" class="text-2xl font-bold text-cyan-400 mt-1">0</div>
       </div>
       <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
-        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Procesados Hermes</span>
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Batches creados</span>
         <div id="stat-processed" class="text-2xl font-bold text-emerald-400 mt-1">0</div>
       </div>
       <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
-        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Ecos/Ignorados/Bot</span>
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Entregas Chatwoot sent</span>
         <div id="stat-ignored" class="text-2xl font-bold text-slate-400 mt-1">0</div>
       </div>
     </section>
@@ -210,7 +211,6 @@
         document.getElementById('login-container').style.display = 'none';
         document.getElementById('dashboard-container').style.display = 'flex';
         document.getElementById('clinic-name-header').innerText = `Clínica: ${clinicName || 'Demo'}`;
-        document.getElementById('stat-webhook-url').innerText = `/webhooks/chatwoot/${token}`;
         return true;
       }
     }
@@ -294,19 +294,19 @@
         document.getElementById('stat-received').innerText = stats.totalWebhooksReceived;
         document.getElementById('stat-incoming').innerText = stats.incomingCount;
         document.getElementById('stat-processed').innerText = stats.totalMessagesProcessed;
-        document.getElementById('stat-ignored').innerText = stats.totalEventsIgnored;
+        document.getElementById('stat-ignored').innerText = stats.chatwootSent;
 
         const badge = document.getElementById('hermes-mode-badge');
         const mode = stats.hermesMode;
         
-        badge.innerText = `Hermes: ${mode}`;
-        if (mode === 'CONNECTED') {
+        badge.innerText = `Hermes: ${mode} · Recovery: ${stats.recoveryMode}`;
+        if (mode === 'HERMES_OK') {
           badge.className = 'px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
         } else if (mode === 'MOCK') {
           badge.className = 'px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20';
         } else if (mode === 'DISABLED') {
           badge.className = 'px-2.5 py-1 rounded-full text-xs font-bold bg-slate-800 text-slate-400 border border-slate-700/60';
-        } else if (mode === 'ERROR') {
+        } else if (mode === 'DEGRADED' || mode === 'UNAVAILABLE') {
           badge.className = 'px-2.5 py-1 rounded-full text-xs font-bold bg-red-500/10 text-red-400 border border-red-500/20 animate-pulse';
         }
       } catch (e) {
@@ -414,20 +414,6 @@
       const verified = contactProfiles[contactId];
       if (verified && verified.profile_complete === true && verified.display_name) {
         return verified.display_name;
-      }
-
-      // 2. chatwoot_display_name o meta.sender.name del webhook más reciente DEL MISMO contact_id
-      if (ev.patient_name && ev.patient_name !== 'Paciente' && ev.patient_name !== 'Paciente de Chatwoot') {
-        return ev.patient_name;
-      }
-
-      const raw = ev.normalizedPayload?.raw_payload || {};
-      if (raw.sender?.name && raw.sender.name !== 'Paciente de Chatwoot') return raw.sender.name;
-      if (raw.conversation?.meta?.sender?.name && raw.conversation.meta.sender.name !== 'Paciente de Chatwoot') return raw.conversation.meta.sender.name;
-
-      // 3. Teléfono enmascarado o fallback
-      if (ev.phone && ev.phone.length > 5) {
-        return ev.phone.slice(0, 5) + '***' + ev.phone.slice(-2);
       }
 
       return "Contacto sin identificar";

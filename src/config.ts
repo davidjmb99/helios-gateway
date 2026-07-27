@@ -19,6 +19,21 @@ function envNumber(value: unknown, defaultValue: number): number {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
+export type RecoveryMode = 'disabled' | 'observe' | 'ai_only' | 'delivery_only' | 'full';
+
+export function parseRecoveryMode(value: unknown): RecoveryMode {
+  const normalized = String(value ?? 'observe').trim().toLowerCase();
+  if (['disabled', 'observe', 'ai_only', 'delivery_only', 'full'].includes(normalized)) {
+    return normalized as RecoveryMode;
+  }
+  console.warn(JSON.stringify({
+    event: 'invalid_recovery_mode',
+    configured_value_present: Boolean(value),
+    fallback: 'observe'
+  }));
+  return 'observe';
+}
+
 // Configuración de Hermes parseada de forma segura
 const hermesEnabled = envBool(process.env.HERMES_ENABLED, true);
 const hermesMock = envBool(process.env.HERMES_MOCK, false);
@@ -72,6 +87,16 @@ export const config = {
   HERMES_CWD: (process.env.HERMES_CWD ?? '').trim(),
   HERMES_SOUL_PATH: (process.env.HERMES_SOUL_PATH ?? '').trim(),
   HERMES_TIMEOUT_MS: hermesTimeoutMs,
+  HELIOS_RECOVERY_MODE: parseRecoveryMode(process.env.HELIOS_RECOVERY_MODE),
+  HELIOS_ADMIN_SHOW_PII: envBool(process.env.HELIOS_ADMIN_SHOW_PII, false),
+  HELIOS_ADMIN_SESSION_SECRET: (process.env.HELIOS_ADMIN_SESSION_SECRET ?? '').trim(),
+  HELIOS_ADMIN_SESSION_TTL_MS: envNumber(process.env.HELIOS_ADMIN_SESSION_TTL_MS, 8 * 60 * 60 * 1000),
+  HELIOS_BATCH_LEASE_MS: Math.max(
+    envNumber(process.env.HELIOS_BATCH_LEASE_MS, 180000),
+    hermesTimeoutMs + 60000
+  ),
+  HELIOS_OUTBOX_LEASE_MS: envNumber(process.env.HELIOS_OUTBOX_LEASE_MS, 60000),
+  CHATWOOT_TIMEOUT_MS: envNumber(process.env.CHATWOOT_TIMEOUT_MS, 15000),
 
   CHATWOOT_BASE_URL: parsed.data?.CHATWOOT_BASE_URL ?? 'https://app.chatwoot.com',
   CHATWOOT_ACCOUNT_ID: parsed.data?.CHATWOOT_ACCOUNT_ID ?? '',

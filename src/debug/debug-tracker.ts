@@ -29,23 +29,22 @@ class DebugTracker {
   private maxEvents = 100; // Guardamos hasta 100 para un buen historial
 
   public addEvent(event: Omit<DebugEvent, 'actionsExecuted' | 'timeline'>) {
-    const safeEvent = sanitizeForLog(event) as Omit<DebugEvent, 'actionsExecuted' | 'timeline'>;
     const newEvent: DebugEvent = {
-      ...safeEvent,
+      ...event,
       actionsExecuted: [],
       timeline: [
         {
           timestamp: new Date().toISOString(),
           type: 'webhook_received',
-          data: { text: safeEvent.text, decision: safeEvent.decision }
+          data: { text: event.text, decision: event.decision }
         }
       ]
     };
     
     // Evitar duplicados por trace_id
-    const index = this.events.findIndex(e => e.trace_id === safeEvent.trace_id);
+    const index = this.events.findIndex(e => e.trace_id === event.trace_id);
     if (index !== -1) {
-      this.events[index] = { ...this.events[index], ...safeEvent };
+      this.events[index] = { ...this.events[index], ...event };
       return;
     }
 
@@ -58,7 +57,7 @@ class DebugTracker {
   public updateEvent(traceId: string, updates: Partial<DebugEvent>) {
     const event = this.events.find(e => e.trace_id === traceId);
     if (event) {
-      Object.assign(event, sanitizeForLog(updates));
+      Object.assign(event, updates);
     }
   }
 
@@ -68,7 +67,7 @@ class DebugTracker {
       event.timeline.push({
         timestamp: new Date().toISOString(),
         type,
-        data: sanitizeForLog(data)
+        data
       });
     }
   }
@@ -79,18 +78,21 @@ class DebugTracker {
       event.actionsExecuted.push({
         action,
         timestamp: new Date().toISOString(),
-        data: sanitizeForLog(data),
+        data,
         success
       });
       event.timeline.push({
         timestamp: new Date().toISOString(),
         type: 'action_executed',
-        data: { action, success, data: sanitizeForLog(data) }
+        data: { action, success, data }
       });
     }
   }
 
-  public getEvents(filters: { conversation_id?: string; decision?: string; onlyErrors?: boolean } = {}) {
+  public getEvents(
+    filters: { conversation_id?: string; decision?: string; onlyErrors?: boolean } = {},
+    showPii = false
+  ) {
     let list = [...this.events];
     
     if (filters.conversation_id) {
@@ -103,7 +105,7 @@ class DebugTracker {
       list = list.filter(e => e.decision === 'error' || e.timeline.some(t => t.type === 'error'));
     }
 
-    return list;
+    return showPii ? list : sanitizeForLog(list);
   }
 
   public clear() {

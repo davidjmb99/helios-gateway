@@ -1,4 +1,5 @@
 import { chatwootClient } from '../chatwoot/client.js';
+import { resolveTenantContextByTenantId } from '../tenants/context.js';
 import { 
   stateRepository, 
   patientRepository, 
@@ -17,10 +18,11 @@ export async function runTools(
   }
 ): Promise<any[]> {
   const results: any[] = [];
+  const tenantContext = resolveTenantContextByTenantId(context.tenant_id);
 
   for (const call of toolCalls) {
     const { name, arguments: args } = call;
-    console.log(`[Tool Runner] Ejecutando: ${name} con argumentos:`, args);
+    console.log(`[Tool Runner] Ejecutando herramienta: ${name}`);
 
     try {
       let result: any = null;
@@ -28,22 +30,27 @@ export async function runTools(
       switch (name) {
         // --- CHATWOOT TOOLS ---
         case 'chatwoot.send_message':
-          await chatwootClient.sendMessage(context.conversation_id, args.content);
+          await chatwootClient.sendMessage(
+            tenantContext.account_id,
+            context.conversation_id,
+            args.content,
+            {}
+          );
           result = { success: true };
           break;
 
         case 'chatwoot.add_labels':
-          await chatwootClient.addLabels(context.conversation_id, args.labels);
+          await chatwootClient.addLabels(tenantContext.account_id, context.conversation_id, args.labels);
           result = { success: true };
           break;
 
         case 'chatwoot.create_private_note':
-          await chatwootClient.createPrivateNote(context.conversation_id, args.content);
+          await chatwootClient.createPrivateNote(tenantContext.account_id, context.conversation_id, args.content);
           result = { success: true };
           break;
 
         case 'chatwoot.assign_human':
-          await chatwootClient.assignHuman(context.conversation_id);
+          await chatwootClient.assignHuman(tenantContext.account_id, context.conversation_id);
           result = { success: true };
           break;
 
