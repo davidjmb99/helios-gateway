@@ -67,8 +67,21 @@
       </div>
     </header>
 
-    <!-- Métricas Generales -->
-    <section class="max-w-7xl w-full mx-auto px-6 pt-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+    <!-- Métricas operativas -->
+    <section class="max-w-7xl w-full mx-auto px-6 pt-6">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <div>
+          <h2 class="text-xs font-bold uppercase tracking-wider text-slate-300">Actividad operativa</h2>
+          <p class="text-[10px] text-slate-500">Contadores únicos de las tablas durables.</p>
+        </div>
+        <select id="time-range" onchange="changeTimeRange(this.value)" class="bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-amber-500">
+          <option value="today" selected>Hoy</option>
+          <option value="24h">Últimas 24 horas</option>
+          <option value="7d">7 días</option>
+          <option value="all">Histórico</option>
+        </select>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
       <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
         <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Webhooks únicos</span>
         <div id="stat-received" class="text-2xl font-bold text-blue-400 mt-1">0</div>
@@ -78,12 +91,33 @@
         <div id="stat-incoming" class="text-2xl font-bold text-cyan-400 mt-1">0</div>
       </div>
       <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
-        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Batches creados</span>
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Hermes completados</span>
         <div id="stat-processed" class="text-2xl font-bold text-emerald-400 mt-1">0</div>
       </div>
       <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
         <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Entregas Chatwoot sent</span>
-        <div id="stat-ignored" class="text-2xl font-bold text-slate-400 mt-1">0</div>
+        <div id="stat-sent" class="text-2xl font-bold text-emerald-400 mt-1">0</div>
+      </div>
+      <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Ecos salientes</span>
+        <div id="stat-echoes" class="text-2xl font-bold text-slate-400 mt-1">0</div>
+      </div>
+      <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Eventos de bot</span>
+        <div id="stat-bot" class="text-2xl font-bold text-purple-400 mt-1">0</div>
+      </div>
+      <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Webhooks ignorados</span>
+        <div id="stat-ignored" class="text-2xl font-bold text-amber-400 mt-1">0</div>
+      </div>
+      <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Duplicados evitados</span>
+        <div id="stat-duplicates" class="text-2xl font-bold text-fuchsia-400 mt-1">0</div>
+      </div>
+      <div class="bg-slate-900/40 border border-slate-800 rounded-xl p-4">
+        <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Batches procesados</span>
+        <div id="stat-batches" class="text-2xl font-bold text-cyan-400 mt-1">0</div>
+      </div>
       </div>
     </section>
 
@@ -173,6 +207,8 @@
     let lastRenderedTab = null;
     let leftTab = 'conversations'; 
     let expandedConversationId = null; 
+    let operationalConversations = [];
+    let selectedTimeRange = 'today';
 
     // OBTENER TOKEN DE SESION
     function getSessionToken() {
@@ -261,6 +297,7 @@
       activeEventId = null;
       expandedConversationId = null;
       allEvents = [];
+      operationalConversations = [];
       
       // Restablecer el visor de detalles a su estado inicial
       document.getElementById('inspector-panel').innerHTML = `
@@ -281,7 +318,7 @@
     async function fetchStats() {
       if (!getSessionToken()) return;
       try {
-        const res = await fetch('/admin/stats', {
+        const res = await fetch(`/admin/observability?range=${encodeURIComponent(selectedTimeRange)}`, {
           headers: { 'Authorization': `Bearer ${getSessionToken()}` }
         });
         
@@ -290,16 +327,29 @@
           return;
         }
 
-        const stats = await res.json();
-        document.getElementById('stat-received').innerText = stats.totalWebhooksReceived;
-        document.getElementById('stat-incoming').innerText = stats.incomingCount;
-        document.getElementById('stat-processed').innerText = stats.totalMessagesProcessed;
-        document.getElementById('stat-ignored').innerText = stats.chatwootSent;
+        const payload = await res.json();
+        const stats = payload.stats || {};
+        operationalConversations = payload.conversations || [];
+        document.getElementById('stat-received').innerText = stats.uniqueWebhooks || 0;
+        document.getElementById('stat-incoming').innerText = stats.uniqueIncomingMessages || 0;
+        document.getElementById('stat-processed').innerText = stats.hermesCompleted || 0;
+        document.getElementById('stat-sent').innerText = stats.chatwootSent || 0;
+        document.getElementById('stat-echoes').innerText = stats.outgoingEchoes || 0;
+        document.getElementById('stat-bot').innerText = stats.botEvents || 0;
+        document.getElementById('stat-ignored').innerText = stats.ignoredWebhooks || 0;
+        document.getElementById('stat-duplicates').innerText = stats.duplicatesPrevented || 0;
+        document.getElementById('stat-batches').innerText = stats.batchesProcessed || 0;
 
         const badge = document.getElementById('hermes-mode-badge');
-        const mode = stats.hermesMode;
+        const componentStates = payload.health || {};
+        const hermesState = componentStates.hermes_agent_api?.state || 'UNKNOWN';
+        const adapterState = componentStates.adapter?.state || 'UNKNOWN';
+        const supabaseState = componentStates.supabase?.state || 'UNKNOWN';
+        const chatwootState = componentStates.chatwoot?.state || 'UNKNOWN';
+        const recoveryMode = componentStates.recovery_mode || 'unknown';
+        const mode = hermesState === 'OK' ? 'HERMES_OK' : hermesState;
         
-        badge.innerText = `Hermes: ${mode} · Recovery: ${stats.recoveryMode}`;
+        badge.innerText = `Hermes ${hermesState} · Adapter ${adapterState} · Supabase ${supabaseState} · Chatwoot ${chatwootState} · Recovery ${recoveryMode}`;
         if (mode === 'HERMES_OK') {
           badge.className = 'px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
         } else if (mode === 'MOCK') {
@@ -309,9 +359,16 @@
         } else if (mode === 'DEGRADED' || mode === 'UNAVAILABLE') {
           badge.className = 'px-2.5 py-1 rounded-full text-xs font-bold bg-red-500/10 text-red-400 border border-red-500/20 animate-pulse';
         }
+        applyFilters();
       } catch (e) {
         console.error(e);
       }
+    }
+
+    async function changeTimeRange(range) {
+      selectedTimeRange = range || 'today';
+      expandedConversationId = null;
+      await fetchStats();
     }
 
     async function fetchDebugEvents(forceRender = false) {
@@ -410,20 +467,18 @@
     function resolvePatientName(ev) {
       const contactId = ev.contact_id;
 
-      // 1. Nombre verificado desde Supabase (solo si profile_complete = true)
-      const verified = contactProfiles[contactId];
-      if (verified && verified.profile_complete === true && verified.display_name) {
-        return verified.display_name;
+      const profile = contactProfiles[contactId];
+      if (profile && isUsablePatientName(profile.display_name)) {
+        return profile.display_name;
       }
 
-      return "Contacto sin identificar";
+      return "N/A";
     }
 
     function resolveDisplayNameSource(ev) {
       const contactId = ev.contact_id;
       const verified = contactProfiles[contactId];
       if (verified) return verified.display_name_source || 'unknown';
-      if (ev.patient_name && ev.patient_name !== 'Paciente') return 'chatwoot';
       return 'unknown';
     }
 
@@ -449,10 +504,132 @@
       showEventDetails(traceId, true);
     }
 
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function isUsablePatientName(value) {
+      const normalized = String(value || '').trim().toUpperCase();
+      return normalized && !['[REDACTED]', 'REDACTED', 'UNKNOWN', 'N/A', 'NA', 'PACIENTE', 'CONTACTO SIN IDENTIFICAR'].includes(normalized);
+    }
+
+    function toggleOperationalConversation(encodedKey) {
+      const groupKey = decodeURIComponent(encodedKey);
+      expandedConversationId = expandedConversationId === groupKey ? null : groupKey;
+      activeEventId = null;
+      applyFilters();
+      const conversation = operationalConversations.find(item => item.group_key === groupKey);
+      if (conversation) showOperationalConversationDetails(conversation);
+    }
+
+    function showOperationalConversationDetails(conversation) {
+      const inspector = document.getElementById('inspector-panel');
+      const timeline = (conversation.timeline || []).map(event => `
+        <div class="relative">
+          <span class="absolute -left-[31px] top-0.5 rounded-full w-2.5 h-2.5 ${event.secondary ? 'bg-slate-600' : 'bg-emerald-500'} ring-4 ring-slate-950"></span>
+          <div class="text-[10px] font-mono text-slate-500">${event.timestamp ? new Date(event.timestamp).toLocaleString() : 'Sin timestamp'}</div>
+          <div class="text-xs font-semibold ${event.secondary ? 'text-slate-500' : 'text-slate-200'}">${escapeHtml(event.stage)}</div>
+          <pre class="mt-1 overflow-auto text-[10px] text-slate-400 code-font bg-slate-950/60 p-2 rounded border border-slate-800/40 whitespace-pre-wrap">${escapeHtml(JSON.stringify(event, null, 2))}</pre>
+        </div>
+      `).join('');
+      inspector.innerHTML = `
+        <div class="px-6 py-4 bg-slate-950/60 border-b border-slate-800 flex items-center justify-between">
+          <div>
+            <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">Conversación operativa</h2>
+            <p class="text-[10px] text-slate-500 mt-1">${escapeHtml(conversation.tenant_id)} · account ${escapeHtml(conversation.account_id)} · conv ${escapeHtml(conversation.conversation_id)} · contact ${escapeHtml(conversation.contact_id)}</p>
+          </div>
+          <span class="px-2 py-1 rounded text-[10px] font-bold ${conversation.status === 'SENT' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-slate-800 text-slate-300'}">${escapeHtml(conversation.status)}</span>
+        </div>
+        <div class="p-5 overflow-y-auto flex-1 space-y-5">
+          <div class="grid grid-cols-2 gap-3 text-xs">
+            <div class="bg-slate-950/40 border border-slate-800 rounded-lg p-3"><span class="text-slate-500 block text-[9px] uppercase">Paciente</span>${escapeHtml(isUsablePatientName(conversation.patient_name) ? conversation.patient_name : 'N/A')}</div>
+            <div class="bg-slate-950/40 border border-slate-800 rounded-lg p-3"><span class="text-slate-500 block text-[9px] uppercase">Teléfono</span>${escapeHtml(conversation.phone || 'N/A')}</div>
+            <div class="col-span-2 bg-slate-950/40 border border-slate-800 rounded-lg p-3"><span class="text-slate-500 block text-[9px] uppercase">Mensaje entrante</span><div class="mt-1 whitespace-pre-wrap">${escapeHtml(conversation.inbound_message || 'N/A')}</div></div>
+            <div class="col-span-2 bg-slate-950/40 border border-slate-800 rounded-lg p-3"><span class="text-slate-500 block text-[9px] uppercase">Respuesta Hermes</span><div class="mt-1 whitespace-pre-wrap">${escapeHtml(conversation.hermes_response || 'N/A')}</div></div>
+            <div class="col-span-2 bg-slate-950/40 border border-slate-800 rounded-lg p-3 code-font text-[10px]"><span class="text-slate-500 block text-[9px] uppercase font-sans">Correlación</span>Hermes conversation: ${escapeHtml(conversation.hermes_conversation_id || 'N/A')}<br>Hermes response: ${escapeHtml(conversation.hermes_response_id || 'N/A')}<br>Batch: ${escapeHtml((conversation.batch_keys || []).join(', ') || 'N/A')}<br>Adapter request: ${escapeHtml((conversation.adapter_request_keys || []).join(', ') || 'N/A')}<br>Outbox: ${escapeHtml((conversation.outbox_keys || []).join(', ') || 'N/A')}</div>
+          </div>
+          <div>
+            <h3 class="font-bold text-xs uppercase tracking-wider text-slate-400 mb-4">Timeline durable</h3>
+            <div class="relative border-l border-slate-800 ml-3 pl-6 space-y-5">${timeline || '<div class="text-xs text-slate-500">Sin eventos operativos.</div>'}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderOperationalConversations(filterVal, decisionVal, listContainer) {
+      let conversations = [...operationalConversations];
+      if (filterVal) {
+        conversations = conversations.filter(c => [
+          c.tenant_id,
+          c.account_id,
+          c.conversation_id,
+          c.contact_id,
+          c.patient_name,
+          c.phone,
+          c.hermes_conversation_id
+        ].some(value => String(value || '').toLowerCase().includes(filterVal)));
+      }
+      if (decisionVal) {
+        const expected = decisionVal === 'processed' ? 'COMPLETED' : decisionVal.toUpperCase();
+        conversations = conversations.filter(c =>
+          c.status === expected || (decisionVal === 'accepted' && ['COMPLETED', 'SENT'].includes(c.status))
+        );
+      }
+      if (!conversations.length) {
+        listContainer.innerHTML = '<div class="text-slate-600 text-xs text-center p-8">No hay conversaciones operativas en este rango.</div>';
+        return;
+      }
+      listContainer.innerHTML = conversations.map(c => {
+        const isExpanded = c.group_key === expandedConversationId;
+        const encodedKey = encodeURIComponent(c.group_key);
+        const patientName = isUsablePatientName(c.patient_name) ? c.patient_name : 'N/A';
+        const statusClass = c.status === 'SENT'
+          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20'
+          : c.status === 'COMPLETED'
+            ? 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/20'
+            : c.status === 'ERROR'
+              ? 'bg-red-500/15 text-red-400 border border-red-500/20'
+              : 'bg-amber-500/15 text-amber-400 border border-amber-500/20';
+        const timeline = isExpanded ? `
+          <div class="mt-4 pt-3 border-t border-slate-800/80 space-y-2">
+            ${(c.timeline || []).map(event => `
+              <div class="flex items-center justify-between gap-2 rounded p-2 ${event.secondary ? 'bg-slate-950/20 text-slate-500' : 'bg-slate-950/50 text-slate-300'}">
+                <span class="text-[9px] font-bold">${escapeHtml(event.stage)}</span>
+                <span class="text-[9px] font-mono">${event.timestamp ? new Date(event.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}) : 'N/A'}</span>
+              </div>
+            `).join('')}
+          </div>` : '';
+        return `
+          <div onclick="toggleOperationalConversation('${encodedKey}')" class="p-3.5 cursor-pointer transition-all border-b border-slate-800/60 ${isExpanded ? 'bg-slate-900 border-l-4 border-amber-500' : 'hover:bg-slate-900/20'}">
+            <div class="flex justify-between items-start gap-3">
+              <div class="min-w-0">
+                <h3 class="text-xs font-bold text-slate-200 truncate">${escapeHtml(patientName)}</h3>
+                <div class="text-[10px] text-slate-400 mt-0.5">${escapeHtml(c.phone || 'N/A')}</div>
+              </div>
+              <span class="px-1.5 py-0.5 rounded text-[8px] font-bold ${statusClass}">${escapeHtml(c.status)}</span>
+            </div>
+            <div class="text-[9px] text-slate-500 font-mono mt-1">Tenant: ${escapeHtml(c.tenant_id)} · Account: ${escapeHtml(c.account_id)} · Conv: ${escapeHtml(c.conversation_id)} · Contact: ${escapeHtml(c.contact_id)}</div>
+            ${!isExpanded ? `<div class="text-[11px] text-slate-400 truncate mt-1.5 bg-slate-950/20 p-1.5 rounded border border-slate-800/20">💬 ${escapeHtml(c.inbound_message || 'Contenido oculto o no disponible')}</div>` : ''}
+            ${timeline}
+          </div>
+        `;
+      }).join('');
+    }
+
     function applyFilters() {
       const filterVal = document.getElementById('filter-conv').value.trim().toLowerCase();
       const decisionVal = document.getElementById('filter-decision').value;
       const listContainer = document.getElementById('left-list-container');
+
+      if (leftTab === 'conversations') {
+        renderOperationalConversations(filterVal, decisionVal, listContainer);
+        return;
+      }
 
       if (allEvents.length === 0) {
         listContainer.innerHTML = '<div class="text-slate-600 text-xs text-center p-8">No hay eventos capturados en el Gateway.</div>';

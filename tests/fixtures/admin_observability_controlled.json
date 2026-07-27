@@ -1,0 +1,158 @@
+{
+  "idempotency": [
+    {
+      "tenant_id": "democoi1",
+      "message_id": "558",
+      "conversation_id": "33",
+      "trace_id": "trace-controlled",
+      "processed_at": "2026-07-27T18:38:13.144Z"
+    },
+    {
+      "tenant_id": "democoi1",
+      "message_id": "old-message",
+      "conversation_id": "33",
+      "trace_id": "trace-old",
+      "processed_at": "2026-07-25T10:00:00.000Z"
+    }
+  ],
+  "inbound": [
+    {
+      "id": 430,
+      "tenant_id": "democoi1",
+      "conversation_id": "33",
+      "contact_id": "8",
+      "message_id": "558",
+      "body": "Mensaje clínico completo de prueba",
+      "trace_id": "trace-controlled",
+      "created_at": "2026-07-27T18:37:52.077Z",
+      "processing_started_at": "2026-07-27T18:37:58.000Z",
+      "processed_at": "2026-07-27T18:38:13.144Z"
+    },
+    {
+      "id": 10,
+      "tenant_id": "democoi1",
+      "conversation_id": "33",
+      "contact_id": "8",
+      "message_id": "old-message",
+      "body": "Incidente histórico",
+      "trace_id": "trace-old",
+      "created_at": "2026-07-25T10:00:00.000Z"
+    }
+  ],
+  "batches": [
+    {
+      "batch_key": "batch-controlled",
+      "tenant_id": "democoi1",
+      "account_id": "2",
+      "clinic_id": "coi_demo",
+      "hermes_profile": "helios",
+      "conversation_id": "33",
+      "contact_id": "8",
+      "adapter_request_key": "adapter-controlled",
+      "outbox_key": "outbox-controlled",
+      "ai_status": "completed",
+      "delivery_status": "sent",
+      "created_at": "2026-07-27T18:37:58.470Z",
+      "ai_completed_at": "2026-07-27T18:38:12.575Z",
+      "processed_at": "2026-07-27T18:38:14.453Z"
+    }
+  ],
+  "outbox": [
+    {
+      "outbox_key": "outbox-controlled",
+      "batch_key": "batch-controlled",
+      "tenant_id": "democoi1",
+      "account_id": "2",
+      "conversation_id": "33",
+      "contact_id": "8",
+      "adapter_request_key": "adapter-controlled",
+      "content": "Respuesta Hermes completa de prueba",
+      "status": "sent",
+      "chatwoot_outbound_message_id": "560",
+      "http_status": 200,
+      "created_at": "2026-07-27T18:38:12.528Z",
+      "sent_at": "2026-07-27T18:38:14.341Z"
+    }
+  ],
+  "executions": [
+    {
+      "tenant_id": "democoi1",
+      "account_id": "2",
+      "conversation_id": "33",
+      "contact_id": "8",
+      "adapter_request_key": "adapter-controlled",
+      "status": "completed",
+      "hermes_conversation_id": "helios-fixture-conversation",
+      "hermes_response_id": "fixture-response",
+      "duration_ms": 12824,
+      "total_tokens": 4380,
+      "created_at": "2026-07-27T18:37:59.000Z",
+      "completed_at": "2026-07-27T18:38:12.063Z"
+    }
+  ],
+  "adapterEvents": [
+    {
+      "id": "adapter-event-controlled",
+      "trace_id": "trace-controlled",
+      "tenant_id": "democoi1",
+      "account_id": "2",
+      "conversation_id": "33",
+      "contact_id": "8",
+      "adapter_request_key": "adapter-controlled",
+      "status": "completed",
+      "idempotency_status": "new",
+      "response_returned": true,
+      "identity_verified": true,
+      "patient_first_name": "Ana",
+      "patient_last_name": "Clínica",
+      "patient_phone": "+580000000001",
+      "message_content": "Mensaje clínico completo de prueba",
+      "response_content": "Respuesta Hermes completa de prueba",
+      "hermes_conversation_id": "helios-fixture-conversation",
+      "hermes_response_id": "fixture-response",
+      "duration_ms": 12824,
+      "total_tokens": 4380,
+      "created_at": "2026-07-27T18:37:59.173Z",
+      "completed_at": "2026-07-27T18:38:12.208Z"
+    }
+  ],
+  "profiles": [
+    {
+      "tenant_id": "democoi1",
+      "contact_id": "8",
+      "first_name": "[REDACTED]",
+      "last_name": "UNKNOWN",
+      "name": "N/A",
+      "phone": "+580000000001",
+      "profile_complete": false,
+      "updated_at": "2026-07-27T18:38:12.000Z"
+    }
+  ],
+  "states": [
+    {
+      "tenant_id": "democoi1",
+      "conversation_id": "33",
+      "contact_id": "8",
+      "status": "new",
+      "pending_question": "appointment_reason",
+      "pending_intent": "create_appointment",
+      "updated_at": "2026-07-27T18:38:12.000Z"
+    }
+  ],
+  "logs": [
+    {
+      "id": "log-echo",
+      "trace_id": "trace-echo",
+      "tenant_id": "democoi1",
+      "conversation_id": "33",
+      "contact_id": "8",
+      "event_type": "event_ignored",
+      "metadata": {
+        "ignore_reason": "outgoing_echo",
+        "message_id": "560",
+        "body": "[REDACTED]"
+      },
+      "created_at": "2026-07-27T18:38:15.000Z"
+    }
+  ]
+}

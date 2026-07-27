@@ -17,6 +17,11 @@ import { startOutboxWorker, outboxMetrics } from './services/chatwoot-outbox-wor
 import { componentHealth } from './services/component-health.js';
 import { refreshDependencyHealth } from './services/health-probes.js';
 import { assertSupabaseSuccess } from './supabase/assert-success.js';
+import {
+  isValidClinicalName,
+  loadAdminObservability,
+  parseAdminRange
+} from './admin/observability.js';
 import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -194,59 +199,63 @@ async function checkAuth(request: any, reply: any) {
   return tenant.tenant_id; // Retorna el tenant_id validado
 }
 
-// Endpoint para obtener estadísticas del Gateway filtradas por Tenant
-server.get('/admin/stats', async (request, reply) => {
+async function getAdministrativeObservability(request: any, reply: any) {
   const tenantId = await checkAuth(request, reply);
-  const results = await Promise.all([
-    supabase.from('helios_message_idempotency').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId),
-    supabase.from('helios_inbound_buffer').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId),
-    supabase.from('helios_processing_batches').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId),
-    supabase.from('helios_chatwoot_outbox').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('status', 'pending'),
-    supabase.from('helios_chatwoot_outbox').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('status', 'sent'),
-    supabase.from('helios_chatwoot_outbox').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('status', 'delivery_unknown'),
-    supabase.from('helios_adapter_executions').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId),
-    supabase.from('helios_adapter_events').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('idempotency_status', 'deduplicated'),
-    supabase.from('helios_adapter_events').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('idempotency_status', 'new'),
-    supabase.from('helios_adapter_events').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).in('status', ['completed', 'deduplicated']),
-    supabase.from('helios_gateway_logs').select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('event_type', 'event_ignored')
-  ]);
-  results.forEach((result, index) => assertSupabaseSuccess(result, `admin.stats.${index}`, { tenant_id: tenantId }));
-  const [
-    uniqueWebhooks,
-    inboundMessages,
-    batches,
-    outboxPending,
-    outboxSent,
-    outboxUnknown,
-    adapterExecutions,
-    adapterDeduplicated,
-    hermesRequests,
-    hermesCompleted,
-    ignoredEvents
-  ] = results.map(result => result.count || 0);
-
+  await refreshDependencyHealth();
+  const range = parseAdminRange(request.query?.range);
+  const observability = await loadAdminObservability(supabase, {
+    tenantId,
+    showPii: config.HELIOS_ADMIN_SHOW_PII,
+    range
+  });
   return {
-    status: 'online',
+    ...observability,
     webhookUrl: `/webhooks/chatwoot/${tenantId}`,
-    totalWebhooksReceived: uniqueWebhooks,
-    incomingCount: inboundMessages,
-    outgoingCount: outboxSent,
-    totalEventsIgnored: ignoredEvents,
-    duplicateCount: adapterDeduplicated,
-    totalMessagesProcessed: batches,
-    batchesCreated: batches,
-    adapterExecutionsNew: adapterExecutions,
-    adapterExecutionsDeduplicated: adapterDeduplicated,
-    hermesRequestsReal: hermesRequests,
-    hermesResponsesCompleted: hermesCompleted,
-    outboxPending,
-    chatwootSent: outboxSent,
-    deliveryUnknown: outboxUnknown,
+    health: {
+      hermes_agent_api: componentHealth.hermes,
+      adapter: componentHealth.adapter,
+      supabase: componentHealth.supabase,
+      chatwoot: componentHealth.chatwoot,
+      recovery_mode: config.HELIOS_RECOVERY_MODE
+    }
+  };
+}
+
+// Las tablas operativas son la fuente principal; los logs solo complementan la timeline.
+server.get('/admin/observability', async (request, reply) => {
+  return getAdministrativeObservability(request, reply);
+});
+
+// Alias compatible para consumidores del endpoint de estadísticas anterior.
+server.get('/admin/stats', async (request, reply) => {
+  const result = await getAdministrativeObservability(request, reply);
+  const stats = result.stats;
+  return {
+    ...stats,
+    status: 'online',
+    webhookUrl: result.webhookUrl,
+    totalWebhooksReceived: stats.uniqueWebhooks,
+    incomingCount: stats.uniqueIncomingMessages,
+    outgoingCount: stats.chatwootSent,
+    totalEventsIgnored: stats.ignoredWebhooks,
+    duplicateCount: stats.duplicatesPrevented,
+    totalMessagesProcessed: stats.hermesCompleted,
+    batchesCreated: stats.batchesProcessed,
+    adapterExecutionsNew: stats.adapterExecutionsNew,
+    adapterExecutionsDeduplicated: stats.adapterExecutionsDeduplicated,
+    hermesRequestsReal: stats.hermesRequestsReal,
+    hermesResponsesCompleted: stats.hermesCompleted,
+    outboxPending: stats.outboxPending,
+    chatwootSent: stats.chatwootSent,
+    deliveryUnknown: stats.deliveryUnknown,
     recoveryAi: recoveryMetrics.ai_recovery,
     recoveryDelivery: recoveryMetrics.delivery_recovery,
-    duplicatesPrevented: outboxMetrics.deduplicated,
+    duplicatesPrevented: stats.duplicatesPrevented,
+    range: result.range,
+    range_start: result.range_start,
     recoveryMode: config.HELIOS_RECOVERY_MODE,
-    hermesMode: getHermesStatus()
+    hermesMode: getHermesStatus(),
+    health: result.health
   };
 });
 
@@ -306,8 +315,7 @@ server.get('/admin/logs', async (request, reply) => {
   }
 });
 
-// Endpoint para el Dashboard: Perfiles de pacientes verificados desde Supabase
-// Devuelve los perfiles con PII enmascarada para display seguro
+// Endpoint para el Dashboard: perfiles clínicos, sujeto al flag administrativo de PII.
 server.get('/admin/contacts', async (request, reply) => {
   try {
     const tenantId = await checkAuth(request, reply);
@@ -330,9 +338,13 @@ server.get('/admin/contacts', async (request, reply) => {
       let displayName = null;
       let displayNameSource = 'unknown';
 
-      if (p.profile_complete === true && (p.first_name || p.last_name)) {
-        displayName = [p.first_name, p.last_name].filter(Boolean).join(' ');
-        displayNameSource = 'verified_profile';
+      const candidateName = [p.first_name, p.last_name]
+        .filter(isValidClinicalName)
+        .join(' ')
+        .trim() || (isValidClinicalName(p.name) ? String(p.name).trim() : '');
+      if (candidateName) {
+        displayName = candidateName;
+        displayNameSource = 'persisted_profile';
       } else {
         displayName = null;
         displayNameSource = 'unknown';
@@ -344,10 +356,10 @@ server.get('/admin/contacts', async (request, reply) => {
 
       return {
         contact_id: p.contact_id,
-        display_name: displayName,
+        display_name: config.HELIOS_ADMIN_SHOW_PII ? displayName : null,
         display_name_source: displayNameSource,
-        first_name: p.first_name || null,
-        last_name: p.last_name || null,
+        first_name: config.HELIOS_ADMIN_SHOW_PII ? p.first_name || null : undefined,
+        last_name: config.HELIOS_ADMIN_SHOW_PII ? p.last_name || null : undefined,
         email: config.HELIOS_ADMIN_SHOW_PII ? p.email || null : undefined,
         phone: config.HELIOS_ADMIN_SHOW_PII ? p.phone || null : undefined,
         email_masked: maskedEmail,
