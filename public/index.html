@@ -215,6 +215,8 @@
     let expandedConversationId = null; 
     let operationalConversations = [];
     let selectedTimeRange = 'today';
+    let activeOperationalConversationKey = null;
+    let operationalDetailTab = 'summary';
 
     // OBTENER TOKEN DE SESION
     function getSessionToken() {
@@ -304,6 +306,8 @@
       expandedConversationId = null;
       allEvents = [];
       operationalConversations = [];
+      activeOperationalConversationKey = null;
+      operationalDetailTab = 'summary';
       
       // Restablecer el visor de detalles a su estado inicial
       document.getElementById('inspector-panel').innerHTML = `
@@ -366,6 +370,12 @@
           badge.className = 'px-2.5 py-1 rounded-full text-xs font-bold bg-red-500/10 text-red-400 border border-red-500/20 animate-pulse';
         }
         applyFilters();
+        if (activeOperationalConversationKey) {
+          const selectedConversation = operationalConversations.find(
+            conversation => conversation.group_key === activeOperationalConversationKey
+          );
+          if (selectedConversation) showOperationalConversationDetails(selectedConversation);
+        }
       } catch (e) {
         console.error(e);
       }
@@ -393,6 +403,12 @@
 
         allEvents = await res.json();
         applyFilters();
+        if (activeOperationalConversationKey) {
+          const selectedConversation = operationalConversations.find(
+            conversation => conversation.group_key === activeOperationalConversationKey
+          );
+          if (selectedConversation) showOperationalConversationDetails(selectedConversation);
+        }
         if (activeEventId) {
           showEventDetails(activeEventId, forceRender);
         }
@@ -526,43 +542,321 @@
 
     function toggleOperationalConversation(encodedKey) {
       const groupKey = decodeURIComponent(encodedKey);
-      expandedConversationId = expandedConversationId === groupKey ? null : groupKey;
+      const isNewSelection = activeOperationalConversationKey !== groupKey;
+      activeOperationalConversationKey = groupKey;
+      expandedConversationId = groupKey;
+      if (isNewSelection) operationalDetailTab = 'summary';
       activeEventId = null;
       applyFilters();
       const conversation = operationalConversations.find(item => item.group_key === groupKey);
       if (conversation) showOperationalConversationDetails(conversation);
     }
 
+    function changeOperationalDetailTab(tabName) {
+      operationalDetailTab = tabName;
+      const conversation = operationalConversations.find(
+        item => item.group_key === activeOperationalConversationKey
+      );
+      if (conversation) showOperationalConversationDetails(conversation);
+    }
+
+    function formatOperationalTimestamp(value) {
+      return value ? new Date(value).toLocaleString() : 'N/A';
+    }
+
+    function formatOperationalDuration(milliseconds) {
+      if (!Number.isFinite(milliseconds) || milliseconds < 0) return 'N/A';
+      if (milliseconds < 1000) return `${milliseconds} ms`;
+      return `${(milliseconds / 1000).toFixed(2)} s`;
+    }
+
+    function sanitizeRawForDisplay(value, key = '') {
+      const normalizedKey = String(key).toLowerCase();
+      const isSecret = [
+        'authorization',
+        'password',
+        'secret',
+        'token',
+        'api_key',
+        'apikey',
+        'access_token',
+        'refresh_token',
+        'cookie',
+        'set-cookie'
+      ].includes(normalizedKey)
+        || normalizedKey.endsWith('_secret')
+        || normalizedKey.endsWith('_password')
+        || normalizedKey.endsWith('_token');
+      if (isSecret) return value ? '[REDACTED]' : value;
+      if (Array.isArray(value)) return value.map(item => sanitizeRawForDisplay(item));
+      if (value && typeof value === 'object') {
+        return Object.fromEntries(
+          Object.entries(value).map(([childKey, childValue]) => [
+            childKey,
+            sanitizeRawForDisplay(childValue, childKey)
+          ])
+        );
+      }
+      return value;
+    }
+
+    function operationalValueCard(label, value, extraClass = '') {
+      return `
+        <div class="bg-slate-950/40 border border-slate-800 rounded-lg p-3 ${extraClass}">
+          <span class="text-slate-500 block text-[9px] uppercase tracking-wider">${escapeHtml(label)}</span>
+          <div class="mt-1 text-xs text-slate-200 break-words">${escapeHtml(value ?? 'N/A')}</div>
+        </div>
+      `;
+    }
+
+    function operationalJsonBlock(title, value, open = false) {
+      if (value === undefined || value === null) {
+        return `
+          <div class="border border-slate-800 rounded-lg p-3 bg-slate-950/30">
+            <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400">${escapeHtml(title)}</div>
+            <div class="text-xs text-slate-600 italic mt-2">No disponible en las fuentes administrativas actuales.</div>
+          </div>
+        `;
+      }
+      const safeValue = sanitizeRawForDisplay(value);
+      return `
+        <details ${open ? 'open' : ''} class="group border border-slate-800 rounded-lg bg-slate-950/30 overflow-hidden">
+          <summary class="cursor-pointer select-none px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-300 hover:bg-slate-900/60">
+            ${escapeHtml(title)}
+          </summary>
+          <pre class="border-t border-slate-800 p-3 text-[10px] leading-relaxed code-font text-slate-400 whitespace-pre-wrap break-words overflow-x-hidden">${escapeHtml(JSON.stringify(safeValue, null, 2))}</pre>
+        </details>
+      `;
+    }
+
+    function relatedDebugEvents(conversation) {
+      return allEvents
+        .filter(event =>
+          String(event.normalizedPayload?.tenant_id || '') === String(conversation.tenant_id)
+          && String(event.conversation_id || '') === String(conversation.conversation_id)
+          && String(event.contact_id || '') === String(conversation.contact_id)
+        )
+        .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+    }
+
     function showOperationalConversationDetails(conversation) {
       const inspector = document.getElementById('inspector-panel');
-      const timeline = (conversation.timeline || []).map(event => `
-        <div class="relative">
-          <span class="absolute -left-[31px] top-0.5 rounded-full w-2.5 h-2.5 ${event.secondary ? 'bg-slate-600' : 'bg-emerald-500'} ring-4 ring-slate-950"></span>
-          <div class="text-[10px] font-mono text-slate-500">${event.timestamp ? new Date(event.timestamp).toLocaleString() : 'Sin timestamp'}</div>
-          <div class="text-xs font-semibold ${event.secondary ? 'text-slate-500' : 'text-slate-200'}">${escapeHtml(event.stage)}</div>
-          <pre class="mt-1 overflow-auto text-[10px] text-slate-400 code-font bg-slate-950/60 p-2 rounded border border-slate-800/40 whitespace-pre-wrap">${escapeHtml(JSON.stringify(event, null, 2))}</pre>
-        </div>
-      `).join('');
+      const durableTimeline = conversation.timeline || [];
+      const stage = name => durableTimeline.find(event => event.stage === name) || {};
+      const inboundStage = stage('INBOUND_RECEIVED');
+      const adapterStage = stage('ADAPTER_COMPLETED');
+      const outboxCreatedStage = stage('OUTBOX_CREATED');
+      const sentStage = stage('CHATWOOT_SENT');
+      const firstTimestamp = inboundStage.timestamp || durableTimeline[0]?.timestamp;
+      const finalTimestamp = sentStage.timestamp || conversation.last_timestamp;
+      const totalDuration = firstTimestamp && finalTimestamp
+        ? new Date(finalTimestamp).getTime() - new Date(firstTimestamp).getTime()
+        : null;
+      const debugEvents = relatedDebugEvents(conversation);
+      const debugEvent = debugEvents[0] || {};
+      const hermesRequest = debugEvents.find(event => event.hermesRequest)?.hermesRequest;
+      const hermesResponse = debugEvents.find(event => event.hermesResponse)?.hermesResponse;
+      const normalizedInput = debugEvents.find(event => event.normalizedPayload)?.normalizedPayload;
+      const inboundRaw = debugEvents.find(event => event.rawPayload)?.rawPayload
+        || normalizedInput?.raw_payload;
+      const debugHermesRequestStep = debugEvents
+        .flatMap(event => event.timeline || [])
+        .find(step => step.type === 'hermes_request');
+      const postHermesActions = debugEvents.flatMap(event => event.actionsExecuted || []);
+      const adapterRequestKey = conversation.adapter_request_keys?.[0] || adapterStage.adapter_request_key;
+      const batchKey = conversation.batch_keys?.[0] || adapterStage.batch_key;
+      const outboxKey = conversation.outbox_keys?.[0] || sentStage.outbox_key;
+      const responseText = conversation.hermes_response || hermesResponse?.message_for_client || 'N/A';
+      const tabClass = tab => operationalDetailTab === tab
+        ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-sm'
+        : 'bg-slate-950/40 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-900';
+
+      let contentHtml = '';
+      if (operationalDetailTab === 'summary') {
+        contentHtml = `
+          <div class="grid grid-cols-2 gap-3">
+            ${operationalValueCard('Paciente', isUsablePatientName(conversation.patient_name) ? conversation.patient_name : 'N/A')}
+            ${operationalValueCard('Teléfono', conversation.phone || 'N/A')}
+            ${operationalValueCard('Tenant', conversation.tenant_id)}
+            ${operationalValueCard('Account', conversation.account_id)}
+            ${operationalValueCard('Conversation', conversation.conversation_id)}
+            ${operationalValueCard('Contact', conversation.contact_id)}
+            ${operationalValueCard('Estado final', conversation.status)}
+            ${operationalValueCard('Duración total', formatOperationalDuration(totalDuration))}
+            ${operationalValueCard('Inbound recibido', formatOperationalTimestamp(firstTimestamp))}
+            ${operationalValueCard('Adapter completado', formatOperationalTimestamp(adapterStage.timestamp))}
+            ${operationalValueCard('Chatwoot enviado', formatOperationalTimestamp(sentStage.timestamp))}
+            ${operationalValueCard('Última actualización', formatOperationalTimestamp(conversation.last_timestamp))}
+            ${operationalValueCard('Hermes Conversation ID', conversation.hermes_conversation_id || 'N/A', 'col-span-2')}
+            ${operationalValueCard('Hermes Response ID', conversation.hermes_response_id || 'N/A', 'col-span-2')}
+          </div>
+        `;
+      } else if (operationalDetailTab === 'input') {
+        const identity = {
+          patient_name: conversation.patient_name,
+          patient_name_source: conversation.patient_name_source,
+          phone: conversation.phone,
+          profile_complete: conversation.profile_complete
+        };
+        const chatwootMetadata = normalizedInput ? {
+          account_id: normalizedInput.account_id,
+          inbox_id: normalizedInput.inbox_id,
+          direction: normalizedInput.direction,
+          message_type: normalizedInput.message_type,
+          source_id: normalizedInput.source_id
+        } : null;
+        contentHtml = `
+          <div class="space-y-3">
+            ${operationalValueCard('Mensaje entrante completo', conversation.inbound_message || 'N/A', 'col-span-2')}
+            <div class="grid grid-cols-2 gap-3">
+              ${operationalValueCard('Source message ID', inboundStage.source_message_id || 'N/A')}
+              ${operationalValueCard('Inbound trace ID', inboundStage.trace_id || 'N/A')}
+              ${operationalValueCard('Fecha / hora', formatOperationalTimestamp(inboundStage.timestamp), 'col-span-2')}
+            </div>
+            ${operationalJsonBlock('Identidad normalizada', identity, true)}
+            ${operationalJsonBlock('Metadatos Chatwoot disponibles', chatwootMetadata)}
+            ${operationalJsonBlock('Raw inbound permitido', inboundRaw)}
+          </div>
+        `;
+      } else if (operationalDetailTab === 'hermes_req') {
+        contentHtml = `
+          <div class="space-y-3">
+            <div class="grid grid-cols-2 gap-3">
+              ${operationalValueCard('Adapter request key', adapterRequestKey || 'N/A', 'col-span-2')}
+              ${operationalValueCard('Batch key', batchKey || 'N/A', 'col-span-2')}
+              ${operationalValueCard('Profile', conversation.hermes_profile || 'N/A')}
+              ${operationalValueCard('Modelo', hermesRequest?.model || hermesResponse?.model || 'N/A')}
+              ${operationalValueCard('Transporte', hermesRequest?.transport || 'agent_api')}
+              ${operationalValueCard('Intento', hermesRequest?.attempt_count || adapterStage.attempt_count || 'N/A')}
+              ${operationalValueCard('Inicio de ejecución', formatOperationalTimestamp(debugHermesRequestStep?.timestamp || adapterStage.started_at))}
+              ${operationalValueCard('Idempotencia', hermesResponse?.idempotency_status || 'N/A')}
+            </div>
+            ${operationalJsonBlock('Request payload enviado a Hermes', hermesRequest, true)}
+          </div>
+        `;
+      } else if (operationalDetailTab === 'hermes_res') {
+        const toolCalls = hermesResponse?.tool_calls || [];
+        contentHtml = `
+          <div class="space-y-3">
+            ${operationalValueCard('Respuesta completa de Hermes', responseText, 'col-span-2')}
+            <div class="grid grid-cols-2 gap-3">
+              ${operationalValueCard('Hermes Conversation ID', conversation.hermes_conversation_id || 'N/A', 'col-span-2')}
+              ${operationalValueCard('Hermes Response ID', conversation.hermes_response_id || 'N/A', 'col-span-2')}
+              ${operationalValueCard('HTTP status', hermesResponse?.http_status || adapterStage.http_status || 'N/A')}
+              ${operationalValueCard('Duración Hermes', formatOperationalDuration(hermesResponse?.hermes_duration_ms ?? adapterStage.duration_ms))}
+              ${operationalValueCard('Input tokens', hermesResponse?.input_tokens || 'N/A')}
+              ${operationalValueCard('Output tokens', hermesResponse?.output_tokens || 'N/A')}
+              ${operationalValueCard('Total tokens', hermesResponse?.total_tokens || adapterStage.total_tokens || 'N/A')}
+              ${operationalValueCard('safe_to_send', hermesResponse?.safe_to_send ?? 'N/A')}
+              ${operationalValueCard('Etapa', responseText !== 'N/A' ? 'response_returned' : 'N/A')}
+              ${operationalValueCard('Herramientas usadas', toolCalls.map(tool => tool.name || tool.tool_name).filter(Boolean).join(', ') || 'Ninguna')}
+            </div>
+            ${operationalJsonBlock('Tool calls', toolCalls)}
+            ${operationalJsonBlock('Adapter response disponible', hermesResponse)}
+          </div>
+        `;
+      } else if (operationalDetailTab === 'outputs') {
+        const outboxPayload = {
+          outbox_key: outboxKey,
+          content: conversation.hermes_response,
+          status: conversation.status === 'SENT' ? 'sent' : conversation.status,
+          chatwoot_outbound_message_id: sentStage.chatwoot_outbound_message_id,
+          http_status: sentStage.http_status,
+          created_at: outboxCreatedStage.timestamp,
+          sent_at: sentStage.timestamp
+        };
+        contentHtml = `
+          <div class="space-y-3">
+            ${operationalValueCard('Texto enviado a Chatwoot', conversation.hermes_response || 'N/A', 'col-span-2')}
+            <div class="grid grid-cols-2 gap-3">
+              ${operationalValueCard('Outbox key', outboxKey || 'N/A', 'col-span-2')}
+              ${operationalValueCard('Chatwoot outbound message ID', sentStage.chatwoot_outbound_message_id || 'N/A')}
+              ${operationalValueCard('Estado', conversation.status === 'SENT' ? 'sent' : conversation.status)}
+              ${operationalValueCard('Attempt count', sentStage.attempt_count || outboxCreatedStage.attempt_count || 'N/A')}
+              ${operationalValueCard('Created at', formatOperationalTimestamp(outboxCreatedStage.timestamp))}
+              ${operationalValueCard('Sent at', formatOperationalTimestamp(sentStage.timestamp), 'col-span-2')}
+            </div>
+            ${operationalJsonBlock('Acciones post-Hermes', postHermesActions)}
+            ${operationalJsonBlock('Outbox payload disponible', outboxPayload)}
+          </div>
+        `;
+      } else if (operationalDetailTab === 'raw') {
+        const outboxPayload = {
+          outbox_key: outboxKey,
+          batch_key: batchKey,
+          adapter_request_key: adapterRequestKey,
+          content: conversation.hermes_response,
+          chatwoot_outbound_message_id: sentStage.chatwoot_outbound_message_id,
+          status: conversation.status === 'SENT' ? 'sent' : conversation.status
+        };
+        contentHtml = `
+          <div class="space-y-3">
+            ${operationalJsonBlock('Inbound raw', inboundRaw)}
+            ${operationalJsonBlock('Adapter request raw', hermesRequest)}
+            ${operationalJsonBlock('Adapter response raw', hermesResponse)}
+            ${operationalJsonBlock('Outbox payload', outboxPayload)}
+            ${operationalJsonBlock('Debug complementario', debugEvents)}
+          </div>
+        `;
+      } else {
+        const sourceByStage = {
+          INBOUND_RECEIVED: 'helios_inbound_buffer',
+          BUFFERED: 'helios_inbound_buffer',
+          BATCH_CREATED: 'helios_processing_batches',
+          ADAPTER_COMPLETED: 'helios_adapter_executions / helios_adapter_events',
+          OUTBOX_CREATED: 'helios_chatwoot_outbox',
+          CHATWOOT_SENT: 'helios_chatwoot_outbox',
+          OUTGOING_ECHO_IGNORED: 'helios_gateway_logs'
+        };
+        contentHtml = `
+          <div class="relative border-l border-slate-800 ml-3 pl-6 space-y-5">
+            ${durableTimeline.map(event => {
+              const eventState = event.secondary
+                ? 'SECUNDARIO'
+                : event.ai_status || event.status || (event.http_status ? `HTTP ${event.http_status}` : conversation.status);
+              return `
+                <div class="relative">
+                  <span class="absolute -left-[31px] top-1 rounded-full w-2.5 h-2.5 ${event.secondary ? 'bg-slate-600' : 'bg-emerald-500'} ring-4 ring-slate-950"></span>
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div class="text-[10px] font-mono text-slate-500">${escapeHtml(formatOperationalTimestamp(event.timestamp))}</div>
+                      <div class="text-xs font-semibold ${event.secondary ? 'text-slate-500' : 'text-slate-200'}">${escapeHtml(event.stage)}</div>
+                    </div>
+                    <span class="px-1.5 py-0.5 rounded text-[8px] font-bold ${event.secondary ? 'bg-slate-800 text-slate-500' : 'bg-emerald-500/15 text-emerald-400'}">${escapeHtml(eventState)}</span>
+                  </div>
+                  <div class="text-[9px] text-slate-600 mt-1">Fuente: ${escapeHtml(sourceByStage[event.stage] || 'operational')}</div>
+                  <div class="mt-2">${operationalJsonBlock('Detalle', event)}</div>
+                </div>
+              `;
+            }).join('') || '<div class="text-xs text-slate-500">Sin eventos durables.</div>'}
+          </div>
+        `;
+      }
+
+      const tabs = [
+        ['summary', 'Resumen'],
+        ['input', 'Entrada'],
+        ['hermes_req', 'Hermes Req'],
+        ['hermes_res', 'Hermes Res'],
+        ['outputs', 'Salidas'],
+        ['raw', 'Raw Payload'],
+        ['timeline', 'Timeline']
+      ];
       inspector.innerHTML = `
-        <div class="px-6 py-4 bg-slate-950/60 border-b border-slate-800 flex items-center justify-between">
+        <div class="px-5 py-3.5 bg-slate-950/60 border-b border-slate-800 flex items-center justify-between gap-3">
           <div>
             <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">Conversación operativa</h2>
             <p class="text-[10px] text-slate-500 mt-1">${escapeHtml(conversation.tenant_id)} · account ${escapeHtml(conversation.account_id)} · conv ${escapeHtml(conversation.conversation_id)} · contact ${escapeHtml(conversation.contact_id)}</p>
           </div>
           <span class="px-2 py-1 rounded text-[10px] font-bold ${conversation.status === 'SENT' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-slate-800 text-slate-300'}">${escapeHtml(conversation.status)}</span>
         </div>
-        <div class="p-5 overflow-y-auto flex-1 space-y-5">
-          <div class="grid grid-cols-2 gap-3 text-xs">
-            <div class="bg-slate-950/40 border border-slate-800 rounded-lg p-3"><span class="text-slate-500 block text-[9px] uppercase">Paciente</span>${escapeHtml(isUsablePatientName(conversation.patient_name) ? conversation.patient_name : 'N/A')}</div>
-            <div class="bg-slate-950/40 border border-slate-800 rounded-lg p-3"><span class="text-slate-500 block text-[9px] uppercase">Teléfono</span>${escapeHtml(conversation.phone || 'N/A')}</div>
-            <div class="col-span-2 bg-slate-950/40 border border-slate-800 rounded-lg p-3"><span class="text-slate-500 block text-[9px] uppercase">Mensaje entrante</span><div class="mt-1 whitespace-pre-wrap">${escapeHtml(conversation.inbound_message || 'N/A')}</div></div>
-            <div class="col-span-2 bg-slate-950/40 border border-slate-800 rounded-lg p-3"><span class="text-slate-500 block text-[9px] uppercase">Respuesta Hermes</span><div class="mt-1 whitespace-pre-wrap">${escapeHtml(conversation.hermes_response || 'N/A')}</div></div>
-            <div class="col-span-2 bg-slate-950/40 border border-slate-800 rounded-lg p-3 code-font text-[10px]"><span class="text-slate-500 block text-[9px] uppercase font-sans">Correlación</span>Hermes conversation: ${escapeHtml(conversation.hermes_conversation_id || 'N/A')}<br>Hermes response: ${escapeHtml(conversation.hermes_response_id || 'N/A')}<br>Batch: ${escapeHtml((conversation.batch_keys || []).join(', ') || 'N/A')}<br>Adapter request: ${escapeHtml((conversation.adapter_request_keys || []).join(', ') || 'N/A')}<br>Outbox: ${escapeHtml((conversation.outbox_keys || []).join(', ') || 'N/A')}</div>
-          </div>
-          <div>
-            <h3 class="font-bold text-xs uppercase tracking-wider text-slate-400 mb-4">Timeline durable</h3>
-            <div class="relative border-l border-slate-800 ml-3 pl-6 space-y-5">${timeline || '<div class="text-xs text-slate-500">Sin eventos operativos.</div>'}</div>
-          </div>
+        <nav class="px-3 py-2 bg-slate-950/40 border-b border-slate-800 flex flex-wrap gap-1.5" aria-label="Detalle de conversación">
+          ${tabs.map(([tab, label]) => `
+            <button type="button" onclick="changeOperationalDetailTab('${tab}')" class="px-2.5 py-1.5 rounded-md border text-[9px] font-bold whitespace-nowrap transition-colors ${tabClass(tab)}">${label}</button>
+          `).join('')}
+        </nav>
+        <div class="p-5 overflow-y-auto overflow-x-hidden flex-1 text-xs">
+          ${contentHtml}
         </div>
       `;
     }
