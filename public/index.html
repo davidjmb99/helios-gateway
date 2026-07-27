@@ -10,6 +10,12 @@
   <style>
     body { font-family: 'Outfit', sans-serif; }
     .code-font { font-family: 'Fira Code', monospace; }
+    .message-clamp {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      overflow: hidden;
+    }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col justify-between">
@@ -595,15 +601,8 @@
             : c.status === 'ERROR'
               ? 'bg-red-500/15 text-red-400 border border-red-500/20'
               : 'bg-amber-500/15 text-amber-400 border border-amber-500/20';
-        const timeline = isExpanded ? `
-          <div class="mt-4 pt-3 border-t border-slate-800/80 space-y-2">
-            ${(c.timeline || []).map(event => `
-              <div class="flex items-center justify-between gap-2 rounded p-2 ${event.secondary ? 'bg-slate-950/20 text-slate-500' : 'bg-slate-950/50 text-slate-300'}">
-                <span class="text-[9px] font-bold">${escapeHtml(event.stage)}</span>
-                <span class="text-[9px] font-mono">${event.timestamp ? new Date(event.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}) : 'N/A'}</span>
-              </div>
-            `).join('')}
-          </div>` : '';
+        const inboundMessage = c.inbound_message || 'Contenido oculto o no disponible';
+        const outboundMessage = c.hermes_response || 'Contenido oculto o no disponible';
         return `
           <div onclick="toggleOperationalConversation('${encodedKey}')" class="p-3.5 cursor-pointer transition-all border-b border-slate-800/60 ${isExpanded ? 'bg-slate-900 border-l-4 border-amber-500' : 'hover:bg-slate-900/20'}">
             <div class="flex justify-between items-start gap-3">
@@ -614,8 +613,16 @@
               <span class="px-1.5 py-0.5 rounded text-[8px] font-bold ${statusClass}">${escapeHtml(c.status)}</span>
             </div>
             <div class="text-[9px] text-slate-500 font-mono mt-1">Tenant: ${escapeHtml(c.tenant_id)} · Account: ${escapeHtml(c.account_id)} · Conv: ${escapeHtml(c.conversation_id)} · Contact: ${escapeHtml(c.contact_id)}</div>
-            ${!isExpanded ? `<div class="text-[11px] text-slate-400 truncate mt-1.5 bg-slate-950/20 p-1.5 rounded border border-slate-800/20">💬 ${escapeHtml(c.inbound_message || 'Contenido oculto o no disponible')}</div>` : ''}
-            ${timeline}
+            <div class="mt-2.5 grid gap-2">
+              <div class="bg-slate-950/30 border border-slate-800/40 rounded p-2">
+                <div class="text-[8px] font-bold uppercase tracking-wider text-slate-500 mb-0.5">Mensaje entrante</div>
+                <div class="message-clamp text-[11px] leading-4 text-slate-300" title="${escapeHtml(inboundMessage)}">${escapeHtml(inboundMessage)}</div>
+              </div>
+              <div class="bg-slate-950/30 border border-slate-800/40 rounded p-2">
+                <div class="text-[8px] font-bold uppercase tracking-wider text-slate-500 mb-0.5">Mensaje de salida</div>
+                <div class="message-clamp text-[11px] leading-4 text-slate-300" title="${escapeHtml(outboundMessage)}">${escapeHtml(outboundMessage)}</div>
+              </div>
+            </div>
           </div>
         `;
       }).join('');
