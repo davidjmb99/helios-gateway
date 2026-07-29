@@ -256,6 +256,7 @@
     let lastChatConversationKey = null;
     let activeOperationalTurnKey = null;
     let activeOperationalMessageKey = null;
+    let durableConversationMessages = new Map();
 
     // OBTENER TOKEN DE SESION
     function getSessionToken() {
@@ -350,6 +351,7 @@
       lastChatConversationKey = null;
       activeOperationalTurnKey = null;
       activeOperationalMessageKey = null;
+      durableConversationMessages = new Map();
       
       // Restablecer el visor de detalles a su estado inicial
       document.getElementById('inspector-panel').innerHTML = `
@@ -424,6 +426,7 @@
             conversation => conversation.group_key === activeOperationalConversationKey
           );
           if (selectedConversation) {
+            await fetchDurableConversationHistory(selectedConversation);
             renderSelectedOperationalConversation(selectedConversation);
           } else {
             activeOperationalConversationKey = null;
@@ -598,7 +601,34 @@
       return normalized && !['[REDACTED]', 'REDACTED', 'UNKNOWN', 'N/A', 'NA', 'PACIENTE', 'CONTACTO SIN IDENTIFICAR'].includes(normalized);
     }
 
-    function toggleOperationalConversation(encodedKey) {
+    async function fetchDurableConversationHistory(conversation) {
+      if (!getSessionToken() || !conversation) return [];
+      const params = new URLSearchParams({
+        account_id: String(conversation.account_id || ''),
+        contact_id: String(conversation.contact_id || ''),
+        limit: '100'
+      });
+      try {
+        const response = await fetch(
+          `/admin/conversations/${encodeURIComponent(conversation.conversation_id)}/messages?${params.toString()}`,
+          { headers: { 'Authorization': `Bearer ${getSessionToken()}` } }
+        );
+        if (response.status === 401) {
+          handleLogout();
+          return [];
+        }
+        if (!response.ok) throw new Error(`history_http_${response.status}`);
+        const payload = await response.json();
+        const messages = Array.isArray(payload.messages) ? payload.messages : [];
+        durableConversationMessages.set(conversation.group_key, messages);
+        return messages;
+      } catch {
+        console.error('[Dashboard] No se pudo cargar el historial durable.');
+        return durableConversationMessages.get(conversation.group_key) || [];
+      }
+    }
+
+    async function toggleOperationalConversation(encodedKey) {
       const groupKey = decodeURIComponent(encodedKey);
       const isNewSelection = activeOperationalConversationKey !== groupKey;
       activeOperationalConversationKey = groupKey;
@@ -612,6 +642,7 @@
       applyFilters();
       const conversation = operationalConversations.find(item => item.group_key === groupKey);
       if (conversation) {
+        await fetchDurableConversationHistory(conversation);
         renderSelectedOperationalConversation(conversation);
         setMobilePanel('chat');
       }
@@ -829,11 +860,11 @@
     ];
 
     const TURN_ID_PRIORITY = [
-      'trace_id',
-      'adapter_request_key',
       'batch_key',
-      'outbox_key',
+      'adapter_request_key',
+      'trace_id',
       'response_idempotency_key',
+      'outbox_key',
       'source_message_id',
       'message_id',
       'chatwoot_message_id',
@@ -904,7 +935,20 @@
       };
     }
 
-    function createTurnResolver(conversation, debugEvents) {
+    function durableMessageReferences(message) {
+      return {
+        chatwoot_message_id: message?.chatwoot_message_id,
+        source_message_id: message?.source_message_id,
+        message_id: message?.direction === 'incoming' ? message?.chatwoot_message_id : undefined,
+        outbox_key: message?.outbox_key,
+        response_idempotency_key: message?.response_idempotency_key,
+        adapter_request_key: message?.adapter_request_key,
+        batch_key: message?.batch_key,
+        trace_id: message?.trace_id
+      };
+    }
+
+    function createTurnResolver(conversation, debugEvents, durableMessages = []) {
       const parent = new Map();
       const ensure = token => {
         if (!parent.has(token)) parent.set(token, token);
@@ -925,6 +969,7 @@
 
       (conversation.timeline || []).forEach(event => union(referenceTokens(timelineEventReferences(event))));
       debugEvents.forEach(event => union(referenceTokens(debugEventReferences(event))));
+      durableMessages.forEach(message => union(referenceTokens(durableMessageReferences(message))));
 
       const resolve = references => {
         const tokens = referenceTokens(references);
@@ -945,14 +990,24 @@
     function buildConversationModel(conversation) {
       const messages = [];
       const knownAliases = new Set();
+      const durableMessages = durableConversationMessages.get(conversation.group_key) || [];
       const debugEvents = relatedDebugEvents(conversation)
         .sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
-      const turnResolver = createTurnResolver(conversation, debugEvents);
+      const turnResolver = createTurnResolver(conversation, debugEvents, durableMessages);
 
-      const addMessage = ({ direction, text, timestamp, label, references = {} }) => {
+      const addMessage = ({
+        direction,
+        text,
+        timestamp,
+        label,
+        references = {},
+        messageKey = null,
+        turnKey = null
+      }) => {
         const cleanText = String(text || '').trim();
         const normalizedTimestamp = messageTimestamp(timestamp);
         const aliases = referenceTokens(references).map(token => `${direction}:${token}`);
+        if (messageKey) aliases.push(`${direction}:message_key:${messageKey}`);
         if (!cleanText || aliases.some(alias => knownAliases.has(alias))) return;
         aliases.forEach(alias => knownAliases.add(alias));
         const preferredReference = MESSAGE_ID_PRIORITY
@@ -962,12 +1017,12 @@
           direction,
           normalizedTimestamp || messages.length
         ].join(':');
-        const messageKey = preferredReference
+        const resolvedMessageKey = messageKey || (preferredReference
           ? `${direction}:${preferredReference}:${String(references[preferredReference]).trim()}`
-          : fallbackKey;
+          : fallbackKey);
         messages.push({
-          message_key: messageKey,
-          turn_key: turnResolver.resolve(references) || `unlinked:${fallbackKey}`,
+          message_key: resolvedMessageKey,
+          turn_key: turnKey || turnResolver.resolve(references) || `unlinked:${fallbackKey}`,
           conversation_id: conversation.conversation_id,
           contact_id: conversation.contact_id,
           direction,
@@ -979,6 +1034,18 @@
           )
         });
       };
+
+      durableMessages.forEach(message => {
+        addMessage({
+          direction: message.direction,
+          text: message.text,
+          timestamp: message.timestamp,
+          label: message.direction === 'outgoing' ? 'Helios' : 'Paciente',
+          references: durableMessageReferences(message),
+          messageKey: message.message_key,
+          turnKey: message.turn_key
+        });
+      });
 
       debugEvents.forEach(event => {
         const normalized = event.normalizedPayload || {};
@@ -1498,7 +1565,7 @@
             <div class="flex justify-between items-start gap-2">
               <div class="min-w-0">
                 <h3 class="text-xs font-bold text-slate-200 truncate">${escapeHtml(patientName)}</h3>
-                <div class="text-[9px] text-slate-500 mt-0.5">${escapeHtml(compactPhone(c.phone))} · Conv: ${escapeHtml(c.conversation_id)}</div>
+                <div class="text-[9px] text-slate-500 mt-0.5">${escapeHtml(c.phone || 'Teléfono no disponible')} · Conv: ${escapeHtml(c.conversation_id)}</div>
               </div>
               <div class="shrink-0 text-right">
                 <div class="text-[8px] text-slate-500">${escapeHtml(messageTimeLabel(latestMessage?.timestamp || c.last_timestamp))}</div>

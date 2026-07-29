@@ -127,6 +127,7 @@ const exportsSource = `
     selectOperationalMessage,
     changeOperationalDetailTab,
     setMobilePanel,
+    renderOperationalConversations,
     setFixture(events, conversations, conversationKey) {
       allEvents = events;
       operationalConversations = conversations;
@@ -135,6 +136,10 @@ const exportsSource = `
       lastChatConversationKey = null;
       activeOperationalTurnKey = null;
       activeOperationalMessageKey = null;
+      durableConversationMessages = new Map();
+    },
+    setDurableMessages(conversationKey, messages) {
+      durableConversationMessages.set(conversationKey, messages);
     },
     getSelection() {
       return {
@@ -296,10 +301,26 @@ let assertionsPassed = 0;
 function verify(description, assertion) {
   assertion();
   assertionsPassed += 1;
-  console.log(`PASS ${assertionsPassed}/12: ${description}`);
+  console.log(`PASS ${assertionsPassed}/16: ${description}`);
 }
 
 const messages = dashboard.buildConversationMessages(conversation);
+
+verify('la tarjeta muestra completo el teléfono ya autorizado por backend', () => {
+  const list = getElement('authorized-phone-list');
+  dashboard.renderOperationalConversations('', '', list);
+  assert.match(list.innerHTML, /\+584000000000/);
+  assert.doesNotMatch(list.innerHTML, /\*{3,}/);
+});
+
+verify('la tarjeta conserva el teléfono enmascarado entregado por backend', () => {
+  const list = getElement('masked-phone-list');
+  const maskedConversation = { ...conversation, phone: '+58*******00' };
+  dashboard.setFixture(debugEvents, [maskedConversation], maskedConversation.group_key);
+  dashboard.renderOperationalConversations('', '', list);
+  assert.match(list.innerHTML, /\+58\*{7}00/);
+  dashboard.setFixture(debugEvents, [conversation], conversation.group_key);
+});
 
 verify('cuatro turnos generan ocho burbujas', () => {
   assert.equal(messages.length, 8);
@@ -322,6 +343,33 @@ verify('el fallback durable no duplica la última salida', () => {
     messages.filter(message => message.direction === 'outgoing' && message.text === 'Salida 4').length,
     1
   );
+});
+
+const durableMessages = Array.from(messages, message => ({
+  message_key: message.message_key,
+  turn_key: message.turn_key,
+  direction: message.direction,
+  text: message.text,
+  timestamp: message.timestamp,
+  trace_id: message.trace_id,
+  chatwoot_message_id: message.chatwoot_message_id,
+  source_message_id: message.source_message_id,
+  adapter_request_key: message.adapter_request_key,
+  batch_key: message.batch_key,
+  outbox_key: message.outbox_key,
+  delivery_status: message.direction === 'outgoing' ? 'sent' : undefined
+}));
+
+verify('el historial durable funciona con debug events vacíos tras reinicio', () => {
+  dashboard.setFixture([], [conversation], conversation.group_key);
+  dashboard.setDurableMessages(conversation.group_key, durableMessages);
+  assert.equal(dashboard.buildConversationMessages(conversation).length, 8);
+});
+
+verify('debug temporal complementa sin duplicar mensajes durables', () => {
+  dashboard.setFixture(debugEvents, [conversation], conversation.group_key);
+  dashboard.setDurableMessages(conversation.group_key, durableMessages);
+  assert.equal(dashboard.buildConversationMessages(conversation).length, 8);
 });
 
 const turnTwoIncoming = messages.find(
@@ -397,5 +445,5 @@ verify('la lista izquierda y el simulador permanecen en el HTML real', () => {
   assert.match(dashboardHtml, /onsubmit="sendSimulated\(event\)"/);
 });
 
-assert.equal(assertionsPassed, 12);
-console.log('dashboard_turn_inspector_test: PASS (12/12)');
+assert.equal(assertionsPassed, 16);
+console.log('dashboard_turn_inspector_test: PASS (16/16)');
