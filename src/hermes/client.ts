@@ -3,6 +3,31 @@ import { config } from '../config.js';
 import { HermesResponse, HermesResponseSchema } from './schema.js';
 import { debugTracker } from '../debug/debug-tracker.js';
 
+export function normalizeHermesToolCalls(toolCalls: unknown): HermesResponse['tool_calls'] {
+  if (!Array.isArray(toolCalls)) return [];
+
+  const normalized: HermesResponse['tool_calls'] = [];
+  for (const call of toolCalls) {
+    const name = typeof call?.name === 'string' && call.name.trim()
+      ? call.name.trim()
+      : typeof call?.tool === 'string' && call.tool.trim()
+        ? call.tool.trim()
+        : null;
+
+    if (!name) continue;
+
+    normalized.push({
+      name,
+      arguments: call?.arguments ?? {},
+      status: call?.status ?? null,
+      duration_ms: call?.duration_ms ?? null,
+      result_code: call?.result_code ?? null
+    });
+  }
+
+  return normalized;
+}
+
 export async function callHermes(payload: any, traceId: string): Promise<HermesResponse> {
   const accountId = payload.account_id || '';
   const tenantId = payload.tenant_id || '';
@@ -162,6 +187,8 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
       console.log(`[Hermes Client] Detected adapter response shape (ok + reply) for trace ${traceId}`);
     }
 
+    const normalizedToolCalls = normalizeHermesToolCalls(responseData.tool_calls);
+
     // Formatear respuesta al esquema HermesResponse esperado por el orquestador
     const normalizedResponse: HermesResponse = {
       request_key: responseData.request_key || null,
@@ -179,7 +206,7 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
       state_patch: responseData.state_patch || responseData.state_update || null,
       booking_patch: responseData.booking_patch || null,
       operation: responseData.operation || null,
-      tool_calls: responseData.tool_calls || [],
+      tool_calls: normalizedToolCalls,
       error_code: responseData.error_code,
       recoverable: responseData.recoverable
     };
