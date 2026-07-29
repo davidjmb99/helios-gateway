@@ -16,6 +16,24 @@
       -webkit-line-clamp: 2;
       overflow: hidden;
     }
+    .conversation-preview {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chat-message {
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+    .mobile-panel-nav { display: flex; }
+    @media (min-width: 768px) {
+      .mobile-panel-nav { display: none; }
+      .dashboard-panel { display: flex !important; }
+    }
+    @media (max-width: 767px) {
+      .dashboard-panel { display: none; }
+      .dashboard-panel.mobile-active { display: flex; }
+    }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col justify-between">
@@ -128,9 +146,15 @@
     </section>
 
     <!-- Main Layout -->
-    <main class="flex-1 max-w-7xl w-full mx-auto px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-      <!-- Columna Izquierda (5 Columnas) -->
-      <section class="lg:col-span-5 flex flex-col bg-slate-900/30 border border-slate-800 rounded-2xl overflow-hidden h-[750px] shadow-xl">
+    <main class="flex-1 max-w-[1800px] w-full mx-auto px-4 lg:px-6 py-6 grid grid-cols-1 md:grid-cols-12 gap-4 lg:gap-5 items-stretch">
+      <nav class="mobile-panel-nav col-span-full grid grid-cols-3 gap-1 rounded-xl border border-slate-800 bg-slate-900/60 p-1" aria-label="Secciones del debugger">
+        <button id="mobile-panel-conversations" type="button" onclick="setMobilePanel('conversations')" class="rounded-lg bg-amber-500 px-2 py-2 text-[10px] font-bold text-slate-950">Conversaciones</button>
+        <button id="mobile-panel-chat" type="button" onclick="setMobilePanel('chat')" class="rounded-lg px-2 py-2 text-[10px] font-bold text-slate-400">Chat</button>
+        <button id="mobile-panel-details" type="button" onclick="setMobilePanel('details')" class="rounded-lg px-2 py-2 text-[10px] font-bold text-slate-400">Detalles</button>
+      </nav>
+
+      <!-- Columna 1: lista compacta de conversaciones -->
+      <section id="conversations-panel" class="dashboard-panel mobile-active md:col-span-4 xl:col-span-3 flex-col bg-slate-900/30 border border-slate-800 rounded-2xl overflow-hidden h-[750px] shadow-xl">
         <div class="bg-slate-950/40 border-b border-slate-800/80 flex p-1 gap-1">
           <button id="tab-left-conversations" onclick="setLeftTab('conversations')" class="flex-1 py-2 text-xs font-bold rounded-lg transition-all bg-amber-500 text-slate-950">Conversaciones</button>
           <button id="tab-left-globals" onclick="setLeftTab('globals')" class="flex-1 py-2 text-xs font-bold rounded-lg transition-all text-slate-400 hover:text-slate-200">Eventos Globales</button>
@@ -185,8 +209,20 @@
         </div>
       </section>
 
-      <!-- Columna Derecha (7 Columnas) -->
-      <section id="inspector-panel" class="lg:col-span-7 flex flex-col bg-slate-900/30 border border-slate-800 rounded-2xl overflow-hidden h-[750px] shadow-xl">
+      <!-- Columna 2: historial conversacional -->
+      <section id="chat-panel" class="dashboard-panel md:col-span-8 xl:col-span-4 flex-col bg-slate-900/30 border border-slate-800 rounded-2xl overflow-hidden h-[750px] shadow-xl">
+        <div class="px-5 py-4 bg-slate-950/60 border-b border-slate-800">
+          <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">Historial de conversación</h2>
+          <p class="text-[10px] text-slate-500 mt-1">Selecciona una conversación para leer sus mensajes.</p>
+        </div>
+        <div class="p-8 text-center my-auto text-slate-500 space-y-2">
+          <svg class="w-12 h-12 mx-auto text-slate-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a10.6 10.6 0 01-4.8-1.12L3 20l1.26-3.36A7.34 7.34 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
+          <p class="text-xs">Selecciona una conversación.</p>
+        </div>
+      </section>
+
+      <!-- Columna 3: inspector técnico existente -->
+      <section id="inspector-panel" class="dashboard-panel md:col-span-12 xl:col-span-5 flex-col bg-slate-900/30 border border-slate-800 rounded-2xl overflow-hidden h-[750px] shadow-xl">
         <div class="px-6 py-4 bg-slate-950/60 border-b border-slate-800">
           <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">DETALLE DEL EVENTO SELECCIONADO</h2>
         </div>
@@ -217,6 +253,7 @@
     let selectedTimeRange = 'today';
     let activeOperationalConversationKey = null;
     let operationalDetailTab = 'summary';
+    let lastChatConversationKey = null;
 
     // OBTENER TOKEN DE SESION
     function getSessionToken() {
@@ -308,6 +345,7 @@
       operationalConversations = [];
       activeOperationalConversationKey = null;
       operationalDetailTab = 'summary';
+      lastChatConversationKey = null;
       
       // Restablecer el visor de detalles a su estado inicial
       document.getElementById('inspector-panel').innerHTML = `
@@ -320,6 +358,13 @@
           <p class="text-xs max-w-xs mx-auto">Selecciona un webhook en el panel de la izquierda para ver su trazabilidad y payloads en tiempo real.</p>
         </div>
       `;
+      document.getElementById('chat-panel').innerHTML = `
+        <div class="px-5 py-4 bg-slate-950/60 border-b border-slate-800">
+          <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">Historial de conversación</h2>
+        </div>
+        <div class="p-8 text-center my-auto text-slate-500 text-xs">Selecciona una conversación.</div>
+      `;
+      setMobilePanel('conversations');
       
       checkSession();
     }
@@ -374,7 +419,14 @@
           const selectedConversation = operationalConversations.find(
             conversation => conversation.group_key === activeOperationalConversationKey
           );
-          if (selectedConversation) showOperationalConversationDetails(selectedConversation);
+          if (selectedConversation) {
+            renderSelectedOperationalConversation(selectedConversation);
+          } else {
+            activeOperationalConversationKey = null;
+            expandedConversationId = null;
+            lastChatConversationKey = null;
+            showEmptyConversationSelection();
+          }
         }
       } catch (e) {
         console.error(e);
@@ -407,7 +459,7 @@
           const selectedConversation = operationalConversations.find(
             conversation => conversation.group_key === activeOperationalConversationKey
           );
-          if (selectedConversation) showOperationalConversationDetails(selectedConversation);
+          if (selectedConversation) renderSelectedOperationalConversation(selectedConversation);
         }
         if (activeEventId) {
           showEventDetails(activeEventId, forceRender);
@@ -549,7 +601,47 @@
       activeEventId = null;
       applyFilters();
       const conversation = operationalConversations.find(item => item.group_key === groupKey);
-      if (conversation) showOperationalConversationDetails(conversation);
+      if (conversation) {
+        renderSelectedOperationalConversation(conversation);
+        setMobilePanel('chat');
+      }
+    }
+
+    function setMobilePanel(panelName) {
+      const panels = {
+        conversations: document.getElementById('conversations-panel'),
+        chat: document.getElementById('chat-panel'),
+        details: document.getElementById('inspector-panel')
+      };
+      Object.entries(panels).forEach(([name, panel]) => {
+        if (panel) panel.classList.toggle('mobile-active', name === panelName);
+        const button = document.getElementById(`mobile-panel-${name}`);
+        if (button) {
+          button.className = name === panelName
+            ? 'rounded-lg bg-amber-500 px-2 py-2 text-[10px] font-bold text-slate-950'
+            : 'rounded-lg px-2 py-2 text-[10px] font-bold text-slate-400 hover:text-slate-200';
+        }
+      });
+    }
+
+    function renderSelectedOperationalConversation(conversation) {
+      showConversationHistory(conversation);
+      showOperationalConversationDetails(conversation);
+    }
+
+    function showEmptyConversationSelection() {
+      document.getElementById('chat-panel').innerHTML = `
+        <div class="px-5 py-4 bg-slate-950/60 border-b border-slate-800">
+          <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">Historial de conversación</h2>
+        </div>
+        <div class="p-8 text-center my-auto text-slate-500 text-xs">Selecciona una conversación.</div>
+      `;
+      document.getElementById('inspector-panel').innerHTML = `
+        <div class="px-6 py-4 bg-slate-950/60 border-b border-slate-800">
+          <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">DETALLE DEL EVENTO SELECCIONADO</h2>
+        </div>
+        <div class="p-8 text-center my-auto text-slate-500 text-xs">Selecciona una conversación para ver el detalle técnico.</div>
+      `;
     }
 
     function changeOperationalDetailTab(tabName) {
@@ -632,11 +724,239 @@
     function relatedDebugEvents(conversation) {
       return allEvents
         .filter(event =>
-          String(event.normalizedPayload?.tenant_id || '') === String(conversation.tenant_id)
+          String(event.normalizedPayload?.tenant_id || event.tenant_id || '') === String(conversation.tenant_id)
           && String(event.conversation_id || '') === String(conversation.conversation_id)
           && String(event.contact_id || '') === String(conversation.contact_id)
         )
         .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+    }
+
+    function messageTimestamp(value) {
+      const timestamp = value ? new Date(value) : null;
+      return timestamp && !Number.isNaN(timestamp.getTime()) ? timestamp.toISOString() : null;
+    }
+
+    function messageTimeLabel(value) {
+      if (!value) return 'Hora no disponible';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return 'Hora no disponible';
+      const today = new Date();
+      const sameDay = date.toDateString() === today.toDateString();
+      return sameDay
+        ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : date.toLocaleString([], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    }
+
+    function compactPhone(value) {
+      const phone = String(value || '').trim();
+      if (!phone || phone === 'N/A') return 'Teléfono no disponible';
+      if (phone.includes('*') || phone.length <= 5) return phone;
+      return `${phone.slice(0, 3)}${'*'.repeat(Math.max(3, phone.length - 5))}${phone.slice(-2)}`;
+    }
+
+    function conversationStatus(conversation) {
+      const stateStatus = String(conversation.state?.status || '').toUpperCase();
+      if (stateStatus.includes('HANDOFF') || stateStatus.includes('HUMAN')) return 'HANDOFF';
+      return String(conversation.status || 'PROCESSING').toUpperCase();
+    }
+
+    function statusClasses(status) {
+      if (status === 'SENT') return 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20';
+      if (status === 'COMPLETED' || status === 'PROCESSING') return 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/20';
+      if (status === 'ERROR') return 'bg-red-500/15 text-red-400 border border-red-500/20';
+      if (status === 'HANDOFF') return 'bg-orange-500/15 text-orange-400 border border-orange-500/20';
+      return 'bg-amber-500/15 text-amber-400 border border-amber-500/20';
+    }
+
+    function extractValidatedOutgoing(action) {
+      const actionName = String(action?.action || '').toLowerCase();
+      const isPatientDelivery = [
+        'reply_sent_to_chatwoot',
+        'tool:chatwoot.send_message',
+        'chatwoot_reply_sent',
+        'chatwoot_sent'
+      ].some(name => actionName === name || actionName.includes(name));
+      if (!isPatientDelivery || action?.success === false) return '';
+      const data = action?.data || {};
+      return data.message_for_client
+        || data.reply
+        || data.reply_text
+        || data.result?.message_for_client
+        || data.result?.reply
+        || data.result?.reply_text
+        || '';
+    }
+
+    function buildConversationMessages(conversation) {
+      const messages = [];
+      const knownIds = new Set();
+
+      const addMessage = ({ direction, text, timestamp, label, ids = [] }) => {
+        const cleanText = String(text || '').trim();
+        const reliableIds = ids
+          .filter(value => value !== undefined && value !== null && String(value).trim() !== '')
+          .map(value => String(value));
+        if (!cleanText || reliableIds.some(id => knownIds.has(id))) return;
+        reliableIds.forEach(id => knownIds.add(id));
+        messages.push({
+          direction,
+          text: cleanText,
+          timestamp: messageTimestamp(timestamp),
+          label,
+          ids: reliableIds
+        });
+      };
+
+      const debugEvents = relatedDebugEvents(conversation)
+        .sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+
+      debugEvents.forEach(event => {
+        const normalized = event.normalizedPayload || {};
+        const raw = normalized.raw_payload || event.rawPayload || {};
+        const direction = String(normalized.direction || event.message_type || '').toLowerCase();
+        const messageId = normalized.message_id || normalized.source_id || raw.id || raw.message?.id || event.message_id;
+        if (direction === 'incoming' || event.message_type === 'incoming') {
+          addMessage({
+            direction: 'incoming',
+            text: event.text || normalized.text || normalized.body || raw.content || raw.message?.content,
+            timestamp: event.timestamp || normalized.timestamp || raw.created_at,
+            label: 'Paciente',
+            ids: [messageId && `message:${messageId}`, event.trace_id && `trace-in:${event.trace_id}`]
+          });
+        }
+
+        (event.actionsExecuted || []).forEach((action, index) => {
+          const actionData = action?.data || {};
+          const outgoingText = extractValidatedOutgoing(action);
+          if (!outgoingText) return;
+          const requestKey = actionData.adapter_request_key
+            || actionData.response_idempotency_key
+            || event.hermesRequest?.adapter_request_key
+            || event.hermesRequest?.request_key
+            || event.hermesResponse?.adapter_request_key
+            || normalized.adapter_request_key
+            || normalized.response_idempotency_key
+            || (conversation.adapter_request_keys?.length === 1 ? conversation.adapter_request_keys[0] : null);
+          const outgoingId = actionData.chatwoot_message_id
+            || actionData.message_id
+            || actionData.result?.chatwoot_message_id
+            || actionData.result?.message_id;
+          addMessage({
+            direction: 'outgoing',
+            text: outgoingText,
+            timestamp: action.timestamp || actionData.sent_at || event.timestamp,
+            label: 'Helios',
+            ids: [
+              outgoingId && `outgoing:${outgoingId}`,
+              requestKey && `response:${requestKey}`,
+              event.trace_id && `trace-out:${event.trace_id}:${index}`
+            ]
+          });
+        });
+      });
+
+      const timeline = conversation.timeline || [];
+      const inboundEvents = timeline.filter(event => event.stage === 'INBOUND_RECEIVED');
+      const sentEvents = timeline.filter(event => event.stage === 'CHATWOOT_SENT');
+      const latestInbound = inboundEvents[inboundEvents.length - 1] || {};
+      const latestSent = sentEvents[sentEvents.length - 1] || {};
+
+      addMessage({
+        direction: 'incoming',
+        text: conversation.inbound_message,
+        timestamp: latestInbound.timestamp || conversation.last_timestamp,
+        label: 'Paciente',
+        ids: [
+          latestInbound.source_message_id && `message:${latestInbound.source_message_id}`,
+          latestInbound.trace_id && `trace-in:${latestInbound.trace_id}`
+        ]
+      });
+
+      if (latestSent.timestamp && conversation.hermes_response) {
+        addMessage({
+          direction: 'outgoing',
+          text: conversation.hermes_response,
+          timestamp: latestSent.timestamp,
+          label: 'Helios',
+          ids: [
+            latestSent.chatwoot_outbound_message_id && `outgoing:${latestSent.chatwoot_outbound_message_id}`,
+            latestSent.outbox_key && `outbox:${latestSent.outbox_key}`,
+            latestSent.adapter_request_key && `response:${latestSent.adapter_request_key}`
+          ]
+        });
+      }
+
+      return messages.sort((a, b) => {
+        if (!a.timestamp && !b.timestamp) return 0;
+        if (!a.timestamp) return -1;
+        if (!b.timestamp) return 1;
+        return new Date(a.timestamp) - new Date(b.timestamp);
+      });
+    }
+
+    function showConversationHistory(conversation) {
+      const chatPanel = document.getElementById('chat-panel');
+      const previousScroller = document.getElementById('conversation-message-scroll');
+      const sameConversation = lastChatConversationKey === conversation.group_key;
+      const previousScrollTop = previousScroller?.scrollTop || 0;
+      const previousDistanceFromBottom = previousScroller
+        ? previousScroller.scrollHeight - previousScroller.scrollTop - previousScroller.clientHeight
+        : 0;
+      const wasNearBottom = previousDistanceFromBottom < 80;
+
+      try {
+        const messages = buildConversationMessages(conversation);
+        const patientName = isUsablePatientName(conversation.patient_name)
+          ? conversation.patient_name
+          : 'Contacto sin identificar';
+        const status = conversationStatus(conversation);
+        chatPanel.innerHTML = `
+          <div class="px-4 py-3 bg-slate-950/60 border-b border-slate-800">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <h2 class="font-bold text-sm text-slate-200 truncate">${escapeHtml(patientName)}</h2>
+                <div class="text-[10px] text-slate-400 mt-0.5">${escapeHtml(conversation.phone || 'Teléfono no disponible')}</div>
+                <div class="text-[9px] text-slate-500 font-mono mt-1">Conv: ${escapeHtml(conversation.conversation_id)} · Contact: ${escapeHtml(conversation.contact_id)}</div>
+              </div>
+              <div class="flex shrink-0 flex-col items-end gap-2">
+                <span class="px-1.5 py-0.5 rounded text-[8px] font-bold ${statusClasses(status)}">${escapeHtml(status)}</span>
+                <button type="button" onclick="forceFetch()" class="text-[9px] font-semibold text-amber-500 hover:text-amber-400">Actualizar</button>
+              </div>
+            </div>
+          </div>
+          <div id="conversation-message-scroll" class="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-3 bg-slate-950/20">
+            ${messages.length ? messages.map(message => `
+              <div class="flex ${message.direction === 'outgoing' ? 'justify-end' : 'justify-start'}">
+                <div class="max-w-[88%]">
+                  <div class="mb-1 px-1 text-[8px] uppercase tracking-wider ${message.direction === 'outgoing' ? 'text-right text-amber-500/80' : 'text-slate-500'}">${escapeHtml(message.label)}</div>
+                  <div class="chat-message rounded-2xl px-3.5 py-2.5 text-xs leading-5 shadow-sm ${message.direction === 'outgoing' ? 'rounded-br-sm border border-amber-500/20 bg-amber-500/10 text-amber-50' : 'rounded-bl-sm border border-slate-700/70 bg-slate-800/80 text-slate-200'}">${escapeHtml(message.text)}</div>
+                  <div class="mt-1 px-1 text-[8px] text-slate-600 ${message.direction === 'outgoing' ? 'text-right' : ''}">${escapeHtml(messageTimeLabel(message.timestamp))}</div>
+                </div>
+              </div>
+            `).join('') : '<div class="h-full flex items-center justify-center text-center text-xs text-slate-500">No hay mensajes registrados para esta conversación.</div>'}
+          </div>
+        `;
+
+        const scroller = document.getElementById('conversation-message-scroll');
+        if (scroller) {
+          requestAnimationFrame(() => {
+            if (!sameConversation || wasNearBottom) {
+              scroller.scrollTop = scroller.scrollHeight;
+            } else {
+              scroller.scrollTop = previousScrollTop;
+            }
+          });
+        }
+        lastChatConversationKey = conversation.group_key;
+      } catch (error) {
+        console.error('[Dashboard] No se pudo renderizar el historial.');
+        chatPanel.innerHTML = `
+          <div class="px-5 py-4 bg-slate-950/60 border-b border-slate-800">
+            <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">Historial de conversación</h2>
+          </div>
+          <div class="p-8 text-center my-auto text-xs text-red-400">No se pudo cargar el historial. Intenta actualizar.</div>
+        `;
+      }
     }
 
     function showOperationalConversationDetails(conversation) {
@@ -881,42 +1201,36 @@
         );
       }
       if (!conversations.length) {
-        listContainer.innerHTML = '<div class="text-slate-600 text-xs text-center p-8">No hay conversaciones operativas en este rango.</div>';
+        listContainer.innerHTML = '<div class="text-slate-600 text-xs text-center p-8">No hay conversaciones disponibles.</div>';
         return;
       }
       listContainer.innerHTML = conversations.map(c => {
-        const isExpanded = c.group_key === expandedConversationId;
+        const isExpanded = c.group_key === activeOperationalConversationKey;
         const encodedKey = encodeURIComponent(c.group_key);
-        const patientName = isUsablePatientName(c.patient_name) ? c.patient_name : 'N/A';
-        const statusClass = c.status === 'SENT'
-          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20'
-          : c.status === 'COMPLETED'
-            ? 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/20'
-            : c.status === 'ERROR'
-              ? 'bg-red-500/15 text-red-400 border border-red-500/20'
-              : 'bg-amber-500/15 text-amber-400 border border-amber-500/20';
-        const inboundMessage = c.inbound_message || 'Contenido oculto o no disponible';
-        const outboundMessage = c.hermes_response || 'Contenido oculto o no disponible';
+        const patientName = isUsablePatientName(c.patient_name) ? c.patient_name : 'Contacto sin identificar';
+        const status = conversationStatus(c);
+        const messages = buildConversationMessages(c);
+        const latestMessage = messages[messages.length - 1];
+        const preview = latestMessage?.text || 'Sin mensajes registrados';
+        const unreadCount = Number.isFinite(Number(c.unread_count)) && Number(c.unread_count) > 0
+          ? Number(c.unread_count)
+          : null;
         return `
-          <div onclick="toggleOperationalConversation('${encodedKey}')" class="p-3.5 cursor-pointer transition-all border-b border-slate-800/60 ${isExpanded ? 'bg-slate-900 border-l-4 border-amber-500' : 'hover:bg-slate-900/20'}">
-            <div class="flex justify-between items-start gap-3">
+          <div onclick="toggleOperationalConversation('${encodedKey}')" class="p-3 cursor-pointer transition-all border-b border-slate-800/60 ${isExpanded ? 'bg-slate-900/90 border-l-4 border-amber-500' : 'hover:bg-slate-900/40 border-l-4 border-transparent'}">
+            <div class="flex justify-between items-start gap-2">
               <div class="min-w-0">
                 <h3 class="text-xs font-bold text-slate-200 truncate">${escapeHtml(patientName)}</h3>
-                <div class="text-[10px] text-slate-400 mt-0.5">${escapeHtml(c.phone || 'N/A')}</div>
+                <div class="text-[9px] text-slate-500 mt-0.5">${escapeHtml(compactPhone(c.phone))} · Conv: ${escapeHtml(c.conversation_id)}</div>
               </div>
-              <span class="px-1.5 py-0.5 rounded text-[8px] font-bold ${statusClass}">${escapeHtml(c.status)}</span>
-            </div>
-            <div class="text-[9px] text-slate-500 font-mono mt-1">Tenant: ${escapeHtml(c.tenant_id)} · Account: ${escapeHtml(c.account_id)} · Conv: ${escapeHtml(c.conversation_id)} · Contact: ${escapeHtml(c.contact_id)}</div>
-            <div class="mt-2.5 grid gap-2">
-              <div class="bg-slate-950/30 border border-slate-800/40 rounded p-2">
-                <div class="text-[8px] font-bold uppercase tracking-wider text-slate-500 mb-0.5">Mensaje entrante</div>
-                <div class="message-clamp text-[11px] leading-4 text-slate-300" title="${escapeHtml(inboundMessage)}">${escapeHtml(inboundMessage)}</div>
-              </div>
-              <div class="bg-slate-950/30 border border-slate-800/40 rounded p-2">
-                <div class="text-[8px] font-bold uppercase tracking-wider text-slate-500 mb-0.5">Mensaje de salida</div>
-                <div class="message-clamp text-[11px] leading-4 text-slate-300" title="${escapeHtml(outboundMessage)}">${escapeHtml(outboundMessage)}</div>
+              <div class="shrink-0 text-right">
+                <div class="text-[8px] text-slate-500">${escapeHtml(messageTimeLabel(latestMessage?.timestamp || c.last_timestamp))}</div>
+                <div class="mt-1 flex justify-end items-center gap-1">
+                  ${unreadCount ? `<span class="min-w-4 h-4 px-1 rounded-full bg-amber-500 text-[8px] font-bold leading-4 text-slate-950">${unreadCount}</span>` : ''}
+                  <span class="px-1.5 py-0.5 rounded text-[8px] font-bold ${statusClasses(status)}">${escapeHtml(status)}</span>
+                </div>
               </div>
             </div>
+            <div class="conversation-preview mt-2 text-[11px] text-slate-400" title="${escapeHtml(preview)}">${latestMessage?.direction === 'outgoing' ? 'Helios: ' : ''}${escapeHtml(preview)}</div>
           </div>
         `;
       }).join('');
