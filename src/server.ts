@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
 import { normalizeChatwootPayload } from './chatwoot/normalizer.js';
-import { TenantContextError, validateWebhookTenantRoute } from './tenants/context.js';
+import { resolveTenantContext, TenantContextError, validateWebhookTenantRoute } from './tenants/context.js';
 import { idempotencyRepository, stateRepository, logsRepository, patientRepository } from './repositories/database.js';
 import { supabase } from './supabase/client.js';
 import { bufferService } from './buffer/buffer-service.js';
@@ -22,6 +22,11 @@ import {
   loadAdminObservability,
   parseAdminRange
 } from './admin/observability.js';
+import {
+  assertConversationHistoryAccountAccess,
+  ConversationHistoryError,
+  loadAdminConversationHistory
+} from './admin/conversation-history.js';
 import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -224,6 +229,39 @@ async function getAdministrativeObservability(request: any, reply: any) {
 // Las tablas operativas son la fuente principal; los logs solo complementan la timeline.
 server.get('/admin/observability', async (request, reply) => {
   return getAdministrativeObservability(request, reply);
+});
+
+server.get('/admin/conversations/:conversation_id/messages', async (request, reply) => {
+  const tenantId = await checkAuth(request, reply);
+  const params = request.params as { conversation_id?: string };
+  const query = request.query as {
+    account_id?: string;
+    contact_id?: string;
+    limit?: string;
+    cursor?: string;
+  };
+
+  try {
+    const accountContext = resolveTenantContext(query.account_id);
+    assertConversationHistoryAccountAccess(tenantId, accountContext);
+    return await loadAdminConversationHistory(supabase, {
+      tenantId,
+      accountId: query.account_id || '',
+      conversationId: params.conversation_id || '',
+      contactId: query.contact_id || '',
+      showPii: config.HELIOS_ADMIN_SHOW_PII,
+      limit: query.limit,
+      cursor: query.cursor
+    });
+  } catch (error: any) {
+    if (error instanceof ConversationHistoryError) {
+      return reply.status(error.statusCode).send({ error: error.code });
+    }
+    if (error instanceof TenantContextError) {
+      return reply.status(403).send({ error: 'CONVERSATION_HISTORY_FORBIDDEN' });
+    }
+    throw error;
+  }
 });
 
 // Alias compatible para consumidores del endpoint de estadísticas anterior.

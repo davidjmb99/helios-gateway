@@ -316,13 +316,15 @@ export function buildAdminObservability(
         stage: 'INBOUND_RECEIVED',
         timestamp: row.created_at,
         trace_id: row.trace_id,
-        source_message_id: row.message_id
+        chatwoot_message_id: row.message_id,
+        source_message_id: row.source_id
       });
       addTimelineEvent(group.timeline, {
         stage: 'BUFFERED',
         timestamp: row.processing_started_at || row.created_at,
         trace_id: row.trace_id,
-        source_message_id: row.message_id
+        chatwoot_message_id: row.message_id,
+        source_message_id: row.source_id
       });
     }
     for (const row of groupBatches) {

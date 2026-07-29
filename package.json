@@ -8,7 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "tsx tests/identity_test.ts && tsx tests/hermes_adapter_contract_test.ts && tsx tests/multitenant_test.ts && tsx tests/durability_test.ts && tsx tests/admin_observability_test.ts"
+    "test": "tsx tests/identity_test.ts && tsx tests/hermes_adapter_contract_test.ts && tsx tests/multitenant_test.ts && tsx tests/durability_test.ts && tsx tests/admin_observability_test.ts && tsx tests/admin_conversation_history_test.ts && node tests/dashboard_turn_inspector_test.js && node test_dashboard_grouping.js"
   },
   "dependencies": {
     "@fastify/formbody": "^8.0.1",
