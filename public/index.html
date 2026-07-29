@@ -254,6 +254,8 @@
     let activeOperationalConversationKey = null;
     let operationalDetailTab = 'summary';
     let lastChatConversationKey = null;
+    let activeOperationalTurnKey = null;
+    let activeOperationalMessageKey = null;
 
     // OBTENER TOKEN DE SESION
     function getSessionToken() {
@@ -346,6 +348,8 @@
       activeOperationalConversationKey = null;
       operationalDetailTab = 'summary';
       lastChatConversationKey = null;
+      activeOperationalTurnKey = null;
+      activeOperationalMessageKey = null;
       
       // Restablecer el visor de detalles a su estado inicial
       document.getElementById('inspector-panel').innerHTML = `
@@ -425,6 +429,8 @@
             activeOperationalConversationKey = null;
             expandedConversationId = null;
             lastChatConversationKey = null;
+            activeOperationalTurnKey = null;
+            activeOperationalMessageKey = null;
             showEmptyConversationSelection();
           }
         }
@@ -597,7 +603,11 @@
       const isNewSelection = activeOperationalConversationKey !== groupKey;
       activeOperationalConversationKey = groupKey;
       expandedConversationId = groupKey;
-      if (isNewSelection) operationalDetailTab = 'summary';
+      if (isNewSelection) {
+        operationalDetailTab = 'summary';
+        activeOperationalTurnKey = null;
+        activeOperationalMessageKey = null;
+      }
       activeEventId = null;
       applyFilters();
       const conversation = operationalConversations.find(item => item.group_key === groupKey);
@@ -625,6 +635,7 @@
     }
 
     function renderSelectedOperationalConversation(conversation) {
+      ensureOperationalTurnSelection(conversation);
       showConversationHistory(conversation);
       showOperationalConversationDetails(conversation);
     }
@@ -642,6 +653,8 @@
         </div>
         <div class="p-8 text-center my-auto text-slate-500 text-xs">Selecciona una conversación para ver el detalle técnico.</div>
       `;
+      activeOperationalTurnKey = null;
+      activeOperationalMessageKey = null;
     }
 
     function changeOperationalDetailTab(tabName) {
@@ -650,6 +663,22 @@
         item => item.group_key === activeOperationalConversationKey
       );
       if (conversation) showOperationalConversationDetails(conversation);
+    }
+
+    function selectOperationalMessage(encodedMessageKey) {
+      const messageKey = decodeURIComponent(encodedMessageKey);
+      const conversation = operationalConversations.find(
+        item => item.group_key === activeOperationalConversationKey
+      );
+      if (!conversation) return;
+      const message = buildConversationMessages(conversation)
+        .find(item => item.message_key === messageKey);
+      if (!message) return;
+      activeOperationalMessageKey = message.message_key;
+      activeOperationalTurnKey = message.turn_key;
+      showConversationHistory(conversation);
+      showOperationalConversationDetails(conversation);
+      setMobilePanel('details');
     }
 
     function formatOperationalTimestamp(value) {
@@ -787,70 +816,219 @@
         || '';
     }
 
-    function buildConversationMessages(conversation) {
-      const messages = [];
-      const knownIds = new Set();
+    const MESSAGE_ID_PRIORITY = [
+      'chatwoot_message_id',
+      'source_message_id',
+      'message_id',
+      'outbox_key',
+      'response_idempotency_key',
+      'adapter_request_key',
+      'batch_key',
+      'trace_id',
+      'event_id'
+    ];
 
-      const addMessage = ({ direction, text, timestamp, label, ids = [] }) => {
-        const cleanText = String(text || '').trim();
-        const reliableIds = ids
-          .filter(value => value !== undefined && value !== null && String(value).trim() !== '')
-          .map(value => String(value));
-        if (!cleanText || reliableIds.some(id => knownIds.has(id))) return;
-        reliableIds.forEach(id => knownIds.add(id));
-        messages.push({
-          direction,
-          text: cleanText,
-          timestamp: messageTimestamp(timestamp),
-          label,
-          ids: reliableIds
-        });
+    const TURN_ID_PRIORITY = [
+      'trace_id',
+      'adapter_request_key',
+      'batch_key',
+      'outbox_key',
+      'response_idempotency_key',
+      'source_message_id',
+      'message_id',
+      'chatwoot_message_id',
+      'event_id'
+    ];
+
+    function referenceTokens(references) {
+      return MESSAGE_ID_PRIORITY
+        .filter(key => references?.[key] !== undefined && references?.[key] !== null && String(references[key]).trim())
+        .map(key => `${key}:${String(references[key]).trim()}`);
+    }
+
+    function debugEventReferences(event) {
+      const normalized = event?.normalizedPayload || {};
+      const raw = normalized.raw_payload || event?.rawPayload || {};
+      const hermesRequest = event?.hermesRequest || {};
+      const hermesResponse = event?.hermesResponse?.body || event?.hermesResponse || {};
+      const actionData = (event?.actionsExecuted || []).map(action => action?.data || {});
+      const findActionValue = key => actionData.find(data => data?.[key] || data?.result?.[key]);
+      const actionWithChatwootId = findActionValue('chatwoot_message_id');
+      const actionWithMessageId = findActionValue('message_id');
+      const actionWithRequestKey = findActionValue('adapter_request_key');
+      const actionWithResponseKey = findActionValue('response_idempotency_key');
+      const actionWithOutboxKey = findActionValue('outbox_key');
+      return {
+        chatwoot_message_id: normalized.chatwoot_message_id
+          || raw.id
+          || raw.message?.id
+          || actionWithChatwootId?.chatwoot_message_id
+          || actionWithChatwootId?.result?.chatwoot_message_id,
+        source_message_id: normalized.source_message_id || normalized.source_id,
+        message_id: normalized.message_id
+          || event?.message_id
+          || actionWithMessageId?.message_id
+          || actionWithMessageId?.result?.message_id,
+        outbox_key: normalized.outbox_key
+          || hermesResponse.outbox_key
+          || actionWithOutboxKey?.outbox_key
+          || actionWithOutboxKey?.result?.outbox_key,
+        response_idempotency_key: normalized.response_idempotency_key
+          || hermesResponse.response_idempotency_key
+          || actionWithResponseKey?.response_idempotency_key
+          || actionWithResponseKey?.result?.response_idempotency_key,
+        adapter_request_key: normalized.adapter_request_key
+          || hermesRequest.adapter_request_key
+          || hermesRequest.request_key
+          || hermesResponse.adapter_request_key
+          || hermesResponse.request_key
+          || actionWithRequestKey?.adapter_request_key
+          || actionWithRequestKey?.result?.adapter_request_key,
+        batch_key: normalized.batch_key || hermesRequest.batch_key || hermesResponse.batch_key,
+        trace_id: event?.trace_id,
+        event_id: event?.id || event?.event_id
+      };
+    }
+
+    function timelineEventReferences(event) {
+      return {
+        chatwoot_message_id: event?.chatwoot_outbound_message_id,
+        source_message_id: event?.source_message_id,
+        message_id: event?.message_id,
+        outbox_key: event?.outbox_key,
+        response_idempotency_key: event?.response_idempotency_key,
+        adapter_request_key: event?.adapter_request_key,
+        batch_key: event?.batch_key,
+        trace_id: event?.trace_id,
+        event_id: event?.id || event?.event_id
+      };
+    }
+
+    function createTurnResolver(conversation, debugEvents) {
+      const parent = new Map();
+      const ensure = token => {
+        if (!parent.has(token)) parent.set(token, token);
+        return token;
+      };
+      const find = token => {
+        ensure(token);
+        const current = parent.get(token);
+        if (current !== token) parent.set(token, find(current));
+        return parent.get(token);
+      };
+      const union = tokens => {
+        const available = tokens.filter(Boolean);
+        if (!available.length) return;
+        const root = find(available[0]);
+        available.slice(1).forEach(token => parent.set(find(token), root));
       };
 
+      (conversation.timeline || []).forEach(event => union(referenceTokens(timelineEventReferences(event))));
+      debugEvents.forEach(event => union(referenceTokens(debugEventReferences(event))));
+
+      const resolve = references => {
+        const tokens = referenceTokens(references);
+        if (!tokens.length) return null;
+        const roots = new Set(tokens.map(find));
+        const component = [...parent.keys()].filter(token => roots.has(find(token)));
+        const priority = token => {
+          const type = token.split(':', 1)[0];
+          const index = TURN_ID_PRIORITY.indexOf(type);
+          return index === -1 ? TURN_ID_PRIORITY.length : index;
+        };
+        return component.sort((a, b) => priority(a) - priority(b) || a.localeCompare(b))[0] || tokens[0];
+      };
+
+      return { resolve };
+    }
+
+    function buildConversationModel(conversation) {
+      const messages = [];
+      const knownAliases = new Set();
       const debugEvents = relatedDebugEvents(conversation)
         .sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+      const turnResolver = createTurnResolver(conversation, debugEvents);
+
+      const addMessage = ({ direction, text, timestamp, label, references = {} }) => {
+        const cleanText = String(text || '').trim();
+        const normalizedTimestamp = messageTimestamp(timestamp);
+        const aliases = referenceTokens(references).map(token => `${direction}:${token}`);
+        if (!cleanText || aliases.some(alias => knownAliases.has(alias))) return;
+        aliases.forEach(alias => knownAliases.add(alias));
+        const preferredReference = MESSAGE_ID_PRIORITY
+          .find(key => references?.[key] !== undefined && references?.[key] !== null && String(references[key]).trim());
+        const fallbackKey = [
+          references.trace_id || references.event_id || 'unlinked',
+          direction,
+          normalizedTimestamp || messages.length
+        ].join(':');
+        const messageKey = preferredReference
+          ? `${direction}:${preferredReference}:${String(references[preferredReference]).trim()}`
+          : fallbackKey;
+        messages.push({
+          message_key: messageKey,
+          turn_key: turnResolver.resolve(references) || `unlinked:${fallbackKey}`,
+          conversation_id: conversation.conversation_id,
+          contact_id: conversation.contact_id,
+          direction,
+          text: cleanText,
+          timestamp: normalizedTimestamp,
+          label,
+          ...Object.fromEntries(
+            Object.entries(references).filter(([, value]) => value !== undefined && value !== null && String(value).trim())
+          )
+        });
+      };
 
       debugEvents.forEach(event => {
         const normalized = event.normalizedPayload || {};
         const raw = normalized.raw_payload || event.rawPayload || {};
         const direction = String(normalized.direction || event.message_type || '').toLowerCase();
-        const messageId = normalized.message_id || normalized.source_id || raw.id || raw.message?.id || event.message_id;
+        const eventReferences = debugEventReferences(event);
         if (direction === 'incoming' || event.message_type === 'incoming') {
           addMessage({
             direction: 'incoming',
             text: event.text || normalized.text || normalized.body || raw.content || raw.message?.content,
             timestamp: event.timestamp || normalized.timestamp || raw.created_at,
             label: 'Paciente',
-            ids: [messageId && `message:${messageId}`, event.trace_id && `trace-in:${event.trace_id}`]
+            references: {
+              chatwoot_message_id: normalized.chatwoot_message_id || raw.id || raw.message?.id,
+              source_message_id: normalized.source_message_id || normalized.source_id,
+              message_id: normalized.message_id || event.message_id,
+              adapter_request_key: normalized.adapter_request_key || eventReferences.adapter_request_key,
+              batch_key: normalized.batch_key || eventReferences.batch_key,
+              trace_id: event.trace_id,
+              event_id: event.id || event.event_id
+            }
           });
         }
 
-        (event.actionsExecuted || []).forEach((action, index) => {
+        (event.actionsExecuted || []).forEach(action => {
           const actionData = action?.data || {};
           const outgoingText = extractValidatedOutgoing(action);
           if (!outgoingText) return;
-          const requestKey = actionData.adapter_request_key
-            || actionData.response_idempotency_key
-            || event.hermesRequest?.adapter_request_key
-            || event.hermesRequest?.request_key
-            || event.hermesResponse?.adapter_request_key
-            || normalized.adapter_request_key
-            || normalized.response_idempotency_key
-            || (conversation.adapter_request_keys?.length === 1 ? conversation.adapter_request_keys[0] : null);
-          const outgoingId = actionData.chatwoot_message_id
-            || actionData.message_id
-            || actionData.result?.chatwoot_message_id
-            || actionData.result?.message_id;
           addMessage({
             direction: 'outgoing',
             text: outgoingText,
             timestamp: action.timestamp || actionData.sent_at || event.timestamp,
             label: 'Helios',
-            ids: [
-              outgoingId && `outgoing:${outgoingId}`,
-              requestKey && `response:${requestKey}`,
-              event.trace_id && `trace-out:${event.trace_id}:${index}`
-            ]
+            references: {
+              ...eventReferences,
+              chatwoot_message_id: actionData.chatwoot_message_id
+                || actionData.result?.chatwoot_message_id,
+              source_message_id: undefined,
+              message_id: actionData.message_id
+                || actionData.result?.message_id,
+              outbox_key: actionData.outbox_key
+                || actionData.result?.outbox_key
+                || eventReferences.outbox_key,
+              response_idempotency_key: actionData.response_idempotency_key
+                || actionData.result?.response_idempotency_key
+                || eventReferences.response_idempotency_key,
+              adapter_request_key: actionData.adapter_request_key
+                || actionData.result?.adapter_request_key
+                || eventReferences.adapter_request_key
+            }
           });
         });
       });
@@ -866,10 +1044,7 @@
         text: conversation.inbound_message,
         timestamp: latestInbound.timestamp || conversation.last_timestamp,
         label: 'Paciente',
-        ids: [
-          latestInbound.source_message_id && `message:${latestInbound.source_message_id}`,
-          latestInbound.trace_id && `trace-in:${latestInbound.trace_id}`
-        ]
+        references: timelineEventReferences(latestInbound)
       });
 
       if (latestSent.timestamp && conversation.hermes_response) {
@@ -878,20 +1053,93 @@
           text: conversation.hermes_response,
           timestamp: latestSent.timestamp,
           label: 'Helios',
-          ids: [
-            latestSent.chatwoot_outbound_message_id && `outgoing:${latestSent.chatwoot_outbound_message_id}`,
-            latestSent.outbox_key && `outbox:${latestSent.outbox_key}`,
-            latestSent.adapter_request_key && `response:${latestSent.adapter_request_key}`
-          ]
+          references: timelineEventReferences(latestSent)
         });
       }
 
-      return messages.sort((a, b) => {
+      messages.sort((a, b) => {
         if (!a.timestamp && !b.timestamp) return 0;
         if (!a.timestamp) return -1;
         if (!b.timestamp) return 1;
         return new Date(a.timestamp) - new Date(b.timestamp);
       });
+
+      return { messages, debugEvents, turnResolver };
+    }
+
+    function buildConversationMessages(conversation) {
+      return buildConversationModel(conversation).messages;
+    }
+
+    function ensureOperationalTurnSelection(conversation) {
+      const messages = buildConversationMessages(conversation);
+      if (!messages.length) {
+        activeOperationalTurnKey = null;
+        activeOperationalMessageKey = null;
+        return;
+      }
+      const selectedMessage = messages.find(message => message.message_key === activeOperationalMessageKey);
+      const selectedTurnExists = messages.some(message => message.turn_key === activeOperationalTurnKey);
+      if (selectedMessage && selectedTurnExists) return;
+      if (selectedTurnExists) {
+        const lastInTurn = [...messages].reverse().find(message => message.turn_key === activeOperationalTurnKey);
+        activeOperationalMessageKey = lastInTurn?.message_key || null;
+        return;
+      }
+      const latestMessage = messages[messages.length - 1];
+      activeOperationalTurnKey = latestMessage.turn_key;
+      activeOperationalMessageKey = latestMessage.message_key;
+    }
+
+    function selectedTurnContext(conversation) {
+      const model = buildConversationModel(conversation);
+      const selectedMessage = model.messages.find(message => message.message_key === activeOperationalMessageKey)
+        || [...model.messages].reverse().find(message => message.turn_key === activeOperationalTurnKey)
+        || model.messages[model.messages.length - 1]
+        || null;
+      const turnKey = selectedMessage?.turn_key || activeOperationalTurnKey;
+      const matchesTurn = references => !!turnKey && model.turnResolver.resolve(references) === turnKey;
+      return {
+        ...model,
+        selectedMessage,
+        turnKey,
+        turnMessages: model.messages.filter(message => message.turn_key === turnKey),
+        turnDebugEvents: model.debugEvents.filter(event => matchesTurn(debugEventReferences(event))),
+        turnTimeline: (conversation.timeline || [])
+          .filter(event => matchesTurn(timelineEventReferences(event)))
+          .sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
+      };
+    }
+
+    function renderConversationMessageBubbles(messages) {
+      let previousDay = null;
+      return messages.map(message => {
+        const date = message.timestamp ? new Date(message.timestamp) : null;
+        const dayKey = date && !Number.isNaN(date.getTime()) ? date.toDateString() : 'unknown';
+        const daySeparator = dayKey !== previousDay
+          ? `<div class="flex items-center gap-2 py-1">
+              <div class="h-px flex-1 bg-slate-800"></div>
+              <span class="text-[8px] font-bold uppercase tracking-wider text-slate-600">${date && !Number.isNaN(date.getTime()) ? escapeHtml(date.toLocaleDateString()) : 'Fecha no disponible'}</span>
+              <div class="h-px flex-1 bg-slate-800"></div>
+            </div>`
+          : '';
+        previousDay = dayKey;
+        const isSelected = message.message_key === activeOperationalMessageKey;
+        const encodedMessageKey = encodeURIComponent(message.message_key);
+        return `
+          ${daySeparator}
+          <div class="flex ${message.direction === 'outgoing' ? 'justify-end' : 'justify-start'}">
+            <button type="button" onclick="selectOperationalMessage('${encodedMessageKey}')" aria-pressed="${isSelected}" class="max-w-[88%] text-left rounded-2xl p-1 transition-all focus:outline-none ${isSelected ? 'ring-2 ring-amber-400/80 bg-amber-400/5' : 'hover:bg-slate-800/30'}">
+              <div class="mb-1 px-1 text-[8px] uppercase tracking-wider ${message.direction === 'outgoing' ? 'text-right text-amber-500/80' : 'text-slate-500'}">${escapeHtml(message.label)}</div>
+              <div class="chat-message rounded-2xl px-3.5 py-2.5 text-xs leading-5 shadow-sm ${message.direction === 'outgoing' ? 'rounded-br-sm border border-amber-500/20 bg-amber-500/10 text-amber-50' : 'rounded-bl-sm border border-slate-700/70 bg-slate-800/80 text-slate-200'}">${escapeHtml(message.text)}</div>
+              <div class="mt-1 flex items-center gap-2 px-1 text-[8px] text-slate-600 ${message.direction === 'outgoing' ? 'justify-end text-right' : ''}">
+                <span>${escapeHtml(messageTimeLabel(message.timestamp))}</span>
+                ${isSelected ? '<span class="font-bold uppercase text-amber-500">Seleccionado</span>' : ''}
+              </div>
+            </button>
+          </div>
+        `;
+      }).join('');
     }
 
     function showConversationHistory(conversation) {
@@ -925,15 +1173,7 @@
             </div>
           </div>
           <div id="conversation-message-scroll" class="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-3 bg-slate-950/20">
-            ${messages.length ? messages.map(message => `
-              <div class="flex ${message.direction === 'outgoing' ? 'justify-end' : 'justify-start'}">
-                <div class="max-w-[88%]">
-                  <div class="mb-1 px-1 text-[8px] uppercase tracking-wider ${message.direction === 'outgoing' ? 'text-right text-amber-500/80' : 'text-slate-500'}">${escapeHtml(message.label)}</div>
-                  <div class="chat-message rounded-2xl px-3.5 py-2.5 text-xs leading-5 shadow-sm ${message.direction === 'outgoing' ? 'rounded-br-sm border border-amber-500/20 bg-amber-500/10 text-amber-50' : 'rounded-bl-sm border border-slate-700/70 bg-slate-800/80 text-slate-200'}">${escapeHtml(message.text)}</div>
-                  <div class="mt-1 px-1 text-[8px] text-slate-600 ${message.direction === 'outgoing' ? 'text-right' : ''}">${escapeHtml(messageTimeLabel(message.timestamp))}</div>
-                </div>
-              </div>
-            `).join('') : '<div class="h-full flex items-center justify-center text-center text-xs text-slate-500">No hay mensajes registrados para esta conversación.</div>'}
+            ${messages.length ? renderConversationMessageBubbles(messages) : '<div class="h-full flex items-center justify-center text-center text-xs text-slate-500">No hay mensajes registrados para esta conversación.</div>'}
           </div>
         `;
 
@@ -961,32 +1201,67 @@
 
     function showOperationalConversationDetails(conversation) {
       const inspector = document.getElementById('inspector-panel');
-      const durableTimeline = conversation.timeline || [];
+      const turnContext = selectedTurnContext(conversation);
+      const durableTimeline = turnContext.turnTimeline;
+      const selectedMessage = turnContext.selectedMessage;
+      const turnMessages = turnContext.turnMessages;
+      const selectedTurnKey = turnContext.turnKey;
       const stage = name => durableTimeline.find(event => event.stage === name) || {};
       const inboundStage = stage('INBOUND_RECEIVED');
       const adapterStage = stage('ADAPTER_COMPLETED');
       const outboxCreatedStage = stage('OUTBOX_CREATED');
       const sentStage = stage('CHATWOOT_SENT');
       const firstTimestamp = inboundStage.timestamp || durableTimeline[0]?.timestamp;
-      const finalTimestamp = sentStage.timestamp || conversation.last_timestamp;
+      const finalTimestamp = sentStage.timestamp || durableTimeline[durableTimeline.length - 1]?.timestamp;
       const totalDuration = firstTimestamp && finalTimestamp
         ? new Date(finalTimestamp).getTime() - new Date(firstTimestamp).getTime()
         : null;
-      const debugEvents = relatedDebugEvents(conversation);
-      const debugEvent = debugEvents[0] || {};
+      const debugEvents = turnContext.turnDebugEvents;
+      const selectedDebugEvent = debugEvents.find(event => event.trace_id === selectedMessage?.trace_id);
+      const debugEvent = selectedDebugEvent || debugEvents[0] || {};
       const hermesRequest = debugEvents.find(event => event.hermesRequest)?.hermesRequest;
-      const hermesResponse = debugEvents.find(event => event.hermesResponse)?.hermesResponse;
-      const normalizedInput = debugEvents.find(event => event.normalizedPayload)?.normalizedPayload;
-      const inboundRaw = debugEvents.find(event => event.rawPayload)?.rawPayload
+      const rawHermesResponse = debugEvents.find(event => event.hermesResponse)?.hermesResponse;
+      const hermesResponse = rawHermesResponse?.body || rawHermesResponse;
+      const normalizedInput = (selectedDebugEvent?.normalizedPayload
+        || debugEvents.find(event => event.normalizedPayload)?.normalizedPayload);
+      const inboundRaw = selectedDebugEvent?.rawPayload
+        || debugEvents.find(event => event.rawPayload)?.rawPayload
         || normalizedInput?.raw_payload;
       const debugHermesRequestStep = debugEvents
         .flatMap(event => event.timeline || [])
         .find(step => step.type === 'hermes_request');
       const postHermesActions = debugEvents.flatMap(event => event.actionsExecuted || []);
-      const adapterRequestKey = conversation.adapter_request_keys?.[0] || adapterStage.adapter_request_key;
-      const batchKey = conversation.batch_keys?.[0] || adapterStage.batch_key;
-      const outboxKey = conversation.outbox_keys?.[0] || sentStage.outbox_key;
-      const responseText = conversation.hermes_response || hermesResponse?.message_for_client || 'N/A';
+      const adapterRequestKey = selectedMessage?.adapter_request_key || adapterStage.adapter_request_key;
+      const batchKey = selectedMessage?.batch_key || adapterStage.batch_key || outboxCreatedStage.batch_key;
+      const outboxKey = selectedMessage?.outbox_key || sentStage.outbox_key || outboxCreatedStage.outbox_key;
+      const incomingTurnMessages = turnMessages.filter(message => message.direction === 'incoming');
+      const outgoingTurnMessages = turnMessages.filter(message => message.direction === 'outgoing');
+      const inboundText = incomingTurnMessages.map(message => message.text).join('\n\n') || 'N/A';
+      const responseText = outgoingTurnMessages[outgoingTurnMessages.length - 1]?.text
+        || hermesResponse?.message_for_client
+        || hermesResponse?.reply
+        || hermesResponse?.reply_text
+        || 'N/A';
+      const traceId = selectedMessage?.trace_id
+        || inboundStage.trace_id
+        || adapterStage.trace_id
+        || debugEvent.trace_id
+        || 'N/A';
+      const turnStatus = sentStage.timestamp
+        ? 'SENT'
+        : adapterStage.timestamp
+          ? 'COMPLETED'
+          : conversation.status === 'ERROR'
+            ? 'ERROR'
+            : 'PROCESSING';
+      const latestConversationMessage = buildConversationMessages(conversation).at(-1);
+      const isLatestTurn = latestConversationMessage?.turn_key === selectedTurnKey;
+      const hermesConversationId = hermesResponse?.hermes_conversation_id
+        || adapterStage.hermes_conversation_id
+        || (isLatestTurn ? conversation.hermes_conversation_id : null);
+      const hermesResponseId = hermesResponse?.hermes_response_id
+        || adapterStage.hermes_response_id
+        || (isLatestTurn ? conversation.hermes_response_id : null);
       const tabClass = tab => operationalDetailTab === tab
         ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-sm'
         : 'bg-slate-950/40 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-900';
@@ -998,17 +1273,19 @@
             ${operationalValueCard('Paciente', isUsablePatientName(conversation.patient_name) ? conversation.patient_name : 'N/A')}
             ${operationalValueCard('Teléfono', conversation.phone || 'N/A')}
             ${operationalValueCard('Tenant', conversation.tenant_id)}
-            ${operationalValueCard('Account', conversation.account_id)}
-            ${operationalValueCard('Conversation', conversation.conversation_id)}
-            ${operationalValueCard('Contact', conversation.contact_id)}
-            ${operationalValueCard('Estado final', conversation.status)}
-            ${operationalValueCard('Duración total', formatOperationalDuration(totalDuration))}
-            ${operationalValueCard('Inbound recibido', formatOperationalTimestamp(firstTimestamp))}
-            ${operationalValueCard('Adapter completado', formatOperationalTimestamp(adapterStage.timestamp))}
-            ${operationalValueCard('Chatwoot enviado', formatOperationalTimestamp(sentStage.timestamp))}
-            ${operationalValueCard('Última actualización', formatOperationalTimestamp(conversation.last_timestamp))}
-            ${operationalValueCard('Hermes Conversation ID', conversation.hermes_conversation_id || 'N/A', 'col-span-2')}
-            ${operationalValueCard('Hermes Response ID', conversation.hermes_response_id || 'N/A', 'col-span-2')}
+             ${operationalValueCard('Account', conversation.account_id)}
+             ${operationalValueCard('Conversation', conversation.conversation_id)}
+             ${operationalValueCard('Contact', conversation.contact_id)}
+             ${operationalValueCard('Estado del turno', turnStatus)}
+             ${operationalValueCard('Duración total', formatOperationalDuration(totalDuration))}
+             ${operationalValueCard('Trace ID', traceId, 'col-span-2')}
+             ${operationalValueCard('Burbuja seleccionada', selectedMessage ? `${selectedMessage.label} · ${formatOperationalTimestamp(selectedMessage.timestamp)}` : 'N/A', 'col-span-2')}
+             ${operationalValueCard('Inbound recibido', formatOperationalTimestamp(firstTimestamp))}
+             ${operationalValueCard('Adapter completado', formatOperationalTimestamp(adapterStage.timestamp))}
+             ${operationalValueCard('Chatwoot enviado', formatOperationalTimestamp(sentStage.timestamp))}
+             ${operationalValueCard('Última actualización del turno', formatOperationalTimestamp(finalTimestamp))}
+             ${operationalValueCard('Hermes Conversation ID', hermesConversationId || 'N/A', 'col-span-2')}
+             ${operationalValueCard('Hermes Response ID', hermesResponseId || 'N/A', 'col-span-2')}
           </div>
         `;
       } else if (operationalDetailTab === 'input') {
@@ -1027,10 +1304,10 @@
         } : null;
         contentHtml = `
           <div class="space-y-3">
-            ${operationalValueCard('Mensaje entrante completo', conversation.inbound_message || 'N/A', 'col-span-2')}
-            <div class="grid grid-cols-2 gap-3">
-              ${operationalValueCard('Source message ID', inboundStage.source_message_id || 'N/A')}
-              ${operationalValueCard('Inbound trace ID', inboundStage.trace_id || 'N/A')}
+             ${operationalValueCard('Mensajes entrantes del turno', inboundText, 'col-span-2')}
+             <div class="grid grid-cols-2 gap-3">
+               ${operationalValueCard('Source message ID', selectedMessage?.source_message_id || inboundStage.source_message_id || 'N/A')}
+               ${operationalValueCard('Inbound trace ID', traceId)}
               ${operationalValueCard('Fecha / hora', formatOperationalTimestamp(inboundStage.timestamp), 'col-span-2')}
             </div>
             ${operationalJsonBlock('Identidad normalizada', identity, true)}
@@ -1060,8 +1337,8 @@
           <div class="space-y-3">
             ${operationalValueCard('Respuesta completa de Hermes', responseText, 'col-span-2')}
             <div class="grid grid-cols-2 gap-3">
-              ${operationalValueCard('Hermes Conversation ID', conversation.hermes_conversation_id || 'N/A', 'col-span-2')}
-              ${operationalValueCard('Hermes Response ID', conversation.hermes_response_id || 'N/A', 'col-span-2')}
+               ${operationalValueCard('Hermes Conversation ID', hermesConversationId || 'N/A', 'col-span-2')}
+               ${operationalValueCard('Hermes Response ID', hermesResponseId || 'N/A', 'col-span-2')}
               ${operationalValueCard('HTTP status', hermesResponse?.http_status || adapterStage.http_status || 'N/A')}
               ${operationalValueCard('Duración Hermes', formatOperationalDuration(hermesResponse?.hermes_duration_ms ?? adapterStage.duration_ms))}
               ${operationalValueCard('Input tokens', hermesResponse?.input_tokens || 'N/A')}
@@ -1078,8 +1355,8 @@
       } else if (operationalDetailTab === 'outputs') {
         const outboxPayload = {
           outbox_key: outboxKey,
-          content: conversation.hermes_response,
-          status: conversation.status === 'SENT' ? 'sent' : conversation.status,
+          content: responseText === 'N/A' ? null : responseText,
+          status: turnStatus === 'SENT' ? 'sent' : turnStatus,
           chatwoot_outbound_message_id: sentStage.chatwoot_outbound_message_id,
           http_status: sentStage.http_status,
           created_at: outboxCreatedStage.timestamp,
@@ -1087,11 +1364,11 @@
         };
         contentHtml = `
           <div class="space-y-3">
-            ${operationalValueCard('Texto enviado a Chatwoot', conversation.hermes_response || 'N/A', 'col-span-2')}
+            ${operationalValueCard('Texto enviado a Chatwoot', responseText, 'col-span-2')}
             <div class="grid grid-cols-2 gap-3">
               ${operationalValueCard('Outbox key', outboxKey || 'N/A', 'col-span-2')}
               ${operationalValueCard('Chatwoot outbound message ID', sentStage.chatwoot_outbound_message_id || 'N/A')}
-              ${operationalValueCard('Estado', conversation.status === 'SENT' ? 'sent' : conversation.status)}
+              ${operationalValueCard('Estado', turnStatus === 'SENT' ? 'sent' : turnStatus)}
               ${operationalValueCard('Attempt count', sentStage.attempt_count || outboxCreatedStage.attempt_count || 'N/A')}
               ${operationalValueCard('Created at', formatOperationalTimestamp(outboxCreatedStage.timestamp))}
               ${operationalValueCard('Sent at', formatOperationalTimestamp(sentStage.timestamp), 'col-span-2')}
@@ -1105,9 +1382,9 @@
           outbox_key: outboxKey,
           batch_key: batchKey,
           adapter_request_key: adapterRequestKey,
-          content: conversation.hermes_response,
+          content: responseText === 'N/A' ? null : responseText,
           chatwoot_outbound_message_id: sentStage.chatwoot_outbound_message_id,
-          status: conversation.status === 'SENT' ? 'sent' : conversation.status
+          status: turnStatus === 'SENT' ? 'sent' : turnStatus
         };
         contentHtml = `
           <div class="space-y-3">
@@ -1133,7 +1410,7 @@
             ${durableTimeline.map(event => {
               const eventState = event.secondary
                 ? 'SECUNDARIO'
-                : event.ai_status || event.status || (event.http_status ? `HTTP ${event.http_status}` : conversation.status);
+                : event.ai_status || event.status || (event.http_status ? `HTTP ${event.http_status}` : turnStatus);
               return `
                 <div class="relative">
                   <span class="absolute -left-[31px] top-1 rounded-full w-2.5 h-2.5 ${event.secondary ? 'bg-slate-600' : 'bg-emerald-500'} ring-4 ring-slate-950"></span>
@@ -1167,8 +1444,9 @@
           <div>
             <h2 class="font-bold text-xs uppercase tracking-wider text-slate-300">Conversación operativa</h2>
             <p class="text-[10px] text-slate-500 mt-1">${escapeHtml(conversation.tenant_id)} · account ${escapeHtml(conversation.account_id)} · conv ${escapeHtml(conversation.conversation_id)} · contact ${escapeHtml(conversation.contact_id)}</p>
+            <p class="text-[9px] text-amber-500/80 mt-1">Turno: ${escapeHtml(traceId)} · Burbuja: ${escapeHtml(selectedMessage?.label || 'N/A')}</p>
           </div>
-          <span class="px-2 py-1 rounded text-[10px] font-bold ${conversation.status === 'SENT' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-slate-800 text-slate-300'}">${escapeHtml(conversation.status)}</span>
+          <span class="px-2 py-1 rounded text-[10px] font-bold ${turnStatus === 'SENT' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-slate-800 text-slate-300'}">${escapeHtml(turnStatus)}</span>
         </div>
         <nav class="px-3 py-2 bg-slate-950/40 border-b border-slate-800 flex flex-wrap gap-1.5" aria-label="Detalle de conversación">
           ${tabs.map(([tab, label]) => `
