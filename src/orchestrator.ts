@@ -16,11 +16,55 @@ import { maskPhoneForLog } from './utils/sanitizeForLog.js';
 import { createBatchIdentity, createOutboxIdentity } from './durable/identity.js';
 import { outboxRepository, processingBatchRepository } from './repositories/durable.js';
 import { recordComponentError, recordComponentSuccess } from './services/component-health.js';
+import { SupabaseOperationError } from './supabase/assert-success.js';
 
 // Control de idempotencia en memoria para evitar flushes duplicados redundantes de la misma conversación en ventanas muy cortas de tiempo
 const lastProcessedFlushes = new Map<string, number>();
 // Lock por conversación: evita procesamiento paralelo de la misma conversación (respuestas duplicadas)
 const activeProcessing = new Set<string>();
+
+export interface ProcessingOutcomeFlags {
+  hermesSucceeded: boolean;
+  outboxCreated: boolean;
+  statePatchApplied: boolean;
+  bufferMarkedProcessed: boolean;
+  stage: string;
+}
+
+export function classifyProcessingFailure(error: any, flags: ProcessingOutcomeFlags) {
+  const isSupabaseError = error instanceof SupabaseOperationError
+    || String(error?.code || '').startsWith('SUPABASE_');
+  if (flags.hermesSucceeded) {
+    return {
+      component: isSupabaseError ? 'supabase' : (flags.outboxCreated ? 'postprocessing' : 'outbox'),
+      eventType: isSupabaseError
+        ? 'SUPABASE_WRITE_ERROR'
+        : (flags.outboxCreated ? 'POSTPROCESSING_ERROR' : 'OUTBOX_ERROR'),
+      stage: error?.operation || flags.stage,
+      preserveHermesSuccess: true,
+      markConversationError: false,
+      markBufferAsHermesFailed: false,
+      emitHermesFailureEvent: false,
+      retryHermes: false,
+      createAnotherOutbox: false
+    };
+  }
+  return {
+    component: 'hermes',
+    eventType: 'HERMES_ERROR',
+    stage: flags.stage,
+    preserveHermesSuccess: false,
+    markConversationError: true,
+    markBufferAsHermesFailed: true,
+    emitHermesFailureEvent: true,
+    retryHermes: false,
+    createAnotherOutbox: false
+  };
+}
+
+export function isTerminalProcessingBatch(batch: any): boolean {
+  return batch?.ai_status === 'completed' || batch?.delivery_status === 'sent';
+}
 
 export function clearOrchestratorCache() {
   lastProcessedFlushes.clear();
@@ -65,6 +109,11 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
   let inboxId = '';
   let durableBatchKey = '';
   let durableBatchClaimed = false;
+  let hermesSucceeded = false;
+  let outboxCreated = false;
+  let statePatchApplied = false;
+  let bufferMarkedProcessed = false;
+  let processingStage = 'buffer.claim';
 
   try {
     const tenantContext = resolveTenantContextByTenantId(tenantId);
@@ -127,8 +176,12 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       adapter_request_key: null
     }, traceId);
 
-    if (batch.ai_status === 'completed' || batch.delivery_status === 'sent') {
+    if (isTerminalProcessingBatch(batch)) {
+      hermesSucceeded = batch.ai_status === 'completed';
+      outboxCreated = Boolean(batch.outbox_key) || batch.delivery_status === 'sent';
+      processingStage = 'inbound_buffer.mark_processed';
       await bufferRepository.markProcessed(rawMessages.map(message => message.id), batch.batch_key);
+      bufferMarkedProcessed = true;
       console.log(JSON.stringify({
         event: 'processing_batch_deduplicated',
         source_message_count: batchIdentity.source_message_count
@@ -336,7 +389,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     });
 
     // Llamada HTTP real a Hermes
+    processingStage = 'hermes.call';
     const hermesResponse = await callHermes(payload, traceId);
+    hermesSucceeded = true;
     const adapterFinishedAt = Date.now();
     const adapterDurationMs = adapterFinishedAt - adapterStartedAt;
     recordComponentSuccess('adapter', adapterDurationMs);
@@ -401,6 +456,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     }
 
     if (replyText && safeToSend) {
+      processingStage = 'chatwoot_outbox.create';
       const outboxIdentity = createOutboxIdentity({
         tenant_id: tenantId,
         account_id: tenantContext.account_id,
@@ -421,6 +477,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         adapter_request_key: adapterRequestKey,
         content: replyText
       }, traceId);
+      outboxCreated = true;
       await processingBatchRepository.markAiCompleted(
         durableBatchKey,
         tenantId,
@@ -447,6 +504,20 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
           outbox_key: outboxIdentity.outbox_key,
           adapter_request_key: adapterRequestKey,
           message_count: rawMessages.length
+        }
+      });
+      await logsRepository.save({
+        trace_id: traceId,
+        tenant_id: tenantId,
+        conversation_id: conversationId,
+        contact_id,
+        event_type: 'DIRECT_REPLY_SKIPPED_OUTBOX_HANDLES_DELIVERY',
+        metadata: {
+          reason: 'outbox_delivery_active',
+          hermes_succeeded: true,
+          outbox_created: true,
+          batch_key: durableBatchKey,
+          outbox_key: outboxIdentity.outbox_key
         }
       });
     }
@@ -544,6 +615,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         nextHandoffActive = true;
       }
 
+      processingStage = 'conversation_state.upsert';
       await stateRepository.upsert({
         tenant_id: tenantId,
         conversation_id: conversationId,
@@ -557,6 +629,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         human_handoff_active: nextHandoffActive,
         last_intent: hermesResponse.intent || state.last_intent
       });
+      statePatchApplied = true;
 
       debugTracker.addAction(traceId, 'state_saved_to_supabase', true, {
           status: su.status,
@@ -643,7 +716,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
 
     // 14. Marcar todos los mensajes procesados del buffer
     const ids = rawMessages.map(m => m.id);
+    processingStage = 'inbound_buffer.mark_processed';
     await bufferRepository.markProcessed(ids, traceId);
+    bufferMarkedProcessed = true;
     console.log(`[Orchestrator] Procesamiento exitoso para la conversación #${conversationId}.`);
 
     // Decidir visualmente el badge final de la conversación en base a la decisión/status que devuelva Hermes
@@ -660,6 +735,77 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     }
 
   } catch (error: any) {
+    const outcomeFlags: ProcessingOutcomeFlags = {
+      hermesSucceeded,
+      outboxCreated,
+      statePatchApplied,
+      bufferMarkedProcessed,
+      stage: processingStage
+    };
+    const failure = classifyProcessingFailure(error, outcomeFlags);
+
+    if (failure.preserveHermesSuccess) {
+      const errorCode = String(error?.code || 'POSTPROCESSING_ERROR');
+      if (failure.component === 'supabase') {
+        recordComponentError('supabase', errorCode);
+      }
+      for (const msg of rawMessages) {
+        if (msg.trace_id) {
+          debugTracker.addTimelineStep(msg.trace_id, 'error', {
+            component: failure.component,
+            stage: failure.stage,
+            error_code: errorCode,
+            hermes_succeeded: true,
+            outbox_created: outboxCreated
+          });
+        }
+      }
+      const diagnostic = error instanceof SupabaseOperationError
+        ? {
+            code: error.original_code,
+            message: error.original_message,
+            details: error.original_details,
+            hint: error.original_hint
+          }
+        : { code: error?.code || null, message: null, details: null, hint: null };
+      try {
+        await logsRepository.save({
+          trace_id: traceId,
+          tenant_id: tenantId,
+          conversation_id: conversationId,
+          contact_id: contact_id || 'unknown',
+          event_type: failure.eventType,
+          metadata: {
+            component: failure.component,
+            stage: failure.stage,
+            original_error_code: diagnostic.code,
+            original_error_message: diagnostic.message,
+            original_error_details: diagnostic.details,
+            original_error_hint: diagnostic.hint,
+            hermes_succeeded: true,
+            outbox_created: outboxCreated,
+            state_patch_applied: statePatchApplied,
+            buffer_marked_processed: bufferMarkedProcessed
+          }
+        });
+      } catch (logError: any) {
+        console.error(JSON.stringify({
+          event: 'postprocessing_error_log_failed',
+          component: failure.component,
+          stage: failure.stage,
+          error_code: logError?.code || 'LOG_WRITE_FAILED'
+        }));
+      }
+      console.error(JSON.stringify({
+        event: failure.eventType,
+        component: failure.component,
+        stage: failure.stage,
+        error_code: errorCode,
+        hermes_succeeded: true,
+        outbox_created: outboxCreated
+      }));
+      return;
+    }
     console.error(`[Orchestrator Error] Error procesando la conversación #${conversationId}:`, error.message);
     
     // Propagar error a todos los trace_ids consolidados

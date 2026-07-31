@@ -2,7 +2,7 @@ import { supabase } from '../supabase/client.js';
 import { NormalizedMessage } from '../chatwoot/normalizer.js';
 import { config } from '../config.js';
 import { sanitizeForLog } from '../utils/sanitizeForLog.js';
-import { assertSupabaseSuccess } from '../supabase/assert-success.js';
+import { assertSupabaseSuccess, SupabaseOperationError } from '../supabase/assert-success.js';
 
 // --- IDEMPOTENCIA ---
 export const idempotencyRepository = {
@@ -43,6 +43,65 @@ export const idempotencyRepository = {
 };
 
 // --- BUFFER DE MENSAJES ---
+export async function markClaimedBufferMessagesProcessed(
+  client: any,
+  ids: number[],
+  responseIdempotencyKey?: string
+): Promise<void> {
+  const claimedIds = [...new Set(ids)].sort((a, b) => a - b);
+  if (claimedIds.length === 0) return;
+
+  const processedAt = new Date().toISOString();
+  const { data: processedData, error: processedError } = await client
+    .from('helios_inbound_buffer')
+    .update({
+      processed_at: processedAt,
+      processing_started_at: null,
+      last_error_code: null,
+      next_retry_at: null,
+      retry_count: 0,
+      failed_at: null,
+      response_idempotency_key: null
+    })
+    .in('id', claimedIds)
+    .select('id');
+  assertSupabaseSuccess(
+    { data: processedData, error: processedError },
+    'inbound_buffer.mark_processed', {
+    row_id: claimedIds.join(',')
+  });
+  if (!processedData || processedData.length !== claimedIds.length) {
+    throw new SupabaseOperationError(
+      'SUPABASE_UNKNOWN',
+      'inbound_buffer.mark_processed',
+      { code: 'ROW_COUNT_MISMATCH', message: 'Claimed buffer row count mismatch' },
+      { row_id: claimedIds.join(',') }
+    );
+  }
+
+  if (!responseIdempotencyKey) return;
+  const canonicalId = claimedIds[0];
+  const { data: correlationData, error: correlationError } = await client
+    .from('helios_inbound_buffer')
+    .update({ response_idempotency_key: responseIdempotencyKey })
+    .in('id', claimedIds)
+    .eq('id', canonicalId)
+    .select('id');
+  assertSupabaseSuccess(
+    { data: correlationData, error: correlationError },
+    'inbound_buffer.mark_processed_correlation', {
+    row_id: canonicalId
+  });
+  if (!correlationData || correlationData.length !== 1) {
+    throw new SupabaseOperationError(
+      'SUPABASE_UNKNOWN',
+      'inbound_buffer.mark_processed_correlation',
+      { code: 'ROW_COUNT_MISMATCH', message: 'Canonical buffer row was not updated' },
+      { row_id: canonicalId }
+    );
+  }
+}
+
 export const bufferRepository = {
   async save(msg: NormalizedMessage): Promise<void> {
     const result = await supabase
@@ -123,26 +182,7 @@ export const bufferRepository = {
   },
 
   async markProcessed(ids: number[], response_idempotency_key?: string): Promise<void> {
-    if (ids.length === 0) return;
-    const payload: any = { 
-      processed_at: new Date().toISOString(),
-      processing_started_at: null,
-      last_error_code: null,
-      next_retry_at: null,
-      retry_count: 0,
-      failed_at: null
-    };
-    if (response_idempotency_key) {
-      payload.response_idempotency_key = response_idempotency_key;
-    }
-    
-    const result = await supabase
-      .from('helios_inbound_buffer')
-      .update(payload)
-      .in('id', ids);
-    assertSupabaseSuccess(result, 'inbound_buffer.mark_processed', {
-      row_id: ids.join(',')
-    });
+    await markClaimedBufferMessagesProcessed(supabase, ids, response_idempotency_key);
   },
 
   async markRecoverableError(ids: number[], error_code: string, current_retry_count: number): Promise<void> {

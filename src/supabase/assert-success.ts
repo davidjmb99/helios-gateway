@@ -21,6 +21,9 @@ export class SupabaseOperationError extends Error {
   readonly trace_fingerprint: string | null;
   readonly row_fingerprint: string | null;
   readonly original_code: string | null;
+  readonly original_message: string | null;
+  readonly original_details: string | null;
+  readonly original_hint: string | null;
 
   constructor(
     code: SupabaseErrorCode,
@@ -36,7 +39,21 @@ export class SupabaseOperationError extends Error {
     this.trace_fingerprint = fingerprint(context.trace_id);
     this.row_fingerprint = fingerprint(context.row_id);
     this.original_code = originalError?.code ? String(originalError.code) : null;
+    this.original_message = sanitizeDiagnostic(originalError?.message);
+    this.original_details = sanitizeDiagnostic(originalError?.details);
+    this.original_hint = sanitizeDiagnostic(originalError?.hint);
   }
+}
+
+function sanitizeDiagnostic(value: unknown): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  return String(value)
+    .slice(0, 500)
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[REDACTED]')
+    .replace(/\+?\d[\d\s().-]{6,}\d/g, '[REDACTED]')
+    .replace(/(bearer\s+)[^\s]+/gi, '$1[REDACTED]')
+    .replace(/((?:api[_-]?key|password|secret|token)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]')
+    .replace(/\)=\([^)]+\)/g, ')=([REDACTED])');
 }
 
 function fingerprint(value: unknown): string | null {
@@ -91,4 +108,3 @@ export function assertSupabaseSuccess<T extends { error?: any }>(
     context
   );
 }
-
