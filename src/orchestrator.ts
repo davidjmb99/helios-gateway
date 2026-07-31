@@ -10,7 +10,12 @@ import {
 import { callHermes } from './hermes/client.js';
 import { runTools } from './tools/tool-runner.js';
 import { debugTracker } from './debug/debug-tracker.js';
-import { normalizeProfilePatch, resolveChatwootAlias } from './utils/normalizeProfilePatch.js';
+import {
+  evaluatePersistedProfile,
+  normalizeProfilePatch,
+  resolveChatwootAlias,
+  resolveOperationalPhone
+} from './utils/normalizeProfilePatch.js';
 import { resolveTenantContextByTenantId } from './tenants/context.js';
 import { maskPhoneForLog } from './utils/sanitizeForLog.js';
 import { createBatchIdentity, createOutboxIdentity } from './durable/identity.js';
@@ -279,11 +284,16 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     // Prioridad 1: state.phone (guardado en base de datos al recibir webhook)
     // Prioridad 2: patientProfile.phone (guardado proactivamente al recibir webhook)
     // Prioridad 3: normalización directa de primer mensaje del buffer
-    resolvedPhone = state.phone || patientProfile?.phone || phone;
+    resolvedPhone = resolveOperationalPhone(state.phone, patientProfile?.phone, phone);
 
     // Detección de identidad: usar campos verificados de Supabase
-    const isProfileComplete = patientProfile?.profile_complete === true ||
-      !!(patientProfile?.first_name && patientProfile?.last_name && patientProfile?.email && resolvedPhone);
+    const profileStatus = evaluatePersistedProfile(
+      patientProfile,
+      resolvedPhone,
+      tenantId,
+      contact_id
+    );
+    const isProfileComplete = profileStatus.profileComplete;
 
     // Resolver alias provisional de Chatwoot con función unificada
     const chatwootDisplayName = resolveChatwootAlias(firstMsg.raw_payload, patientProfile, state);
@@ -323,12 +333,16 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         phone: resolvedPhone
       },
       patient: {
-        profile_exists: !!patientProfile,
+        profile_exists: profileStatus.profileExists,
+        identity_complete: profileStatus.identityComplete,
+        crm_synced: profileStatus.crmSynced,
         profile_complete: isProfileComplete,
-        first_name: isProfileComplete ? (patientProfile?.first_name || null) : null,
-        last_name: isProfileComplete ? (patientProfile?.last_name || null) : null,
-        name: isProfileComplete ? [patientProfile?.first_name, patientProfile?.last_name].filter(Boolean).join(' ') || patientProfile?.name || null : null,
-        email: patientProfile?.email || null,
+        first_name: profileStatus.identityComplete ? profileStatus.firstName : null,
+        last_name: profileStatus.identityComplete ? profileStatus.lastName : null,
+        name: profileStatus.identityComplete
+          ? [profileStatus.firstName, profileStatus.lastName].filter(Boolean).join(' ')
+          : null,
+        email: profileStatus.identityComplete ? profileStatus.email : null,
         phone: resolvedPhone,
         chatwoot_display_name: chatwootDisplayName,
         display_name_source: isProfileComplete ? "verified_profile" : "chatwoot"
@@ -385,7 +399,11 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       conversation_id: conversationId,
       contact_id: contact_id,
       event_type: 'HERMES_CALL_STARTED',
-      metadata: { message_count: rawMessages.length, phone, adapter_started_at: new Date(adapterStartedAt).toISOString() }
+      metadata: {
+        message_count: rawMessages.length,
+        phone: maskPhoneForLog(resolvedPhone),
+        adapter_started_at: new Date(adapterStartedAt).toISOString()
+      }
     });
 
     // Llamada HTTP real a Hermes
@@ -621,7 +639,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         conversation_id: conversationId,
         contact_id: contact_id,
         inbox_id: inboxId,
-        phone: phone,
+        phone: resolvedPhone,
         status: su.status !== undefined ? su.status : state.status,
         pending_question: su.pending_question !== undefined ? su.pending_question : state.pending_question,
         pending_intent: su.pending_intent !== undefined ? su.pending_intent : state.pending_intent,
@@ -651,7 +669,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
           conversation_id: conversationId,
           contact_id: contact_id,
           inbox_id: inboxId,
-          phone: phone,
+          phone: resolvedPhone,
           active_booking: {
             booking_uid: bp.booking_uid,
             status: bp.status,
@@ -705,7 +723,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         tenant_id: tenantId,
         conversation_id: conversationId,
         contact_id: contact_id,
-        phone: phone,
+        phone: resolvedPhone,
         trace_id: traceId
       });
 

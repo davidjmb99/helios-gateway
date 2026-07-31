@@ -448,7 +448,13 @@ async function handleChatwootWebhook(payload: any, urlTenantId: string | undefin
         conversation_id: normalized.conversation_id,
         contact_id: normalized.contact_id,
         event_type: 'event_ignored',
-        metadata: { ignore_reason: normalized.ignore_reason, event: normalized.event }
+        metadata: {
+          ignore_reason: normalized.ignore_reason,
+          event: normalized.event,
+          conversation_contact_id: normalized.contact_id,
+          sender_id: normalized.sender_id,
+          sender_type: normalized.sender_type
+        }
       });
     }
     return { ok: true, status: 'ignored', reason: normalized.ignore_reason };

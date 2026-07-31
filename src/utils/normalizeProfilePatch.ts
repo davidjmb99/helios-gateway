@@ -90,8 +90,60 @@ export function resolveChatwootAlias(rawPayload: any, patientProfile?: any, conv
 }
 
 /** Validación básica de email */
-function isValidEmail(email: string): boolean {
+export function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+export function isValidOperationalPhone(phone: unknown): boolean {
+  const normalized = String(phone ?? '').trim();
+  if (!normalized || normalized.includes('*')) return false;
+  return normalized.replace(/\D/g, '').length >= 8;
+}
+
+export function resolveOperationalPhone(
+  statePhone: unknown,
+  profilePhone: unknown,
+  bufferedPhone: unknown
+): string {
+  return [statePhone, profilePhone, bufferedPhone]
+    .map(value => String(value ?? '').trim())
+    .find(isValidOperationalPhone) || '';
+}
+
+export function evaluatePersistedProfile(
+  patientProfile: any,
+  resolvedPhone: string,
+  tenantId: string,
+  contactId: string
+) {
+  const profileExists = Boolean(patientProfile)
+    && String(patientProfile.tenant_id ?? '') === String(tenantId)
+    && String(patientProfile.contact_id ?? '') === String(contactId);
+  const firstName = profileExists ? cleanStr(patientProfile.first_name) : null;
+  const lastName = profileExists ? cleanStr(patientProfile.last_name) : null;
+  const email = profileExists ? cleanStr(patientProfile.email)?.toLowerCase() || null : null;
+  const identityComplete = Boolean(
+    firstName
+    && lastName
+    && email
+    && isValidEmail(email)
+    && isValidOperationalPhone(resolvedPhone)
+  );
+  const crmSynced = profileExists && Boolean(cleanStr(patientProfile.crm_contact_id));
+  const profileComplete = profileExists
+    && patientProfile.profile_complete === true
+    && identityComplete
+    && crmSynced;
+
+  return {
+    profileExists,
+    identityComplete,
+    crmSynced,
+    profileComplete,
+    firstName,
+    lastName,
+    email
+  };
 }
 
 export function normalizeProfilePatch(

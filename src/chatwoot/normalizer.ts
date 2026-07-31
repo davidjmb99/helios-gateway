@@ -15,6 +15,8 @@ export interface NormalizedMessage {
   direction_source_used: string;
   conversation_id: string;
   contact_id: string;
+  sender_id: string;
+  sender_type: string;
   inbox_id: string;
   message_id: string;
   source_id: string | null;
@@ -43,7 +45,19 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
   const account_id = tenantContext.account_id;
   const tenant_id = tenantContext.tenant_id;
   const conversation_id = String(conversation.id || body.conversation_id || '');
-  const contact_id = String(contact.id || conversation.contact_inbox?.contact_id || body.contact_id || body.messages?.[0]?.sender_id || '');
+  const sender_id = String(body.sender?.id || body.messages?.[0]?.sender_id || '');
+  const sender_type = String(body.sender?.type || body.messages?.[0]?.sender_type || '');
+  const senderIsIncomingContact = sender_type.toLowerCase() === 'contact'
+    || body.message_type === 'incoming'
+    || body.messages?.[0]?.message_type === 0;
+  const contact_id = String(
+    conversation.contact_inbox?.contact_id
+    || body.contact_id
+    || body.contact?.id
+    || body.meta?.sender?.id
+    || (senderIsIncomingContact ? sender_id : '')
+    || ''
+  );
   const inbox_id = String(conversation.inbox_id || body.inbox_id || '');
   
   // 1. Resolver y normalizar el número de teléfono con prioridades
@@ -151,6 +165,8 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
     direction_source_used: directionSourceUsed,
     conversation_id,
     contact_id,
+    sender_id,
+    sender_type,
     inbox_id,
     message_id,
     source_id,
