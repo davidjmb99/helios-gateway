@@ -11,6 +11,7 @@ import { callHermes } from './hermes/client.js';
 import { runTools } from './tools/tool-runner.js';
 import { debugTracker } from './debug/debug-tracker.js';
 import {
+  deriveMissingIdentityFields,
   evaluatePersistedProfile,
   normalizeProfilePatch,
   resolveChatwootAlias,
@@ -294,6 +295,10 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       contact_id
     );
     const isProfileComplete = profileStatus.profileComplete;
+    const missingIdentityFields = deriveMissingIdentityFields(
+      profileStatus,
+      state.missing_fields
+    );
 
     // Resolver alias provisional de Chatwoot con función unificada
     const chatwootDisplayName = resolveChatwootAlias(firstMsg.raw_payload, patientProfile, state);
@@ -352,7 +357,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         status: state.status,
         pending_question: state.pending_question || null,
         pending_intent: state.pending_intent || null,
-        missing_fields: state.missing_fields || [],
+        missing_fields: missingIdentityFields,
         human_handoff_active: state.human_handoff_active,
         active_booking: state.active_booking || null,
         financing: activeFinancing ? { id: activeFinancing.id, status: activeFinancing.status } : null,

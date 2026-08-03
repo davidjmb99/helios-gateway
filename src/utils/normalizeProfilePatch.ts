@@ -146,6 +146,31 @@ export function evaluatePersistedProfile(
   };
 }
 
+export function deriveMissingIdentityFields(
+  profileStatus: {
+    identityComplete: boolean;
+    firstName: string | null;
+    lastName: string | null;
+    email: string | null;
+  },
+  existingMissingFields: unknown = []
+): string[] {
+  if (profileStatus.identityComplete) return [];
+
+  const missing: string[] = [];
+  if (!cleanStr(profileStatus.firstName)) missing.push('first_name');
+  if (!cleanStr(profileStatus.lastName)) missing.push('last_name');
+  if (!profileStatus.email || !isValidEmail(profileStatus.email)) missing.push('email');
+
+  if (missing.length > 0) return missing;
+
+  return Array.isArray(existingMissingFields)
+    ? existingMissingFields.filter((field): field is string =>
+        ['first_name', 'last_name', 'email'].includes(String(field))
+      )
+    : [];
+}
+
 export function normalizeProfilePatch(
   existing: ExistingProfile | null,
   patch: IncomingPatch | null | undefined,

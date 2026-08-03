@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { normalizeChatwootPayload } from '../src/chatwoot/normalizer.js';
 import {
+  deriveMissingIdentityFields,
   evaluatePersistedProfile,
   resolveChatwootAlias,
   resolveOperationalPhone
@@ -56,6 +57,80 @@ assert.equal(absent.profileComplete, false);
 assert.equal(absent.firstName, null);
 assert.equal(absent.lastName, null);
 assert.equal(absent.email, null);
+assert.deepEqual(
+  deriveMissingIdentityFields(absent),
+  ['first_name', 'last_name', 'email'],
+  'an absent profile requires all identity fields'
+);
+
+const technicalOnly = evaluatePersistedProfile(
+  {
+    tenant_id: 'democoi1',
+    contact_id: '8',
+    phone: operationalPhone,
+    first_name: null,
+    last_name: null,
+    email: null,
+    profile_complete: false,
+    crm_contact_id: null
+  },
+  operationalPhone,
+  'democoi1',
+  '8'
+);
+assert.deepEqual(
+  deriveMissingIdentityFields(technicalOnly),
+  ['first_name', 'last_name', 'email'],
+  'a technical phone-only profile requires all identity fields'
+);
+
+const firstNameOnly = evaluatePersistedProfile(
+  {
+    tenant_id: 'democoi1',
+    contact_id: '8',
+    phone: operationalPhone,
+    first_name: 'Nombre',
+    last_name: null,
+    email: null,
+    profile_complete: false,
+    crm_contact_id: null
+  },
+  operationalPhone,
+  'democoi1',
+  '8'
+);
+assert.deepEqual(
+  deriveMissingIdentityFields(firstNameOnly),
+  ['last_name', 'email'],
+  'a partial name requires last_name and email'
+);
+
+const invalidEmail = evaluatePersistedProfile(
+  {
+    tenant_id: 'democoi1',
+    contact_id: '8',
+    phone: operationalPhone,
+    first_name: 'Nombre',
+    last_name: 'Apellido',
+    email: 'invalid-email',
+    profile_complete: false,
+    crm_contact_id: null
+  },
+  operationalPhone,
+  'democoi1',
+  '8'
+);
+assert.deepEqual(deriveMissingIdentityFields(invalidEmail), ['email']);
+assert.deepEqual(
+  deriveMissingIdentityFields(noCrm),
+  [],
+  'complete identity does not depend on CRM synchronization'
+);
+assert.deepEqual(
+  deriveMissingIdentityFields(complete),
+  [],
+  'a CRM-backed complete profile has no missing identity fields'
+);
 
 const foreignTenant = evaluatePersistedProfile(
   { ...identityWithoutCrm, tenant_id: 'other-tenant', crm_contact_id: 'crm-record' },
