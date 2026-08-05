@@ -190,7 +190,7 @@
           </div>
         </div>
 
-        <div id="left-list-container" class="flex-1 overflow-y-auto divide-y divide-slate-800/60">
+        <div id="left-list-container" data-scroll-key="left-list" class="flex-1 overflow-y-auto divide-y divide-slate-800/60">
           <div class="text-slate-500 text-xs text-center p-8">Cargando datos de depuración...</div>
         </div>
         
@@ -761,6 +761,39 @@
       `;
     }
 
+    // --- Estado de UI que debe sobrevivir al auto-refresh ---
+    // El ciclo de refresco repinta paneles completos con innerHTML, lo que perdía
+    // el scroll y cerraba los acordeones. Guardamos lo que el usuario ha elegido
+    // y lo restauramos después de cada repintado.
+    const detailStates = new Map();    // data-detail-key -> abierto/cerrado elegido por el usuario
+    const scrollPositions = new Map(); // data-scroll-key  -> scrollTop
+
+    // El evento 'toggle' no burbujea; se escucha en fase de captura.
+    document.addEventListener('toggle', (event) => {
+      const el = event.target;
+      if (!el || el.tagName !== 'DETAILS') return;
+      const key = el.dataset.detailKey;
+      if (key) detailStates.set(key, el.open);
+    }, true);
+
+    function captureUiState() {
+      scrollPositions.set('__window', window.scrollY);
+      document.querySelectorAll('[data-scroll-key]').forEach(el => {
+        scrollPositions.set(el.dataset.scrollKey, el.scrollTop);
+      });
+    }
+
+    function restoreUiState() {
+      requestAnimationFrame(() => {
+        document.querySelectorAll('[data-scroll-key]').forEach(el => {
+          const saved = scrollPositions.get(el.dataset.scrollKey);
+          if (typeof saved === 'number') el.scrollTop = saved;
+        });
+        const windowScroll = scrollPositions.get('__window');
+        if (typeof windowScroll === 'number') window.scrollTo(0, windowScroll);
+      });
+    }
+
     function operationalJsonBlock(title, value, open = false) {
       if (value === undefined || value === null) {
         return `
@@ -771,8 +804,10 @@
         `;
       }
       const safeValue = sanitizeRawForDisplay(value);
+      const detailKey = `opjson:${title}`;
+      const isOpen = detailStates.has(detailKey) ? detailStates.get(detailKey) : open;
       return `
-        <details ${open ? 'open' : ''} class="group border border-slate-800 rounded-lg bg-slate-950/30 overflow-hidden">
+        <details ${isOpen ? 'open' : ''} data-detail-key="${escapeHtml(detailKey)}" class="group border border-slate-800 rounded-lg bg-slate-950/30 overflow-hidden">
           <summary class="cursor-pointer select-none px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-300 hover:bg-slate-900/60">
             ${escapeHtml(title)}
           </summary>
@@ -1239,7 +1274,7 @@
               </div>
             </div>
           </div>
-          <div id="conversation-message-scroll" class="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-3 bg-slate-950/20">
+          <div id="conversation-message-scroll" data-scroll-key="chat-messages" class="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-3 bg-slate-950/20">
             ${messages.length ? renderConversationMessageBubbles(messages) : '<div class="h-full flex items-center justify-center text-center text-xs text-slate-500">No hay mensajes registrados para esta conversación.</div>'}
           </div>
         `;
@@ -1520,7 +1555,7 @@
             <button type="button" onclick="changeOperationalDetailTab('${tab}')" class="px-2.5 py-1.5 rounded-md border text-[9px] font-bold whitespace-nowrap transition-colors ${tabClass(tab)}">${label}</button>
           `).join('')}
         </nav>
-        <div class="p-5 overflow-y-auto overflow-x-hidden flex-1 text-xs">
+        <div data-scroll-key="inspector-body" class="p-5 overflow-y-auto overflow-x-hidden flex-1 text-xs">
           ${contentHtml}
         </div>
       `;
@@ -1808,7 +1843,7 @@
           .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
         contentHtml = `
-          <div class="p-5 overflow-y-auto flex-1 max-h-[580px] space-y-4">
+          <div data-scroll-key="turn-steps" class="p-5 overflow-y-auto flex-1 max-h-[580px] space-y-4">
             <h3 class="font-bold text-xs uppercase tracking-wider text-slate-400 mb-2">Línea de Tiempo de la Conversación</h3>
             
             <div class="relative border-l border-slate-800 ml-3 pl-6 space-y-5">
@@ -1876,7 +1911,7 @@
         `;
       } else if (activeTab === 'actions') {
         contentHtml = `
-          <div class="p-5 overflow-y-auto flex-1 max-h-[580px] space-y-3">
+          <div data-scroll-key="turn-actions" class="p-5 overflow-y-auto flex-1 max-h-[580px] space-y-3">
             <h3 class="font-bold text-xs uppercase tracking-wider text-slate-400 mb-2">Acciones Ejecutadas</h3>
             ${ev.actionsExecuted && ev.actionsExecuted.length > 0 ? ev.actionsExecuted.map(act => {
               const border = act.success ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-red-500/20 bg-red-500/5';
@@ -1993,16 +2028,15 @@
 
     async function doRefreshCycle() {
       if (!getSessionToken() || !isAutoRefreshActive) return;
-      // Preserve scroll positions before re-render
-      const leftList = document.getElementById('left-list-container');
-      const scrollTop = leftList ? leftList.scrollTop : 0;
+      // Guardar scroll y acordeones abiertos antes de repintar
+      captureUiState();
 
       await fetchStats();
       await fetchContacts();
       await fetchDebugEvents();
 
-      // Restore scroll position
-      if (leftList) leftList.scrollTop = scrollTop;
+      // Devolver la vista a donde el usuario la había dejado
+      restoreUiState();
     }
 
     function startPolling() {
