@@ -200,7 +200,17 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
       reply_text: replyText,
       message_for_client: responseData.message_for_client,
       safe_to_send: responseData.safe_to_send !== false,
-      handoff_required: responseData.requires_handoff || responseData.handoff_required || responseData.handoff || false,
+      // Booleano de verdad: el contrato del ítem 17 manda handoff como OBJETO, y
+      // colarlo aquí hacía fallar la validación Zod y con ella el turno entero.
+      handoff_required: Boolean(
+        responseData.requires_handoff
+        || responseData.handoff_required
+        || responseData.handoff
+        || responseData.decision === 'needs_handoff'
+      ),
+      handoff: typeof responseData.handoff === 'object' && responseData.handoff !== null
+        ? responseData.handoff
+        : null,
       reason: responseData.reason || '',
       profile_patch: responseData.profile_patch || responseData.patient_profile_update || null,
       state_patch: responseData.state_patch || responseData.state_update || null,

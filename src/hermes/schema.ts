@@ -64,6 +64,16 @@ export const HermesResponseSchema = z.object({
   decision: z.enum(['processed', 'identity_required', 'needs_handoff', 'error']).optional().default('processed'),
   response_sent: z.boolean().optional(),
   handoff_required: z.boolean().optional().default(false),
+  // Contrato de handoff (ítem 17 del check list). Los valores se normalizan en
+  // src/handoff/stage.ts: aquí se aceptan tal cual llegan para no rechazar una
+  // derivación por un enum mal escrito y dejar el mensaje sin atender.
+  handoff: z.object({
+    reason_code: NullableStringSchema,
+    destination: NullableStringSchema,
+    priority: NullableStringSchema,
+    summary: NullableStringSchema,
+    treatment_interest: NullableStringSchema
+  }).nullable().optional(),
   reason: z.string().optional(),
   // El Adapter usa null para indicar explícitamente que una respuesta exitosa no tiene error.
   error_code: NullableStringSchema,
