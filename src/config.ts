@@ -98,6 +98,20 @@ export const config = {
   HELIOS_OUTBOX_LEASE_MS: envNumber(process.env.HELIOS_OUTBOX_LEASE_MS, 60000),
   CHATWOOT_TIMEOUT_MS: envNumber(process.env.CHATWOOT_TIMEOUT_MS, 15000),
 
+  // --- Handoff humano ---
+  // Con el flag apagado el comportamiento es exactamente el de antes del bloque
+  // de handoff: la IA se bloquea con el booleano legacy, sin efectos en Chatwoot
+  // ni avisos al equipo. Es la palanca de rollback sin volver por SHA.
+  // El bloqueo de Hermes por stage y la captura de los mensajes del equipo
+  // humano NO dependen de este flag: son propiedades de seguridad.
+  HELIOS_HANDOFF_ENABLED: envBool(process.env.HELIOS_HANDOFF_ENABLED, false),
+  HELIOS_NOTIFICATION_LEASE_MS: envNumber(process.env.HELIOS_NOTIFICATION_LEASE_MS, 60000),
+  HELIOS_NOTIFICATION_MAX_ATTEMPTS: envNumber(process.env.HELIOS_NOTIFICATION_MAX_ATTEMPTS, 8),
+  HELIOS_NOTIFICATION_POLL_MS: envNumber(process.env.HELIOS_NOTIFICATION_POLL_MS, 15000),
+  HELIOS_HUMAN_TRANSCRIPT_LIMIT: envNumber(process.env.HELIOS_HUMAN_TRANSCRIPT_LIMIT, 16),
+  TELEGRAM_BOT_TOKEN: (process.env.TELEGRAM_BOT_TOKEN ?? '').trim(),
+  TELEGRAM_API_BASE_URL: (process.env.TELEGRAM_API_BASE_URL ?? 'https://api.telegram.org').trim(),
+
   CHATWOOT_BASE_URL: parsed.data?.CHATWOOT_BASE_URL ?? 'https://app.chatwoot.com',
   CHATWOOT_ACCOUNT_ID: parsed.data?.CHATWOOT_ACCOUNT_ID ?? '',
   CHATWOOT_API_TOKEN: parsed.data?.CHATWOOT_API_TOKEN ?? '',

@@ -97,6 +97,145 @@ export class ChatwootClient {
     }
   }
 
+  // ------------------------------------------------------------------
+  // Operaciones del handoff humano
+  //
+  // Estos métodos SÍ propagan el error: el servicio de handoff necesita
+  // saber qué paso falló para registrarlo y poder reintentarlo.
+  // ------------------------------------------------------------------
+
+  public async listLabels(accountId: string, conversationId: string): Promise<string[]> {
+    if (!this.isConfigured(accountId)) return [];
+    const response = await axios.get(
+      `${this.baseUrl(accountId)}/conversations/${conversationId}/labels`,
+      { headers: this.headers, timeout: config.CHATWOOT_TIMEOUT_MS }
+    );
+    const payload = response.data?.payload ?? response.data ?? [];
+    return (Array.isArray(payload) ? payload : []).map((label: unknown) => String(label));
+  }
+
+  /**
+   * POST /labels llama a update_labels en Chatwoot, que REEMPLAZA la lista
+   * completa. Por eso hay que leer las etiquetas actuales y publicar la unión:
+   * de lo contrario el handoff borraría las etiquetas que puso el equipo.
+   */
+  public async replaceLabels(
+    accountId: string,
+    conversationId: string,
+    labels: string[]
+  ): Promise<void> {
+    if (!this.isConfigured(accountId)) return;
+    await axios.post(
+      `${this.baseUrl(accountId)}/conversations/${conversationId}/labels`,
+      { labels },
+      { headers: this.headers, timeout: config.CHATWOOT_TIMEOUT_MS }
+    );
+  }
+
+  public async addLabelsPreserving(
+    accountId: string,
+    conversationId: string,
+    labelsToAdd: string[]
+  ): Promise<string[]> {
+    const wanted = labelsToAdd.map(label => String(label).trim()).filter(Boolean);
+    if (wanted.length === 0) return [];
+    const current = await this.listLabels(accountId, conversationId);
+    const merged = [...new Set([...current, ...wanted])];
+    if (merged.length !== current.length) {
+      await this.replaceLabels(accountId, conversationId, merged);
+    }
+    return merged;
+  }
+
+  public async removeLabelsPreserving(
+    accountId: string,
+    conversationId: string,
+    labelsToRemove: string[]
+  ): Promise<string[]> {
+    const unwanted = new Set(labelsToRemove.map(label => String(label).trim()).filter(Boolean));
+    if (unwanted.size === 0) return [];
+    const current = await this.listLabels(accountId, conversationId);
+    const kept = current.filter(label => !unwanted.has(label));
+    if (kept.length !== current.length) {
+      await this.replaceLabels(accountId, conversationId, kept);
+    }
+    return kept;
+  }
+
+  /**
+   * Las macros de esta instalación no pueden escribir atributos personalizados,
+   * así que los escribe el Gateway por API.
+   */
+  public async setCustomAttributes(
+    accountId: string,
+    conversationId: string,
+    attributes: Record<string, string | number | null>
+  ): Promise<void> {
+    if (!this.isConfigured(accountId)) return;
+    await axios.post(
+      `${this.baseUrl(accountId)}/conversations/${conversationId}/custom_attributes`,
+      { custom_attributes: attributes },
+      { headers: this.headers, timeout: config.CHATWOOT_TIMEOUT_MS }
+    );
+  }
+
+  public async setStatus(
+    accountId: string,
+    conversationId: string,
+    status: 'open' | 'pending' | 'resolved' | 'snoozed'
+  ): Promise<void> {
+    if (!this.isConfigured(accountId)) return;
+    await axios.post(
+      `${this.baseUrl(accountId)}/conversations/${conversationId}/toggle_status`,
+      { status },
+      { headers: this.headers, timeout: config.CHATWOOT_TIMEOUT_MS }
+    );
+  }
+
+  public async setPriority(
+    accountId: string,
+    conversationId: string,
+    priority: 'low' | 'medium' | 'high' | 'urgent' | null
+  ): Promise<void> {
+    if (!this.isConfigured(accountId)) return;
+    await axios.post(
+      `${this.baseUrl(accountId)}/conversations/${conversationId}/toggle_priority`,
+      { priority },
+      { headers: this.headers, timeout: config.CHATWOOT_TIMEOUT_MS }
+    );
+  }
+
+  public async assignTeam(accountId: string, conversationId: string, teamId: string): Promise<void> {
+    if (!this.isConfigured(accountId)) return;
+    await axios.post(
+      `${this.baseUrl(accountId)}/conversations/${conversationId}/assignments`,
+      { team_id: Number(teamId) },
+      { headers: this.headers, timeout: config.CHATWOOT_TIMEOUT_MS }
+    );
+  }
+
+  /**
+   * Nota privada del handoff. message_type outgoing + private es la nota
+   * interna canónica de Chatwoot: la ve el equipo, no el paciente.
+   */
+  public async createHandoffPrivateNote(
+    accountId: string,
+    conversationId: string,
+    content: string
+  ): Promise<string | null> {
+    if (!this.isConfigured(accountId)) {
+      console.log('[Chatwoot Client MOCK] Nota privada de handoff simulada.');
+      return null;
+    }
+    const response = await axios.post(
+      `${this.baseUrl(accountId)}/conversations/${conversationId}/messages`,
+      { content, message_type: 'outgoing', private: true },
+      { headers: this.headers, timeout: config.CHATWOOT_TIMEOUT_MS }
+    );
+    const id = response.data?.id;
+    return id === undefined || id === null ? null : String(id);
+  }
+
   public async createPrivateNote(accountId: string, conversationId: string, content: string): Promise<void> {
     if (!this.isConfigured(accountId)) return;
     try {

@@ -20,6 +20,21 @@ import {
 import { resolveTenantContextByTenantId } from './tenants/context.js';
 import { maskPhoneForLog } from './utils/sanitizeForLog.js';
 import { createBatchIdentity, createOutboxIdentity } from './durable/identity.js';
+import {
+  detectHandoffRequest,
+  humanHandoffActiveFor,
+  isHumanOwnedStage,
+  normalizeHandoffRequest,
+  resolveStage,
+  type HandoffStage
+} from './handoff/stage.js';
+import {
+  completeHandoff,
+  escalateTechnicalFailure,
+  loadHandoffContext,
+  openHandoff,
+  type OpenedHandoff
+} from './handoff/service.js';
 import { outboxRepository, processingBatchRepository } from './repositories/durable.js';
 import { recordComponentError, recordComponentSuccess } from './services/component-health.js';
 import { SupabaseOperationError } from './supabase/assert-success.js';
@@ -68,6 +83,35 @@ export function classifyProcessingFailure(error: any, flags: ProcessingOutcomeFl
   };
 }
 
+export interface AiGateDecision {
+  /** Falso significa: persistir el mensaje y NO llamar al Adapter ni a Hermes. */
+  process: boolean;
+  stage: HandoffStage;
+  stage_source: string;
+  ai_enabled: boolean;
+  skip_reason: 'explicit_ai_disabled' | 'human_mode_stage' | null;
+}
+
+/**
+ * Decide si la IA puede intervenir (ítem 16 del check list). Pura a propósito:
+ * es la regla que garantiza cero llamadas a Hermes en modo humano y tiene que
+ * poder comprobarse sin base de datos.
+ */
+export function evaluateAiGate(rawState: any): AiGateDecision {
+  const { stage, source } = resolveStage(rawState);
+  const aiEnabled = rawState ? rawState.ai_enabled !== false : true;
+  const humanOwnsConversation = isHumanOwnedStage(stage);
+  return {
+    process: aiEnabled && !humanOwnsConversation,
+    stage,
+    stage_source: source,
+    ai_enabled: aiEnabled,
+    skip_reason: !aiEnabled
+      ? 'explicit_ai_disabled'
+      : (humanOwnsConversation ? 'human_mode_stage' : null)
+  };
+}
+
 export function isTerminalProcessingBatch(batch: any): boolean {
   return batch?.ai_status === 'completed' || batch?.delivery_status === 'sent';
 }
@@ -79,6 +123,9 @@ export function clearOrchestratorCache() {
 
 export async function processBufferEvent(tenantId: string, conversationId: string, traceId: string): Promise<void> {
   const key = `${tenantId}:${conversationId}`;
+  // Con el flag apagado, un handoff solo levanta el booleano legacy: sin efectos
+  // en Chatwoot ni avisos al equipo. Es la palanca de rollback del bloque.
+  const handoffEnabled = config.HELIOS_HANDOFF_ENABLED;
 
   // Lock: si esta conversación ya está siendo procesada, re-encolar con delay
   if (activeProcessing.has(key)) {
@@ -120,6 +167,16 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
   let statePatchApplied = false;
   let bufferMarkedProcessed = false;
   let processingStage = 'buffer.claim';
+  // A nivel de función: si algo falla DESPUÉS de abrir el handoff, el catch tiene
+  // que poder terminar de entregarlo. Un handoff abierto sin avisar al equipo
+  // deja la conversación bloqueada y a nadie atendiendo.
+  let openedHandoff: OpenedHandoff | null = null;
+  let handoffPatientSnapshot = {
+    first_name: null as string | null,
+    last_name: null as string | null,
+    identity_complete: false,
+    crm_synced: false
+  };
 
   try {
     const tenantContext = resolveTenantContextByTenantId(tenantId);
@@ -162,6 +219,108 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     // 3. Consolidar el texto de todos los mensajes
     const sortedMessages = rawMessages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const consolidatedText = sortedMessages.map(m => m.body).join('\n');
+
+    // 4. Estado de la conversación. Se lee ANTES de crear el lote: un mensaje
+    //    que llega en modo humano no debe generar batch, ni patient_message_ready,
+    //    ni llegar al Adapter (ítem 16 del check list).
+    processingStage = 'conversation_state.read';
+    const rawState = await stateRepository.getRefined(tenantId, conversationId, contact_id)
+      .catch((e: any) => {
+        console.warn('[Orchestrator] Error leyendo conversation_state de Supabase. Usando fallback true:', e.message);
+        return null;
+      });
+
+    const gate = evaluateAiGate(rawState);
+    const stage = gate.stage;
+    const humanOwnsConversation = isHumanOwnedStage(stage);
+
+    const state = rawState || {
+      ai_enabled: true,
+      status: 'new',
+      pending_question: null,
+      pending_intent: null,
+      missing_fields: [],
+      human_handoff_active: false,
+      active_booking: null,
+      financing: null,
+      last_intent: null
+    };
+
+    const aiEnabled = gate.ai_enabled;
+
+    // Agregar log de timeline detallado AI_ENABLED_CHECK para depuración en todos los trace_ids consolidados
+    for (const msg of rawMessages) {
+      if (msg.trace_id) {
+        debugTracker.addTimelineStep(msg.trace_id, 'action_executed', {
+          action: "AI_ENABLED_CHECK",
+          trace_id: msg.trace_id,
+          tenant_id: tenantId,
+          conversation_id: conversationId,
+          contact_id: contact_id,
+          ai_enabled: aiEnabled,
+          ai_enabled_source: rawState ? "conversation_state" : "default_true",
+          stage,
+          stage_source: gate.stage_source,
+          human_handoff_active: humanOwnsConversation,
+          will_process: aiEnabled && !humanOwnsConversation,
+          skip_reason: !aiEnabled ? "explicit_ai_disabled" : (humanOwnsConversation ? "human_mode_stage" : null)
+        });
+      }
+    }
+
+    // Si la IA está pausada o la conversación pertenece a una persona, el mensaje
+    // queda persistido en el buffer pero no se llama al Adapter ni a Hermes.
+    if (!gate.process) {
+      const skipReason = gate.skip_reason;
+      console.log(`[Orchestrator] ${humanOwnsConversation ? `Conversación #${conversationId} en modo humano (stage=${stage})` : `IA pausada para la conversación #${conversationId}`}. No se llama a Hermes.`);
+      for (const msg of rawMessages) {
+        if (msg.trace_id) {
+          debugTracker.updateEvent(msg.trace_id, {
+            decision: 'ignored',
+            reason: skipReason,
+            source: 'conversation_state',
+            ai_enabled: aiEnabled
+          } as any);
+          debugTracker.addTimelineStep(msg.trace_id, 'action_executed', {
+            action: humanOwnsConversation ? 'HUMAN_MODE_MESSAGE_SKIPPED' : 'ignored_by_ai_disabled'
+          });
+        }
+      }
+      // Los mensajes ya están persistidos en helios_inbound_buffer (requisito C).
+      // Marcarlos procesados solo impide que el recovery los reclame más tarde.
+      processingStage = 'inbound_buffer.mark_processed';
+      await bufferRepository.markProcessed(rawMessages.map(m => m.id));
+      bufferMarkedProcessed = true;
+      await logsRepository.save({
+        trace_id: traceId,
+        tenant_id: tenantId,
+        conversation_id: conversationId,
+        contact_id,
+        event_type: humanOwnsConversation ? 'HUMAN_MODE_MESSAGE_SKIPPED' : 'AI_DISABLED_MESSAGE_SKIPPED',
+        metadata: {
+          stage,
+          stage_source: gate.stage_source,
+          handoff_id: rawState?.handoff_id || null,
+          message_count: rawMessages.length,
+          hermes_called: false,
+          adapter_called: false
+        }
+      });
+      return;
+    }
+
+    // El paciente vuelve a escribir en una conversación cerrada: la reabre. El
+    // stage no puede quedarse en 'closed' mientras la IA la está atendiendo.
+    if (stage === 'closed') {
+      await stateRepository.upsert({
+        tenant_id: tenantId,
+        conversation_id: conversationId,
+        contact_id,
+        inbox_id: inboxId,
+        stage: 'bot_active',
+        human_handoff_active: false
+      });
+    }
 
     const batchIdentity = createBatchIdentity({
       tenant_id: tenantId,
@@ -209,77 +368,14 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     }
     durableBatchClaimed = true;
 
-    // 4. Consultar en Supabase el estado, perfil de paciente y caso de financiamiento EN PARALELO
-    const [rawState, patientProfile, activeFinancing] = await Promise.all([
-      stateRepository.getRefined(tenantId, conversationId, contact_id).catch((e: any) => {
-        console.warn('[Orchestrator] Error leyendo conversation_state de Supabase. Usando fallback true:', e.message);
-        return null;
-      }),
+    // 5. Consultar en Supabase el perfil de paciente y el caso de financiamiento EN PARALELO
+    const [patientProfile, activeFinancing] = await Promise.all([
       patientRepository.get(tenantId, contact_id).catch((e: any) => {
         console.warn('[Orchestrator] Error leyendo patientProfile de Supabase:', e.message);
         return null;
       }),
       financingRepository.getActive(tenantId, contact_id)
     ]);
-
-    const state = rawState || {
-      ai_enabled: true,
-      status: 'new',
-      pending_question: null,
-      pending_intent: null,
-      missing_fields: [],
-      human_handoff_active: false,
-      active_booking: null,
-      financing: null,
-      last_intent: null
-    };
-
-    // Asegurar defaults seguros
-    const aiEnabled = state.ai_enabled !== false;
-    
-    // Si la conversación tiene human_handoff_active=true pero el estado es "error", 
-    // asumimos que fue un fallo técnico y NO un handoff humano manual real. Por tanto, no bloqueamos la IA.
-    const isTechnicalErrorHandoff = state.status === 'error' && state.human_handoff_active === true;
-    const humanHandoffActive = isTechnicalErrorHandoff ? false : !!state.human_handoff_active;
-
-    // Agregar log de timeline detallado AI_ENABLED_CHECK para depuración en todos los trace_ids consolidados
-    for (const msg of rawMessages) {
-      if (msg.trace_id) {
-        debugTracker.addTimelineStep(msg.trace_id, 'action_executed', {
-          action: "AI_ENABLED_CHECK",
-          trace_id: msg.trace_id,
-          tenant_id: tenantId,
-          conversation_id: conversationId,
-          contact_id: contact_id,
-          ai_enabled: aiEnabled,
-          ai_enabled_source: rawState ? "conversation_state" : "default_true",
-          human_handoff_active: humanHandoffActive,
-          human_handoff_source: isTechnicalErrorHandoff ? "recovered_from_technical_error" : (rawState ? "conversation_state" : "default_false"),
-          will_process: aiEnabled && !humanHandoffActive,
-          skip_reason: !aiEnabled ? "explicit_ai_disabled" : (humanHandoffActive ? "human_handoff_active" : null)
-        });
-      }
-    }
-
-    // Si la IA está pausada o en modo Handoff, no debemos procesar con Hermes ni responder de forma automática.
-    if (!aiEnabled || humanHandoffActive) {
-      console.log(`[Orchestrator] La IA está pausada o en modo Handoff para la conversación #${conversationId}. Ignorando.`);
-      for (const msg of rawMessages) {
-        if (msg.trace_id) {
-          debugTracker.updateEvent(msg.trace_id, { 
-            decision: 'ignored',
-            reason: !aiEnabled ? 'explicit_ai_disabled' : 'human_handoff_active',
-            source: 'conversation_state',
-            ai_enabled: aiEnabled
-          } as any);
-          debugTracker.addTimelineStep(msg.trace_id, 'action_executed', { action: 'ignored_by_ai_disabled' });
-        }
-      }
-      // Marcamos los mensajes del buffer como procesados para que no se queden acumulados
-      const ids = rawMessages.map(m => m.id);
-      await bufferRepository.markProcessed(ids);
-      return;
-    }
 
     // Resolver de forma robusta el número de teléfono con prioridades
     // Prioridad 1: state.phone (guardado en base de datos al recibir webhook)
@@ -295,6 +391,12 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       contact_id
     );
     const isProfileComplete = profileStatus.profileComplete;
+    handoffPatientSnapshot = {
+      first_name: profileStatus.identityComplete ? profileStatus.firstName : null,
+      last_name: profileStatus.identityComplete ? profileStatus.lastName : null,
+      identity_complete: profileStatus.identityComplete,
+      crm_synced: profileStatus.crmSynced
+    };
     const missingIdentityFields = deriveMissingIdentityFields(
       profileStatus,
       state.missing_fields
@@ -322,6 +424,11 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
 
     const retryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
     const parentTraceId = retryCount > 0 ? rawMessages[0]?.trace_id : null;
+
+    // Contexto del episodio humano: al volver a modo IA, Helios necesita poder
+    // consultar lo que se habló mientras la conversación fue de una persona
+    // (requisito D del bloque de handoff).
+    const handoffContext = await loadHandoffContext(tenantId, conversationId, rawState);
 
     // 6. Preparar el payload limpio para Hermes con identidad real desde Supabase
     const payload = {
@@ -355,14 +462,18 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       state: {
         ai_enabled: state.ai_enabled,
         status: state.status,
+        stage,
         pending_question: state.pending_question || null,
         pending_intent: state.pending_intent || null,
         missing_fields: missingIdentityFields,
-        human_handoff_active: state.human_handoff_active,
+        // Derivado de stage, no leído en crudo: aquí siempre es false porque el
+        // gate de modo humano ya devolvió antes de llegar a este punto.
+        human_handoff_active: humanHandoffActiveFor(stage),
         active_booking: state.active_booking || null,
         financing: activeFinancing ? { id: activeFinancing.id, status: activeFinancing.status } : null,
         last_intent: state.last_intent || null
       },
+      ...(handoffContext ? { human_handoff: handoffContext } : {}),
       message: {
         text: consolidatedText,
         message_count: rawMessages.length,
@@ -452,14 +563,31 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       const errorCode = hermesResponse.error_code || 'ADAPTER_UNSAFE_RESPONSE';
       console.warn(`[Orchestrator] ADAPTER_RESPONSE_INCOMPLETE: ok=${ok}, safe_to_send=${safeToSend}, error_code=${errorCode}. No publicar en Chatwoot. TraceId: ${traceId}`);
 
-      // Dejar recuperable sin handoff técnico
+      // Un fallo transitorio se deja recuperable y NO se convierte en handoff.
+      // Solo cuando el fallo es definitivo escala a una persona (requisito A).
       const ids = rawMessages.map(m => m.id);
       const retryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
-      if (hermesResponse.recoverable === false) {
+      const definitiveFailure = hermesResponse.recoverable === false || retryCount >= 5;
+      if (definitiveFailure) {
         await bufferRepository.markFailed(ids, errorCode);
       } else {
         await bufferRepository.markRecoverableError(ids, errorCode, retryCount);
       }
+
+      if (definitiveFailure && handoffEnabled) {
+        await escalateTechnicalFailure({
+          tenantContext,
+          conversation_id: conversationId,
+          contact_id,
+          inbox_id: inboxId,
+          phone: resolvedPhone,
+          trace_id: traceId,
+          trigger_key: durableBatchKey,
+          error_code: errorCode,
+          stage_of_failure: 'adapter_response_incomplete'
+        });
+      }
+
       
       await logsRepository.save({
         trace_id: traceId, tenant_id: tenantId, conversation_id: conversationId, contact_id: contact_id,
@@ -477,6 +605,25 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       }
       return; // No marcar processed, no publicar, no handoff técnico
     }
+
+    // Handoff pedido por el modelo. El estado canónico se persiste ANTES de
+    // encolar el mensaje al paciente: si el proceso muere en medio, la IA ya
+    // está bloqueada y no puede seguir contestando por su cuenta (ítem 18).
+    if (handoffEnabled && detectHandoffRequest(hermesResponse)) {
+      processingStage = 'handoff.open';
+      openedHandoff = await openHandoff({
+        tenantContext,
+        conversation_id: conversationId,
+        contact_id,
+        inbox_id: inboxId,
+        phone: resolvedPhone,
+        trace_id: traceId,
+        trigger_key: durableBatchKey,
+        request: normalizeHandoffRequest((hermesResponse as any).handoff, 'model')
+      });
+    }
+
+    let transitionOutboxKey: string | null = null;
 
     if (replyText && safeToSend) {
       processingStage = 'chatwoot_outbox.create';
@@ -501,6 +648,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         content: replyText
       }, traceId);
       outboxCreated = true;
+      transitionOutboxKey = outboxIdentity.outbox_key;
       await processingBatchRepository.markAiCompleted(
         durableBatchKey,
         tenantId,
@@ -542,6 +690,31 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
           batch_key: durableBatchKey,
           outbox_key: outboxIdentity.outbox_key
         }
+      });
+    }
+
+    // El mensaje de transición ya está encolado y es único: ahora se ejecutan
+    // los efectos en Chatwoot, la alerta al equipo y el paso a human_queue.
+    if (openedHandoff) {
+      processingStage = 'handoff.complete';
+      await completeHandoff({
+        opened: openedHandoff,
+        transition_outbox_key: transitionOutboxKey,
+        patient: handoffPatientSnapshot
+      });
+      openedHandoff = null;
+    }
+
+    // La transcripción del episodio humano ya viajó en el payload: se marca
+    // entregada para no reenviarla en cada turno posterior.
+    if (handoffContext) {
+      processingStage = 'conversation_state.handoff_context_delivered';
+      await stateRepository.upsert({
+        tenant_id: tenantId,
+        conversation_id: conversationId,
+        contact_id,
+        inbox_id: inboxId,
+        handoff_context_delivered_at: new Date().toISOString()
       });
     }
 
@@ -623,8 +796,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       const su = statePatch;
       
       let nextAiEnabled = state.ai_enabled;
-      let nextHandoffActive = state.human_handoff_active;
-      
+      let nextHandoffActive = humanHandoffActiveFor(stage);
+
       // Si hay herramientas que indiquen deshabilitar IA
       const toolCalls = hermesResponse.tool_calls || [];
       const stateUpdateTool = toolCalls.find((tc: any) => tc.name === 'state.update');
@@ -632,7 +805,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         if (stateUpdateTool.arguments.ai_enabled !== undefined) nextAiEnabled = stateUpdateTool.arguments.ai_enabled;
         if (stateUpdateTool.arguments.human_handoff_active !== undefined) nextHandoffActive = stateUpdateTool.arguments.human_handoff_active;
       }
-      
+
       // Validar handoff: "Solo activar handoff cuando requires_handoff=true y la causa no sea tcnica"
       if (hermesResponse.handoff_required && !hasErrorCode) {
         nextHandoffActive = true;
@@ -649,7 +822,11 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         pending_question: su.pending_question !== undefined ? su.pending_question : state.pending_question,
         pending_intent: su.pending_intent !== undefined ? su.pending_intent : state.pending_intent,
         ai_enabled: nextAiEnabled,
-        human_handoff_active: nextHandoffActive,
+        // Un handoff ya abierto manda: este parche no puede devolver la
+        // conversación a la IA por debajo de la máquina de estados. Sin handoff,
+        // la clave stage NO se envía y la columna conserva su valor.
+        human_handoff_active: openedHandoff ? true : nextHandoffActive,
+        ...(openedHandoff ? { stage: 'human_queue' as const } : {}),
         last_intent: hermesResponse.intent || state.last_intent
       });
       statePatchApplied = true;
@@ -758,6 +935,31 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     }
 
   } catch (error: any) {
+    // Un handoff ya abierto tiene que llegar al equipo aunque el resto del turno
+    // haya fallado: si no, la conversación queda bloqueada sin nota ni alerta.
+    if (openedHandoff) {
+      try {
+        await completeHandoff({
+          opened: openedHandoff,
+          transition_outbox_key: null,
+          patient: handoffPatientSnapshot
+        });
+        console.warn(JSON.stringify({
+          event: 'handoff_completed_after_turn_failure',
+          handoff_id: openedHandoff.handoff_id,
+          failed_stage: processingStage
+        }));
+      } catch (completionError: any) {
+        console.error(JSON.stringify({
+          event: 'handoff_completion_after_failure_failed',
+          handoff_id: openedHandoff.handoff_id,
+          error_code: completionError?.code || 'HANDOFF_COMPLETION_FAILED'
+        }));
+      } finally {
+        openedHandoff = null;
+      }
+    }
+
     const outcomeFlags: ProcessingOutcomeFlags = {
       hermesSucceeded,
       outboxCreated,
@@ -883,6 +1085,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       else if (errStr.includes('503') || errStr.includes('502')) errorCode = 'HERMES_UNAVAILABLE';
 
       const maxRetryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
+      const definitiveFailure = !isRecoverable || maxRetryCount >= 5;
       if (isRecoverable) {
         if (maxRetryCount < 5) {
           await bufferRepository.markRecoverableError(ids, errorCode, maxRetryCount);
@@ -901,8 +1104,31 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
           tenantId,
           traceId,
           errorCode,
-          !isRecoverable || maxRetryCount >= 5
+          definitiveFailure
         );
+      }
+
+      // Requisito A: un mensaje nunca puede quedar muerto. Agotados los
+      // reintentos, la conversación pasa a una persona de Soporte Helios.
+      if (definitiveFailure && config.HELIOS_HANDOFF_ENABLED) {
+        try {
+          await escalateTechnicalFailure({
+            tenantContext: resolveTenantContextByTenantId(tenantId),
+            conversation_id: conversationId,
+            contact_id: contact_id || 'unknown',
+            inbox_id: inboxId || 'unknown',
+            phone: resolvedPhone,
+            trace_id: traceId,
+            trigger_key: durableBatchKey || `conversation:${conversationId}`,
+            error_code: errorCode,
+            stage_of_failure: processingStage
+          });
+        } catch (escalationError: any) {
+          console.error(JSON.stringify({
+            event: 'handoff_technical_escalation_unavailable',
+            error_code: escalationError?.code || 'TENANT_CONTEXT_UNAVAILABLE'
+          }));
+        }
       }
     }
 

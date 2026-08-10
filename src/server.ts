@@ -6,7 +6,24 @@ import { fileURLToPath } from 'url';
 import { config } from './config.js';
 import { normalizeChatwootPayload } from './chatwoot/normalizer.js';
 import { resolveTenantContext, TenantContextError, validateWebhookTenantRoute } from './tenants/context.js';
-import { idempotencyRepository, stateRepository, logsRepository, patientRepository } from './repositories/database.js';
+import {
+  bufferRepository,
+  idempotencyRepository,
+  logsRepository,
+  patientRepository,
+  stateRepository
+} from './repositories/database.js';
+import { outboxRepository } from './repositories/durable.js';
+import {
+  canTransition,
+  humanHandoffActiveFor,
+  isHumanOwnedStage,
+  resolveStage
+} from './handoff/stage.js';
+import { interpretSignal, parseConversationSignal, planSignalAction } from './handoff/signals.js';
+import { resolveHandoffRouting } from './handoff/routing.js';
+import { returnConversationToBot } from './handoff/service.js';
+import { chatwootClient } from './chatwoot/client.js';
 import { supabase } from './supabase/client.js';
 import { bufferService } from './buffer/buffer-service.js';
 import { processBufferEvent } from './orchestrator.js';
@@ -14,6 +31,7 @@ import { debugTracker } from './debug/debug-tracker.js';
 import { startRecoveryWorker } from './services/inbound-recovery-worker.js';
 import { recoveryMetrics } from './services/inbound-recovery-worker.js';
 import { startOutboxWorker, outboxMetrics } from './services/chatwoot-outbox-worker.js';
+import { startNotificationWorker, notificationMetrics } from './services/notification-outbox-worker.js';
 import { componentHealth } from './services/component-health.js';
 import { refreshDependencyHealth } from './services/health-probes.js';
 import { assertSupabaseSuccess } from './supabase/assert-success.js';
@@ -126,6 +144,10 @@ server.get('/health', async (request, reply) => {
       }
     },
     recovery: recoveryMetrics,
+    handoff: {
+      enabled: config.HELIOS_HANDOFF_ENABLED,
+      notifications: notificationMetrics
+    },
     hermesMode: getHermesStatus()
   };
 });
@@ -414,10 +436,217 @@ server.get('/admin/contacts', async (request, reply) => {
   }
 });
 
+/**
+ * Un mensaje saliente de Chatwoot puede ser el eco de Helios o algo que escribió
+ * una persona del equipo. El discriminador es limpio: todo saliente de Helios
+ * queda en helios_chatwoot_outbox con su chatwoot_outbound_message_id.
+ *
+ * Los mensajes del equipo se guardan en el buffer con direction='outgoing' y
+ * processed_at ya puesto, así que claim_conversation_messages nunca los recoge y
+ * no pueden disparar ninguna llamada a la IA. Existen para que Helios pueda
+ * consultar después lo que se habló en modo humano (requisito D).
+ */
+async function captureHumanAgentMessage(
+  normalized: ReturnType<typeof normalizeChatwootPayload>,
+  log: any
+): Promise<{ stored: boolean; reason: string }> {
+  const isHeliosEcho = await outboxRepository
+    .isHeliosOutboundMessage(normalized.tenant_id, normalized.message_id)
+    .catch((error: any) => {
+      // Sin poder comprobarlo, no se inventa: se trata como eco y solo se ignora.
+      log.warn({ err: error?.message }, 'No se pudo comprobar el eco de Helios.');
+      return true;
+    });
+  if (isHeliosEcho) return { stored: false, reason: 'helios_echo' };
+
+  const alreadySeen = await idempotencyRepository.check(
+    normalized.tenant_id,
+    normalized.provider,
+    normalized.message_id
+  );
+  if (alreadySeen) return { stored: false, reason: 'duplicate' };
+
+  await bufferRepository.saveHumanAgentMessage(normalized);
+  await idempotencyRepository.markProcessed(
+    normalized.tenant_id,
+    normalized.provider,
+    normalized.message_id,
+    normalized.conversation_id,
+    normalized.trace_id
+  );
+
+  // Que el equipo escriba es la señal más fuerte de que ya está atendiendo.
+  let stageTransition: string | null = null;
+  try {
+    const state = await stateRepository.getRefined(
+      normalized.tenant_id,
+      normalized.conversation_id,
+      normalized.contact_id
+    );
+    const { stage } = resolveStage(state);
+    if (canTransition(stage, 'human_active') && stage !== 'human_active' && isHumanOwnedStage(stage)) {
+      await stateRepository.upsert({
+        tenant_id: normalized.tenant_id,
+        conversation_id: normalized.conversation_id,
+        contact_id: normalized.contact_id,
+        inbox_id: normalized.inbox_id,
+        stage: 'human_active',
+        human_handoff_active: humanHandoffActiveFor('human_active'),
+        human_accepted_at: new Date().toISOString(),
+        human_accepted_by: normalized.sender_id || null
+      });
+      stageTransition = `${stage}->human_active`;
+    }
+  } catch (error: any) {
+    log.warn({ err: error?.message }, 'No se pudo actualizar el stage tras el mensaje del equipo.');
+  }
+
+  await logsRepository.save({
+    trace_id: normalized.trace_id,
+    tenant_id: normalized.tenant_id,
+    conversation_id: normalized.conversation_id,
+    contact_id: normalized.contact_id,
+    event_type: 'HUMAN_AGENT_MESSAGE_STORED',
+    metadata: {
+      message_id: normalized.message_id,
+      sender_id: normalized.sender_id,
+      sender_type: normalized.sender_type,
+      stage_transition: stageTransition,
+      claimable_by_ai: false
+    }
+  });
+
+  return { stored: true, reason: 'human_agent_message' };
+}
+
+/**
+ * Señales del equipo en Chatwoot (ítems 21 y 22): etiquetas, equipo y estado se
+ * traducen a la máquina de estados, y los atributos personalizados los escribe el
+ * Gateway por API porque las macros de esta instalación no pueden hacerlo.
+ *
+ * Es idempotente: si la etapa que pide la señal ya es la actual, no se escribe
+ * nada. Tres webhooks repetidos producen un solo cambio.
+ */
+async function handleConversationSignal(payload: any, urlTenantId: string | undefined, log: any) {
+  const signal = parseConversationSignal(payload);
+  const tenantContext = resolveTenantContext(signal.account_id);
+  validateWebhookTenantRoute(tenantContext, urlTenantId);
+
+  if (!signal.conversation_id) {
+    return { ok: true, status: 'ignored', reason: 'conversation_id no presente en el webhook' };
+  }
+  if (!config.HELIOS_HANDOFF_ENABLED) {
+    return { ok: true, status: 'ignored', reason: 'handoff_disabled' };
+  }
+
+  const state = await stateRepository.getRefined(
+    tenantContext.tenant_id,
+    signal.conversation_id,
+    signal.contact_id
+  );
+  if (!state) {
+    // Una conversación que Helios nunca ha visto no tiene estado que mover.
+    return { ok: true, status: 'ignored', reason: 'unknown_conversation' };
+  }
+
+  const { stage: currentStage } = resolveStage(state);
+  const routing = resolveHandoffRouting(tenantContext.tenant_id);
+  const interpretation = interpretSignal(signal, routing, currentStage);
+  const action = planSignalAction(interpretation, currentStage);
+
+  const contactId = signal.contact_id || state.contact_id || 'unknown';
+  const inboxId = signal.inbox_id || state.inbox_id || 'unknown';
+  const traceId = `signal-${crypto.randomUUID()}`;
+
+  if (action.kind === 'none') {
+    log.debug({ stage: currentStage, reason: action.reason }, 'Señal de Chatwoot sin efecto');
+    return { ok: true, status: 'no_change', stage: currentStage, reason: action.reason };
+  }
+
+  if (action.kind === 'rejected') {
+    await logsRepository.save({
+      trace_id: traceId,
+      tenant_id: tenantContext.tenant_id,
+      conversation_id: signal.conversation_id,
+      contact_id: contactId,
+      event_type: 'HANDOFF_SIGNAL_REJECTED',
+      metadata: {
+        from_stage: action.from,
+        requested_stage: action.to,
+        reason: action.reason,
+        labels: signal.labels,
+        chatwoot_status: signal.status
+      }
+    });
+    return { ok: true, status: 'rejected', stage: currentStage, reason: action.reason };
+  }
+
+  if (action.kind === 'return_to_bot') {
+    await returnConversationToBot({
+      tenantContext,
+      conversation_id: signal.conversation_id,
+      contact_id: contactId,
+      inbox_id: inboxId,
+      phone: signal.phone || state.phone || '',
+      trace_id: traceId,
+      handoff_id: state.handoff_id || null,
+      accepted_by: signal.assignee_id
+    });
+    return { ok: true, status: 'returned_to_bot', stage: 'bot_active' };
+  }
+
+  const nextStage = action.stage;
+  const now = new Date().toISOString();
+  await stateRepository.upsert({
+    tenant_id: tenantContext.tenant_id,
+    conversation_id: signal.conversation_id,
+    contact_id: contactId,
+    inbox_id: inboxId,
+    stage: nextStage,
+    human_handoff_active: humanHandoffActiveFor(nextStage),
+    ...(nextStage === 'human_active' && !state.human_accepted_at
+      ? { human_accepted_at: now, human_accepted_by: signal.assignee_id }
+      : {})
+  });
+
+  // El atributo Stage se mantiene alineado; las macros no pueden escribirlo.
+  await chatwootClient
+    .setCustomAttributes(tenantContext.account_id, signal.conversation_id, {
+      [routing.attribute_keys.stage]: nextStage
+    })
+    .catch((error: any) => {
+      log.warn({ err: error?.message }, 'No se pudo escribir el atributo de stage en Chatwoot.');
+    });
+
+  await logsRepository.save({
+    trace_id: traceId,
+    tenant_id: tenantContext.tenant_id,
+    conversation_id: signal.conversation_id,
+    contact_id: contactId,
+    event_type: 'HANDOFF_STAGE_CHANGED_BY_SIGNAL',
+    metadata: {
+      from_stage: currentStage,
+      to_stage: nextStage,
+      reason: action.reason,
+      labels: signal.labels,
+      chatwoot_status: signal.status,
+      team_id: signal.team_id,
+      handoff_id: state.handoff_id || null
+    }
+  });
+
+  return { ok: true, status: 'stage_changed', stage: nextStage, reason: action.reason };
+}
+
 // Helper interno para procesar webhook
 async function handleChatwootWebhook(payload: any, urlTenantId: string | undefined, log: any) {
+  const incomingEvent = String(payload?.event || '');
+  if (incomingEvent === 'conversation_updated' || incomingEvent === 'conversation_status_changed') {
+    return handleConversationSignal(payload, urlTenantId, log);
+  }
+
   const normalized = normalizeChatwootPayload(payload);
-  
+
   // La ruta nunca puede sobrescribir el tenant resuelto desde account_id.
   validateWebhookTenantRoute(normalized, urlTenantId);
 
@@ -435,6 +664,23 @@ async function handleChatwootWebhook(payload: any, urlTenantId: string | undefin
     decision: normalized.should_process ? 'accepted' : 'ignored',
     normalizedPayload: normalized
   });
+
+  // Un saliente con forma de mensaje humano se guarda antes de descartarlo como
+  // eco: es la única forma de que quede registro consultable de lo que escribió
+  // el equipo durante el modo humano.
+  if (normalized.human_agent_candidate) {
+    const captured = await captureHumanAgentMessage(normalized, log);
+    if (captured.stored) {
+      debugTracker.updateEvent(normalized.trace_id, { decision: 'ignored', reason: captured.reason } as any);
+      debugTracker.addTimelineStep(normalized.trace_id, 'action_executed', {
+        action: 'HUMAN_AGENT_MESSAGE_STORED'
+      });
+      return { ok: true, status: 'human_agent_message_stored' };
+    }
+    if (captured.reason === 'duplicate') {
+      return { ok: true, status: 'duplicate' };
+    }
+  }
 
   // Si no debe ser procesado (ej: mensaje saliente, evento secundario, etc.)
   if (!normalized.should_process) {
@@ -718,6 +964,9 @@ const stopRecoveryWorker = process.env.NODE_ENV !== 'test'
 const stopOutboxWorker = process.env.NODE_ENV !== 'test'
   ? startOutboxWorker()
   : () => Promise.resolve();
+const stopNotificationWorker = process.env.NODE_ENV !== 'test'
+  ? startNotificationWorker()
+  : () => Promise.resolve();
 
 const start = async () => {
   try {
@@ -741,6 +990,7 @@ async function gracefulShutdown(signal: string) {
   
   await stopRecoveryWorker();
   await stopOutboxWorker();
+  await stopNotificationWorker();
   
   server.close().then(() => {
     console.log('[Helios Gateway] Fastify server closed.');

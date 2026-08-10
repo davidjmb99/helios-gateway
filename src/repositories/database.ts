@@ -126,6 +126,69 @@ export const bufferRepository = {
     });
   },
 
+  /**
+   * Guarda un mensaje escrito por una persona del equipo en Chatwoot.
+   *
+   * processed_at se pone de entrada: claim_conversation_messages exige
+   * processed_at IS NULL, así que esta fila nunca puede reclamarse ni disparar
+   * una llamada a la IA. Existe para que Helios pueda consultar después lo que
+   * se habló en modo humano (requisito D del handoff).
+   */
+  async saveHumanAgentMessage(msg: NormalizedMessage): Promise<void> {
+    const now = new Date().toISOString();
+    const result = await supabase
+      .from('helios_inbound_buffer')
+      .insert({
+        tenant_id: msg.tenant_id,
+        conversation_id: msg.conversation_id,
+        contact_id: msg.contact_id,
+        inbox_id: msg.inbox_id,
+        message_id: msg.message_id,
+        source_id: msg.source_id,
+        body: msg.text,
+        direction: 'outgoing',
+        content_type: 'text',
+        created_at: msg.created_at,
+        trace_id: msg.trace_id,
+        processed_at: now
+      });
+    assertSupabaseSuccess(result, 'inbound_buffer.save_human_agent_message', {
+      tenant_id: msg.tenant_id,
+      trace_id: msg.trace_id,
+      row_id: msg.message_id
+    });
+  },
+
+  /**
+   * Transcripción de lo hablado desde un instante dado, en ambas direcciones.
+   * Alimenta el contexto que recibe Hermes al recuperar la conversación.
+   */
+  async listMessagesSince(
+    tenant_id: string,
+    conversation_id: string,
+    since: string,
+    limit: number,
+    until?: string | null
+  ): Promise<any[]> {
+    let query = supabase
+      .from('helios_inbound_buffer')
+      .select('message_id, body, direction, created_at')
+      .eq('tenant_id', tenant_id)
+      .eq('conversation_id', conversation_id)
+      .gte('created_at', since);
+    if (until) query = query.lte('created_at', until);
+    const result = await query
+      .order('created_at', { ascending: false })
+      .limit(Math.max(1, Math.min(limit, 100)));
+    assertSupabaseSuccess(result, 'inbound_buffer.list_since', {
+      tenant_id,
+      row_id: conversation_id
+    });
+    return (result.data || [])
+      .slice()
+      .sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  },
+
   async getUnprocessed(tenant_id: string, conversation_id: string, trace_id?: string): Promise<any[]> {
     let query = supabase
       .from('helios_inbound_buffer')
@@ -292,6 +355,19 @@ export const stateRepository = {
     appointment_context?: any;
     financing?: any;
     last_intent?: string | null;
+    // Estado canónico del handoff (ítem 15). stage es la fuente de verdad;
+    // human_handoff_active se conserva derivado de stage.
+    stage?: string;
+    handoff_id?: string | null;
+    handoff_reason?: string | null;
+    handoff_priority?: string | null;
+    handoff_destination?: string | null;
+    handoff_requested_at?: string | null;
+    human_accepted_at?: string | null;
+    human_accepted_by?: string | null;
+    return_requested_at?: string | null;
+    returned_to_bot_at?: string | null;
+    handoff_context_delivered_at?: string | null;
   }): Promise<void> {
     const result = await supabase
       .from('helios_conversation_state')

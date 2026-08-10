@@ -209,6 +209,29 @@ export const outboxRepository = {
     return existing.data;
   },
 
+  /**
+   * ¿Este mensaje saliente de Chatwoot lo publicó Helios?
+   *
+   * Discriminador del eco: todo saliente de Helios queda en el outbox con su
+   * chatwoot_outbound_message_id. Si el id no está aquí, lo escribió una
+   * persona del equipo.
+   */
+  async isHeliosOutboundMessage(tenantId: string, chatwootMessageId: string): Promise<boolean> {
+    const normalizedId = String(chatwootMessageId ?? '').trim();
+    if (!normalizedId) return false;
+    const result = await supabase
+      .from('helios_chatwoot_outbox')
+      .select('outbox_key')
+      .eq('tenant_id', tenantId)
+      .eq('chatwoot_outbound_message_id', normalizedId)
+      .maybeSingle();
+    assertSupabaseSuccess(result, 'chatwoot_outbox.is_helios_message', {
+      tenant_id: tenantId,
+      row_id: normalizedId
+    });
+    return Boolean(result.data);
+  },
+
   async claim(limit = 10): Promise<any[]> {
     const result = await supabase.rpc('claim_helios_chatwoot_outbox', {
       p_lease_owner: workerId,

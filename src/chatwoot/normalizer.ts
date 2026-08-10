@@ -27,6 +27,13 @@ export interface NormalizedMessage {
   trace_id: string;
   should_process: boolean;
   ignore_reason: string | null;
+  /**
+   * El mensaje tiene la forma de un texto escrito por una persona del equipo en
+   * Chatwoot. Es condición necesaria, no suficiente: aún hay que descartar el
+   * eco de Helios comprobando el message_id contra helios_chatwoot_outbox.
+   */
+  human_agent_candidate: boolean;
+  is_private: boolean;
   raw_payload: any;
   signals: {
     possible_frustration: boolean;
@@ -144,6 +151,24 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
     ignore_reason = 'conversation_id no presente en el webhook';
   }
 
+  // ¿Lo escribió una persona del equipo en Chatwoot?
+  //
+  // Se exige que el tipo de mensaje sea explícitamente saliente: 'outgoing' del
+  // normalizador es también el valor por defecto, y con él entrarían los eventos
+  // de actividad ("asignada a…", cambios de estado) que Chatwoot publica como
+  // message_created. Se excluyen además las notas privadas —entre ellas la del
+  // propio handoff— y los mensajes del agent bot.
+  const explicitlyOutgoing = rootMessageType === 'outgoing' || arrayMsgType === 1;
+  const senderIsAgentBot = sender_type.toLowerCase() === 'agent_bot';
+  const human_agent_candidate = event === 'message_created'
+    && direction === 'outgoing'
+    && explicitlyOutgoing
+    && !isPrivate
+    && !senderIsAgentBot
+    && Boolean(text)
+    && Boolean(conversation_id)
+    && Boolean(message_id);
+
   // Detección de señales
   const textLower = text.toLowerCase();
   const asks_for_human = /humano|agente|persona|hablar con alguien|operador/.test(textLower);
@@ -177,6 +202,8 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
     trace_id,
     should_process,
     ignore_reason,
+    human_agent_candidate,
+    is_private: isPrivate,
     raw_payload: body,
     signals: {
       possible_frustration,
