@@ -239,12 +239,23 @@ export function normalizeHandoffRequest(
  * Un error técnico NO se convierte aquí en handoff clínico: esa ruta la decide
  * el clasificador de fallos, con destino Soporte Helios.
  */
+/**
+ * Valores de operation.type que significan derivación. 'human_handoff' es el que
+ * declara el enum del SOUL del perfil helios; 'handoff' se acepta también porque
+ * ante la duda se normaliza, no se rechaza: un handoff no detectado deja al
+ * paciente esperando a una persona que nadie ha avisado.
+ */
+const HANDOFF_OPERATION_TYPES: ReadonlySet<string> = new Set([
+  'human_handoff',
+  'handoff'
+]);
+
 export function detectHandoffRequest(response: any): boolean {
   if (!response) return false;
   if (response.error_code) return false;
   return response.handoff_required === true
     || response.requires_handoff === true
     || response.decision === 'needs_handoff'
-    || String(response?.operation?.type || '') === 'handoff'
+    || HANDOFF_OPERATION_TYPES.has(String(response?.operation?.type || '').trim().toLowerCase())
     || Boolean(response?.handoff?.reason_code);
 }

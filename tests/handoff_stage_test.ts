@@ -173,6 +173,13 @@ assert.equal(detectHandoffRequest({ handoff_required: true }), true);
 assert.equal(detectHandoffRequest({ requires_handoff: true }), true);
 assert.equal(detectHandoffRequest({ decision: 'needs_handoff' }), true);
 assert.equal(detectHandoffRequest({ operation: { type: 'handoff' } }), true);
+assert.equal(
+  detectHandoffRequest({ operation: { type: 'human_handoff' } }),
+  true,
+  'human_handoff es el valor que declara el enum del SOUL: si no se detecta, el paciente espera a alguien que nadie ha avisado'
+);
+assert.equal(detectHandoffRequest({ operation: { type: 'HUMAN_HANDOFF' } }), true, 'sin distinguir mayúsculas');
+assert.equal(detectHandoffRequest({ operation: { type: 'availability_checked' } }), false);
 assert.equal(detectHandoffRequest({ handoff: { reason_code: 'human_requested' } }), true);
 assert.equal(detectHandoffRequest({ handoff_required: false }), false);
 assert.equal(detectHandoffRequest(null), false);
