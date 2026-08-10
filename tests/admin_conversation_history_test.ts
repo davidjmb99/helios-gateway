@@ -287,10 +287,18 @@ async function verifyUnauthorizedRequest(): Promise<void> {
   });
   let stderr = '';
   child.stderr.on('data', chunk => { stderr += String(chunk); });
+
+  // Si el hijo muere, no tiene sentido seguir esperando: se falla al momento y con
+  // el motivo. Y el margen es amplio porque arrancar el servidor con tsx en frío,
+  // detrás de las demás suites, puede pasar de ocho segundos y hacía que esta
+  // comprobación fallara de forma intermitente sin que nada estuviera roto.
+  let exited: { code: number | null; signal: string | null } | null = null;
+  child.once('exit', (code, signal) => { exited = { code, signal }; });
+
   try {
-    const deadline = Date.now() + 8_000;
+    const deadline = Date.now() + 45_000;
     let response: Response | null = null;
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline && !exited) {
       try {
         response = await fetch(
           `http://127.0.0.1:${port}/admin/conversations/35/messages?account_id=2&contact_id=10`
@@ -300,7 +308,12 @@ async function verifyUnauthorizedRequest(): Promise<void> {
         await new Promise(resolve => setTimeout(resolve, 50));
       }
     }
-    assert.ok(response, `Gateway test server did not start: ${stderr}`);
+    assert.ok(
+      response,
+      exited
+        ? `Gateway test server exited before answering (code=${(exited as any).code}, signal=${(exited as any).signal}): ${stderr}`
+        : `Gateway test server did not start within 45s: ${stderr}`
+    );
     assert.equal(response.status, 401, '4/25 history endpoint rejects requests without a token');
   } finally {
     child.kill('SIGTERM');
