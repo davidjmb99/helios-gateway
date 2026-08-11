@@ -611,7 +611,7 @@ async function handleConversationSignal(payload: any, urlTenantId: string | unde
 
   // El atributo Stage se mantiene alineado; las macros no pueden escribirlo.
   await chatwootClient
-    .setCustomAttributes(tenantContext.account_id, signal.conversation_id, {
+    .mergeCustomAttributes(tenantContext.account_id, signal.conversation_id, {
       [routing.attribute_keys.stage]: nextStage
     })
     .catch((error: any) => {

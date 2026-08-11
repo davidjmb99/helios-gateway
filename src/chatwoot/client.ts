@@ -162,21 +162,44 @@ export class ChatwootClient {
     return kept;
   }
 
+  /** Atributos personalizados actuales de la conversación. */
+  public async getCustomAttributes(
+    accountId: string,
+    conversationId: string
+  ): Promise<Record<string, any>> {
+    if (!this.isConfigured(accountId)) return {};
+    const response = await axios.get(
+      `${this.baseUrl(accountId)}/conversations/${conversationId}`,
+      { headers: this.headers, timeout: config.CHATWOOT_TIMEOUT_MS }
+    );
+    const current = response.data?.custom_attributes ?? response.data?.payload?.custom_attributes;
+    return current && typeof current === 'object' ? current : {};
+  }
+
   /**
    * Las macros de esta instalación no pueden escribir atributos personalizados,
    * así que los escribe el Gateway por API.
+   *
+   * POST /custom_attributes REEMPLAZA el hash completo salvo que se envíe
+   * merge=true, y esa opción no existe en todas las versiones de Chatwoot. Para no
+   * depender de la versión se leen los atributos actuales, se fusionan los nuestros
+   * y se publica la unión. Sin esto, un handoff borraría cualquier otro atributo
+   * personalizado que la clínica tenga en la conversación.
    */
-  public async setCustomAttributes(
+  public async mergeCustomAttributes(
     accountId: string,
     conversationId: string,
     attributes: Record<string, string | number | null>
-  ): Promise<void> {
-    if (!this.isConfigured(accountId)) return;
+  ): Promise<Record<string, any>> {
+    if (!this.isConfigured(accountId)) return {};
+    const current = await this.getCustomAttributes(accountId, conversationId);
+    const merged = { ...current, ...attributes };
     await axios.post(
       `${this.baseUrl(accountId)}/conversations/${conversationId}/custom_attributes`,
-      { custom_attributes: attributes },
+      { custom_attributes: merged, merge: true },
       { headers: this.headers, timeout: config.CHATWOOT_TIMEOUT_MS }
     );
+    return merged;
   }
 
   public async setStatus(

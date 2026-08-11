@@ -249,7 +249,7 @@ export async function completeHandoff(input: CompleteHandoffInput): Promise<Comp
 
   // 4. Atributos personalizados. Las macros no pueden escribirlos.
   await runStep('custom_attributes', async () => {
-    await chatwootClient.setCustomAttributes(accountId, conversationId, {
+    await chatwootClient.mergeCustomAttributes(accountId, conversationId, {
       [routing.attribute_keys.case_id]: opened.handoff_id,
       [routing.attribute_keys.stage]: finalStage,
       [routing.attribute_keys.priority]: request.priority
@@ -520,7 +520,7 @@ export async function returnConversationToBot(input: {
     input.conversation_id,
     managedLabels(routing)
   ));
-  await attempt('custom_attributes', () => chatwootClient.setCustomAttributes(
+  await attempt('custom_attributes', () => chatwootClient.mergeCustomAttributes(
     tenantContext.account_id,
     input.conversation_id,
     { [routing.attribute_keys.stage]: 'bot_active', [routing.attribute_keys.case_id]: null }
