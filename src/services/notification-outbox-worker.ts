@@ -10,6 +10,7 @@ import axios from 'axios';
 import { config } from '../config.js';
 import { logsRepository } from '../repositories/database.js';
 import { notificationOutboxRepository } from '../repositories/handoff.js';
+import { resolveHandoffRouting } from '../handoff/routing.js';
 import { shortFingerprint } from '../durable/identity.js';
 
 let running = false;
@@ -70,8 +71,20 @@ export function renderTelegramMessage(payload: Record<string, any>): string {
 
 async function sendTelegram(row: any): Promise<string | null> {
   const token = config.TELEGRAM_BOT_TOKEN;
-  const chatId = String(row.destination ?? '').trim();
   if (!token) throw new NotificationDeliveryError('TELEGRAM_BOT_TOKEN_MISSING', true);
+
+  // El destino se resuelve AQUÍ, no solo al crear la fila. Un aviso creado antes
+  // de configurar el chat de Telegram tenía destino nulo de forma permanente, y
+  // configurar la variable después no lo arreglaba nunca.
+  let chatId = String(row.destination ?? '').trim();
+  if (!chatId) {
+    chatId = String(resolveHandoffRouting(String(row.tenant_id)).telegram_chat_id ?? '').trim();
+    if (chatId) {
+      await notificationOutboxRepository
+        .setDestination(row.notification_key, chatId)
+        .catch(() => undefined);
+    }
+  }
   if (!chatId) throw new NotificationDeliveryError('TELEGRAM_CHAT_ID_MISSING', true);
 
   try {

@@ -281,6 +281,23 @@ export const notificationOutboxRepository = {
   },
 
   /**
+   * Registra el destino resuelto en el momento del envío.
+   *
+   * El destino se guardaba solo al crear la fila. Si el aviso se creó antes de
+   * configurar el chat de Telegram, esa fila quedaba con destino nulo para
+   * siempre y entraba en bucle: liberada a pending, reclamada, bloqueada otra vez.
+   */
+  async setDestination(notificationKey: string, destination: string): Promise<void> {
+    const result = await supabase
+      .from('helios_notification_outbox')
+      .update({ destination, updated_at: new Date().toISOString() })
+      .eq('notification_key', notificationKey);
+    assertSupabaseSuccess(result, 'notification_outbox.set_destination', {
+      row_id: notificationKey
+    });
+  },
+
+  /**
    * Devuelve a la cola los avisos que quedaron bloqueados por falta de
    * configuración. Sin limit a propósito: PostgREST exige un order explícito para
    * acotar un UPDATE, y estas filas son pocas por definición.
