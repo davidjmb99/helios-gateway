@@ -24,7 +24,7 @@ import { config } from '../config.js';
 import { chatwootClient } from '../chatwoot/client.js';
 import { logsRepository, stateRepository, bufferRepository } from '../repositories/database.js';
 import { handoffEventRepository, notificationOutboxRepository } from '../repositories/handoff.js';
-import { createHandoffIdentity } from '../durable/identity.js';
+import { createHandoffIdentity, shortFingerprint } from '../durable/identity.js';
 import type { TenantContext } from '../tenants/context.js';
 import {
   HandoffDestination,
@@ -79,6 +79,29 @@ const DESTINATION_LABELS: Record<string, string> = {
   reception: 'Recepción Clínica',
   clinical_lead: 'Responsable Clínico',
   helios_support: 'Soporte Helios'
+};
+
+/**
+ * Los atributos personalizados los lee el equipo de la clínica en Chatwoot, no una
+ * máquina: el Gateway nunca los vuelve a leer. Así que se escriben en castellano y
+ * no con los nombres internos de la máquina de estados.
+ */
+const STAGE_LABELS_ES: Record<HandoffStage, string> = {
+  bot_active: 'Helios atendiendo',
+  handoff_requested: 'Derivación solicitada',
+  human_queue: 'En cola del equipo',
+  human_active: 'Atendiendo una persona',
+  waiting_patient: 'Esperando al paciente',
+  return_requested: 'Retorno solicitado',
+  handoff_failed: 'Fallo técnico — Soporte Helios',
+  closed: 'Cerrada'
+};
+
+const PRIORITY_LABELS_ES: Record<string, string> = {
+  low: 'Baja',
+  normal: 'Normal',
+  high: 'Alta',
+  urgent: 'Urgente'
 };
 
 const REASON_LABELS: Record<string, string> = {
@@ -251,8 +274,8 @@ export async function completeHandoff(input: CompleteHandoffInput): Promise<Comp
   await runStep('custom_attributes', async () => {
     await chatwootClient.mergeCustomAttributes(accountId, conversationId, {
       [routing.attribute_keys.case_id]: opened.handoff_id,
-      [routing.attribute_keys.stage]: finalStage,
-      [routing.attribute_keys.priority]: request.priority
+      [routing.attribute_keys.stage]: STAGE_LABELS_ES[finalStage],
+      [routing.attribute_keys.priority]: PRIORITY_LABELS_ES[request.priority] ?? request.priority
     });
     return { keys: Object.values(routing.attribute_keys) };
   });
@@ -523,13 +546,27 @@ export async function returnConversationToBot(input: {
   await attempt('custom_attributes', () => chatwootClient.mergeCustomAttributes(
     tenantContext.account_id,
     input.conversation_id,
-    { [routing.attribute_keys.stage]: 'bot_active', [routing.attribute_keys.case_id]: null }
+    { [routing.attribute_keys.stage]: STAGE_LABELS_ES.bot_active, [routing.attribute_keys.case_id]: null }
   ));
-  await attempt('status_pending', () => chatwootClient.setStatus(
-    tenantContext.account_id,
-    input.conversation_id,
-    'pending'
-  ));
+  // Una conversación RESUELTA no se reabre al devolverla al bot. En esta clínica
+  // el cierre dispara la encuesta de satisfacción (csat-enviar), y reabrirla la
+  // sacaría de la bandeja y podría desbaratar ese flujo. El estado canónico ya
+  // queda en bot_active, así que el siguiente mensaje del paciente vuelve a la IA
+  // igual, y Chatwoot reabrirá la conversación por su cuenta cuando eso ocurra.
+  await attempt('status_pending', async () => {
+    const current = await chatwootClient.getConversationStatus(
+      tenantContext.account_id,
+      input.conversation_id
+    );
+    if (current === 'resolved') {
+      console.log(JSON.stringify({
+        event: 'handoff_return_kept_resolved',
+        conversation_fingerprint: shortFingerprint(input.conversation_id)
+      }));
+      return;
+    }
+    await chatwootClient.setStatus(tenantContext.account_id, input.conversation_id, 'pending');
+  });
 
   if (input.handoff_id) {
     await handoffEventRepository.updateLifecycle(input.handoff_id, tenantContext.tenant_id, {

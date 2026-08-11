@@ -162,6 +162,20 @@ export class ChatwootClient {
     return kept;
   }
 
+  /** Estado actual de la conversación en Chatwoot: open, pending, resolved o snoozed. */
+  public async getConversationStatus(
+    accountId: string,
+    conversationId: string
+  ): Promise<string | null> {
+    if (!this.isConfigured(accountId)) return null;
+    const response = await axios.get(
+      `${this.baseUrl(accountId)}/conversations/${conversationId}`,
+      { headers: this.headers, timeout: config.CHATWOOT_TIMEOUT_MS }
+    );
+    const status = response.data?.status ?? response.data?.payload?.status;
+    return status ? String(status) : null;
+  }
+
   /** Atributos personalizados actuales de la conversación. */
   public async getCustomAttributes(
     accountId: string,
