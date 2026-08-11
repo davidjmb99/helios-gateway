@@ -23,6 +23,7 @@ import {
 import { interpretSignal, parseConversationSignal, planSignalAction } from './handoff/signals.js';
 import { resolveHandoffRouting } from './handoff/routing.js';
 import { returnConversationToBot } from './handoff/service.js';
+import { detectCommand, RETURN_TO_BOT_COMMAND } from './handoff/commands.js';
 import { chatwootClient } from './chatwoot/client.js';
 import { supabase } from './supabase/client.js';
 import { bufferService } from './buffer/buffer-service.js';
@@ -638,6 +639,76 @@ async function handleConversationSignal(payload: any, urlTenantId: string | unde
   return { ok: true, status: 'stage_changed', stage: nextStage, reason: action.reason };
 }
 
+/**
+ * Comando /fin: devuelve la conversación al modo IA de inmediato.
+ *
+ * Funciona lo escriba el paciente por WhatsApp o el equipo desde Chatwoot, y
+ * también dentro de una nota privada, que es la forma de usarlo sin que el
+ * paciente vea el comando.
+ *
+ * A diferencia de la macro de retorno, se acepta desde CUALQUIER etapa en manos
+ * humanas: es una orden explícita, no una señal de flujo de trabajo. Y el mensaje
+ * del comando no se guarda como parte de la conversación ni se responde: es una
+ * instrucción, no algo que el paciente esté preguntando.
+ */
+async function handleReturnCommand(
+  normalized: ReturnType<typeof normalizeChatwootPayload>,
+  log: any
+): Promise<{ handled: boolean; reason: string }> {
+  const tenantContext = resolveTenantContext(normalized.account_id);
+
+  const state = await stateRepository.getRefined(
+    normalized.tenant_id,
+    normalized.conversation_id,
+    normalized.contact_id
+  );
+  const { stage } = resolveStage(state);
+
+  if (!isHumanOwnedStage(stage)) {
+    // Ya está en modo IA: el comando no tiene nada que hacer.
+    return { handled: false, reason: 'already_bot_active' };
+  }
+
+  // Un solo webhook actúa, aunque Chatwoot entregue el mismo mensaje varias veces.
+  const won = await idempotencyRepository.claim(
+    normalized.tenant_id,
+    normalized.provider,
+    normalized.message_id,
+    normalized.conversation_id,
+    normalized.trace_id
+  );
+  if (!won) return { handled: false, reason: 'duplicate_command' };
+
+  await returnConversationToBot({
+    tenantContext,
+    conversation_id: normalized.conversation_id,
+    contact_id: normalized.contact_id,
+    inbox_id: normalized.inbox_id,
+    phone: normalized.phone || state?.phone || '',
+    trace_id: normalized.trace_id,
+    handoff_id: state?.handoff_id || null,
+    accepted_by: normalized.sender_id
+  });
+
+  await logsRepository.save({
+    trace_id: normalized.trace_id,
+    tenant_id: normalized.tenant_id,
+    conversation_id: normalized.conversation_id,
+    contact_id: normalized.contact_id,
+    event_type: 'HANDOFF_RETURNED_BY_COMMAND',
+    metadata: {
+      command: RETURN_TO_BOT_COMMAND,
+      from_stage: stage,
+      written_by: normalized.direction === 'incoming' ? 'patient' : 'clinic_team',
+      was_private_note: normalized.is_private,
+      handoff_id: state?.handoff_id || null
+    }
+  });
+
+  log.info({ conversation_id: normalized.conversation_id, from_stage: stage }, 'Comando /fin: conversación devuelta a la IA.');
+  return { handled: true, reason: 'returned_by_command' };
+}
+
 // Helper interno para procesar webhook
 async function handleChatwootWebhook(payload: any, urlTenantId: string | undefined, log: any) {
   const incomingEvent = String(payload?.event || '');
@@ -664,6 +735,32 @@ async function handleChatwootWebhook(payload: any, urlTenantId: string | undefin
     decision: normalized.should_process ? 'accepted' : 'ignored',
     normalizedPayload: normalized
   });
+
+  // El comando /fin se atiende ANTES que cualquier otra cosa: lo escriba el
+  // paciente o el equipo, en un mensaje normal o en una nota privada.
+  if (
+    config.HELIOS_HANDOFF_ENABLED
+    && normalized.event === 'message_created'
+    && normalized.conversation_id
+    && normalized.message_id
+    && detectCommand(normalized.text) === 'return_to_bot'
+  ) {
+    try {
+      const result = await handleReturnCommand(normalized, log);
+      if (result.handled) {
+        debugTracker.updateEvent(normalized.trace_id, { decision: 'ignored', reason: result.reason } as any);
+        debugTracker.addTimelineStep(normalized.trace_id, 'action_executed', {
+          action: 'HANDOFF_RETURNED_BY_COMMAND'
+        });
+        return { ok: true, status: 'returned_by_command' };
+      }
+      if (result.reason === 'duplicate_command') {
+        return { ok: true, status: 'duplicate' };
+      }
+    } catch (error: any) {
+      log.error({ err: error?.message }, 'No se pudo aplicar el comando /fin.');
+    }
+  }
 
   // Un saliente con forma de mensaje humano se guarda antes de descartarlo como
   // eco: es la única forma de que quede registro consultable de lo que escribió
