@@ -84,9 +84,9 @@ const { startReport, addSection } = await import('./fixtures/verification-report
 
 startReport({
   title: 'Verificación del handoff de Helios',
-  subtitle: 'Cinco escenarios ejecutados sobre el orquestador real, sin tocar producción.',
+  subtitle: 'Seis escenarios ejecutados sobre el orquestador real, sin tocar producción.',
   outputPath: 'verificacion-handoff.html',
-  expectedSections: 5
+  expectedSections: 6
 });
 
 /** Filas del buffer en formato legible para el informe. */
@@ -680,7 +680,52 @@ addSection({
 });
 
 // ===========================================================================
+// ESCENARIO F — dos webhooks simultáneos del mismo mensaje del equipo
+//               (el bug real de la conversación 45: se guardó dos veces)
+// ===========================================================================
+
+db = freshDatabase();
+const { idempotencyRepository } = await import('../src/repositories/database.js');
+
+const primero = await idempotencyRepository.claim('democoi1', 'chatwoot', '795', '45', 'trace-a');
+const segundo = await idempotencyRepository.claim('democoi1', 'chatwoot', '795', '45', 'trace-b');
+
+assert.equal(primero, true, 'F1: el primer webhook gana el claim');
+assert.equal(
+  segundo,
+  false,
+  'F2: el segundo webhook del MISMO mensaje pierde. Comprobar-y-luego-insertar dejaba pasar los dos y guardaba el mensaje del equipo dos veces'
+);
+assert.equal(
+  db.table('helios_message_idempotency').length,
+  1,
+  'F3: una sola fila de idempotencia, porque el candado es la clave primaria'
+);
+
+const otroMensaje = await idempotencyRepository.claim('democoi1', 'chatwoot', '796', '45', 'trace-c');
+assert.equal(otroMensaje, true, 'F4: un mensaje distinto sí puede reclamarse');
+
+addSection({
+  id: 'F',
+  title: 'El mismo mensaje del equipo llega dos veces a la vez',
+  question: '¿Se guarda dos veces, como pasó de verdad en la conversación 45?',
+  inputs: ['que tal, como estas?  (entregado dos veces por Chatwoot)'],
+  facts: [
+    { label: 'Primer webhook: gana el turno', value: 'sí', good: true },
+    { label: 'Segundo webhook: se descarta', value: 'sí', good: true },
+    { label: 'Veces que se guarda el mensaje', value: '1', good: true },
+    { label: 'Un mensaje distinto sí entra', value: 'sí', good: true }
+  ],
+  tables: [{
+    caption: 'Registro de mensajes ya vistos',
+    columns: ['Mensaje', 'Conversación'],
+    rows: db.table('helios_message_idempotency').map((row: any) => [row.message_id, row.conversation_id])
+  }],
+  conclusion: 'El candado es la clave primaria de la base de datos, no una comprobación previa. Entre comprobar y guardar cabía otra petición, y por eso el mensaje del equipo se duplicó en la prueba real.'
+});
+
+// ===========================================================================
 
 await new Promise<void>(resolve => adapterServer.close(() => resolve()));
 
-console.log('handoff_orchestrator_test: PASS (5 escenarios end-to-end sobre processBufferEvent)');
+console.log('handoff_orchestrator_test: PASS (6 escenarios end-to-end sobre processBufferEvent)');

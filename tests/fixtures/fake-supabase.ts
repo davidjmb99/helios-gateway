@@ -194,6 +194,21 @@ class FakeQuery implements PromiseLike<any> {
 
     if (this.op === 'insert') {
       const incoming = Array.isArray(payload) ? payload : [payload];
+      // Postgres rechaza un INSERT que choca con la clave primaria. Reproducirlo
+      // es lo que permite probar los claims atómicos, que dependen del 23505.
+      for (const candidate of incoming) {
+        if (this.findConflicting(candidate)) {
+          return {
+            data: null,
+            error: {
+              code: '23505',
+              message: 'duplicate key value violates unique constraint',
+              details: null,
+              hint: null
+            }
+          };
+        }
+      }
       const inserted = incoming.map(row => {
         const stored = { ...row };
         rows.push(stored);

@@ -22,6 +22,32 @@ export const idempotencyRepository = {
     return !!data;
   },
 
+  /**
+   * Reclama un message_id de forma ATÓMICA y devuelve si esta llamada ganó.
+   *
+   * La clave primaria de helios_message_idempotency es (tenant_id, provider,
+   * message_id), así que el propio INSERT es el candado: si dos webhooks del
+   * mismo mensaje llegan a la vez, solo uno inserta y el otro recibe 23505.
+   *
+   * Un check() seguido de un insert() NO sirve para esto: entre las dos
+   * llamadas cabe otra petición, y el resultado son dos filas guardadas.
+   */
+  async claim(
+    tenant_id: string,
+    provider: string,
+    message_id: string,
+    conversation_id: string,
+    trace_id: string
+  ): Promise<boolean> {
+    try {
+      await this.markProcessed(tenant_id, provider, message_id, conversation_id, trace_id);
+      return true;
+    } catch (error: any) {
+      if (error?.code === 'SUPABASE_CONSTRAINT') return false;
+      throw error;
+    }
+  },
+
   async markProcessed(tenant_id: string, provider: string, message_id: string, conversation_id: string, trace_id: string): Promise<void> {
     const result = await supabase
       .from('helios_message_idempotency')
@@ -147,6 +173,9 @@ export const bufferRepository = {
         source_id: msg.source_id,
         body: msg.text,
         direction: 'outgoing',
+        // Marca explícita de autoría: 'outgoing' por sí solo no distingue lo que
+        // escribió una persona de un eco de Helios cuando se lee la tabla a mano.
+        author: 'clinic_team',
         content_type: 'text',
         created_at: msg.created_at,
         trace_id: msg.trace_id,

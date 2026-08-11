@@ -459,21 +459,21 @@ async function captureHumanAgentMessage(
     });
   if (isHeliosEcho) return { stored: false, reason: 'helios_echo' };
 
-  const alreadySeen = await idempotencyRepository.check(
-    normalized.tenant_id,
-    normalized.provider,
-    normalized.message_id
-  );
-  if (alreadySeen) return { stored: false, reason: 'duplicate' };
-
-  await bufferRepository.saveHumanAgentMessage(normalized);
-  await idempotencyRepository.markProcessed(
+  // Reclamar ANTES de guardar. Chatwoot puede entregar el mismo message_created
+  // más de una vez (reintentos, o el webhook de cuenta y el del AgentBot a la vez),
+  // y comprobar-y-luego-insertar dejaba pasar las dos peticiones concurrentes: por
+  // eso el mensaje del equipo se guardó dos veces. El INSERT en la tabla de
+  // idempotencia es el candado, porque su clave primaria lo hace atómico.
+  const won = await idempotencyRepository.claim(
     normalized.tenant_id,
     normalized.provider,
     normalized.message_id,
     normalized.conversation_id,
     normalized.trace_id
   );
+  if (!won) return { stored: false, reason: 'duplicate' };
+
+  await bufferRepository.saveHumanAgentMessage(normalized);
 
   // Que el equipo escriba es la señal más fuerte de que ya está atendiendo.
   let stageTransition: string | null = null;
