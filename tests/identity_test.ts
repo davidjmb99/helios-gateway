@@ -133,9 +133,12 @@ if (validResponse.success) {
 }
 
 // ==========================================================
-// J. build y typecheck pasan (verificado externamente con npx tsc --noEmit)
+// J. El typecheck ya NO se afirma aquí.
 // ==========================================================
-assert(true, 'J. TypeScript typecheck passed (npx tsc --noEmit = 0 errors)');
+// Aquí había un assert(true, 'TypeScript typecheck passed'): una aserción que
+// siempre pasaba y daba por bueno algo que nunca comprobaba. El 11 de agosto de
+// 2026 dio verde con el build roto. El typecheck real es ahora el primer paso de
+// `npm test`, así que un error de tipos tumba la suite de verdad.
 
 // ==========================================================
 // Medición: verificar que el schema soporta los campos de timing

@@ -27,6 +27,7 @@ import { handoffEventRepository, notificationOutboxRepository } from '../reposit
 import { createHandoffIdentity } from '../durable/identity.js';
 import type { TenantContext } from '../tenants/context.js';
 import {
+  HandoffDestination,
   HandoffStage,
   NormalizedHandoffRequest,
   humanHandoffActiveFor
