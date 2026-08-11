@@ -368,12 +368,31 @@ export async function completeHandoff(input: CompleteHandoffInput): Promise<Comp
  * contacto y repetirlos solo añade PII. Tampoco incluye razonamiento interno
  * del modelo ni nada que se parezca a un diagnóstico.
  */
+/**
+ * Mención al equipo dentro de la nota privada. Chatwoot resuelve la mención por el
+ * ID numérico —`(mention://team/{id}/{nombre})`, verificado en MentionService— y
+ * notifica a todos sus miembros. Sin ID configurado no se inventa ninguna mención.
+ */
+export function teamMention(teamId: string | null, destination: HandoffDestination): string | null {
+  const normalizedId = String(teamId ?? '').trim();
+  if (!normalizedId) return null;
+  const label = DESTINATION_LABELS[destination] || destination;
+  const slug = label
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+  return `[@${label}](mention://team/${normalizedId}/${slug})`;
+}
+
 export function buildPrivateNote(
   opened: OpenedHandoff,
   patient: CompleteHandoffInput['patient']
 ): string {
   const { request } = opened;
   const destination = DESTINATION_LABELS[request.destination] || request.destination;
+  const mention = teamMention(opened.destination_team_id, request.destination);
   const reason = REASON_LABELS[request.reason_code] || request.reason_code;
   const identity = patient.identity_complete
     ? [patient.first_name, patient.last_name].filter(Boolean).join(' ') || 'identidad completa sin nombre legible'
@@ -385,6 +404,8 @@ export function buildPrivateNote(
 
   return [
     '🔻 Handoff de Helios',
+    // La mención va arriba para que el equipo mencionado lo vea al abrir la nota.
+    mention,
     '',
     `Motivo: ${reason} (${request.reason_code})`,
     `Prioridad: ${request.priority}`,

@@ -104,6 +104,29 @@ assert.match(noteWithoutIdentity, /identidad incompleta/);
 assert.match(noteWithoutIdentity, /Alta en CRM: no/);
 assert.doesNotMatch(noteWithoutIdentity, /Xavier/);
 
+// --- Mención al equipo en la nota privada -----------------------------------
+
+const { teamMention } = await import('../src/handoff/service.js');
+assert.equal(
+  teamMention('3', 'reception'),
+  '[@Recepción Clínica](mention://team/3/recepcion-clinica)',
+  'el formato es el que verifica MentionService de Chatwoot'
+);
+assert.equal(teamMention('4', 'clinical_lead'), '[@Responsable Clínico](mention://team/4/responsable-clinico)');
+assert.equal(teamMention(null, 'reception'), null, 'sin ID configurado no se inventa mención');
+assert.equal(teamMention('   ', 'reception'), null);
+
+const notaConEquipo = buildPrivateNote(
+  openedHandoff({ destination_team_id: '3', request: normalizeHandoffRequest({ reason_code: 'human_requested' }) }),
+  verifiedPatient
+);
+assert.match(
+  notaConEquipo,
+  /\[@Recepción Clínica\]\(mention:\/\/team\/3\/recepcion-clinica\)/,
+  'la nota menciona al equipo cuando hay ID configurado'
+);
+assert.doesNotMatch(note, /mention:\/\//, 'sin ID configurado la nota no lleva mención');
+
 const technicalNote = buildPrivateNote(
   openedHandoff({
     request: normalizeHandoffRequest({ reason_code: 'operational_exception' }, 'technical_failure')
