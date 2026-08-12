@@ -21,6 +21,7 @@ import { resolveTenantContextByTenantId } from './tenants/context.js';
 import { maskPhoneForLog } from './utils/sanitizeForLog.js';
 import { createBatchIdentity, createOutboxIdentity } from './durable/identity.js';
 import {
+  deriveHandoffRequest,
   detectHandoffRequest,
   humanHandoffActiveFor,
   isHumanOwnedStage,
@@ -619,7 +620,19 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         phone: resolvedPhone,
         trace_id: traceId,
         trigger_key: durableBatchKey,
-        request: normalizeHandoffRequest((hermesResponse as any).handoff, 'model')
+        request: normalizeHandoffRequest(
+          deriveHandoffRequest({
+            modelHandoff: (hermesResponse as any).handoff,
+            signals: {
+              possible_emergency: possibleEmergency,
+              asks_for_human: asksForHuman,
+              possible_frustration: possibleFrustration
+            },
+            patientMessage: consolidatedText,
+            operationSummary: hermesResponse.operation?.summary ?? null
+          }),
+          'model'
+        )
       });
     }
 

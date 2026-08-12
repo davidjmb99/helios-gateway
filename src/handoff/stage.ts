@@ -234,6 +234,63 @@ export function normalizeHandoffRequest(
 }
 
 /**
+ * Deduce el motivo y el contexto del handoff cuando el modelo no los manda.
+ *
+ * POR QUÉ EXISTE ESTO. El contrato de salida está fijado en tres sitios que exigen
+ * exactamente diez claves raíz: la línea del contrato en el SOUL, las instrucciones
+ * que inyecta el Adapter, y el output guard de Hermes, que rechaza una respuesta con
+ * claves raíz de más. Un objeto `handoff` adicional no puede llegar: el Adapter lo
+ * descarta al construir su resultado clave por clave, y antes de eso el guard
+ * habría tumbado la respuesta entera y el paciente se habría quedado con el
+ * fallback de 324 caracteres.
+ *
+ * Así que el motivo se deduce aquí, en código, a partir de señales que el Gateway
+ * ya calcula de forma determinista sobre las palabras del propio paciente. Es la
+ * regla de este proyecto: lo que debe ser exacto va en código, no en el modelo.
+ *
+ * El orden es por gravedad. Una urgencia clínica manda sobre todo lo demás.
+ */
+export function deriveHandoffRequest(input: {
+  /** Lo que haya mandado el modelo, si algún día el contrato lo permite. */
+  modelHandoff?: any;
+  signals: {
+    possible_emergency?: boolean;
+    asks_for_human?: boolean;
+    possible_frustration?: boolean;
+  };
+  /** Mensaje real del paciente. Se usa como contexto: son sus palabras, no una interpretación. */
+  patientMessage?: string | null;
+  /** operation.summary del modelo, que sí viaja en el contrato. */
+  operationSummary?: string | null;
+}): Record<string, unknown> {
+  const model = input.modelHandoff && typeof input.modelHandoff === 'object'
+    ? input.modelHandoff
+    : {};
+
+  let derivedReason: HandoffReasonCode;
+  if (input.signals.possible_emergency) {
+    derivedReason = 'possible_urgency';
+  } else if (input.signals.possible_frustration) {
+    derivedReason = 'complaint';
+  } else if (input.signals.asks_for_human) {
+    derivedReason = 'human_requested';
+  } else {
+    derivedReason = 'operational_exception';
+  }
+
+  return {
+    reason_code: isHandoffReasonCode(model.reason_code) ? model.reason_code : derivedReason,
+    priority: model.priority ?? undefined,
+    // El resumen que ve el equipo: lo que pidió el modelo, o lo que dijo el
+    // paciente con sus propias palabras. Nunca una interpretación inventada.
+    summary: model.summary
+      ?? input.operationSummary
+      ?? (input.patientMessage ? `El paciente escribió: «${String(input.patientMessage).trim()}»` : null),
+    treatment_interest: model.treatment_interest ?? null
+  };
+}
+
+/**
  * ¿La respuesta del Adapter pide una derivación humana?
  *
  * Un error técnico NO se convierte aquí en handoff clínico: esa ruta la decide

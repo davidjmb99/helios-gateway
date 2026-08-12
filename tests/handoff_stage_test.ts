@@ -167,6 +167,83 @@ const technical = normalizeHandoffRequest({ reason_code: 'clinical_question' }, 
 assert.equal(technical.destination, 'helios_support');
 assert.equal(technical.origin, 'technical_failure');
 
+// --- Motivo deducido de las señales del propio Gateway ----------------------
+// El contrato de salida solo admite diez claves raíz, así que el objeto handoff no
+// puede llegar desde el modelo. El motivo se deduce en código.
+
+const { deriveHandoffRequest } = await import('../src/handoff/stage.js');
+
+assert.equal(
+  deriveHandoffRequest({ signals: { asks_for_human: true }, patientMessage: 'quiero hablar con un humano' }).reason_code,
+  'human_requested'
+);
+assert.equal(
+  deriveHandoffRequest({ signals: { possible_frustration: true }, patientMessage: 'estoy muy molesto' }).reason_code,
+  'complaint'
+);
+assert.equal(
+  deriveHandoffRequest({ signals: { possible_emergency: true }, patientMessage: 'no puedo respirar bien' }).reason_code,
+  'possible_urgency'
+);
+assert.equal(
+  deriveHandoffRequest({ signals: {}, patientMessage: 'algo raro' }).reason_code,
+  'operational_exception',
+  'sin ninguna señal cae al motivo operativo'
+);
+assert.equal(
+  deriveHandoffRequest({
+    signals: { possible_emergency: true, asks_for_human: true, possible_frustration: true },
+    patientMessage: 'tengo la cara hinchada y quiero hablar con alguien ya'
+  }).reason_code,
+  'possible_urgency',
+  'la urgencia clínica manda sobre todo lo demás'
+);
+assert.equal(
+  deriveHandoffRequest({
+    signals: { asks_for_human: true, possible_frustration: true },
+    patientMessage: 'estoy enfadado, ponme con una persona'
+  }).reason_code,
+  'complaint',
+  'enfadado y pidiendo persona es una queja: misma cola pero más prioridad'
+);
+
+// El contexto que ve el equipo son las palabras del paciente, no una interpretación.
+const derived = deriveHandoffRequest({
+  signals: { asks_for_human: true },
+  patientMessage: '  quiero hablar con un humano para verificar algo  '
+});
+assert.match(String(derived.summary), /quiero hablar con un humano para verificar algo/);
+assert.doesNotMatch(String(derived.summary), /^\s/, 'el resumen viene recortado');
+
+// operation.summary del modelo tiene preferencia sobre el mensaje crudo.
+assert.match(
+  String(deriveHandoffRequest({
+    signals: { asks_for_human: true },
+    patientMessage: 'ponme con alguien',
+    operationSummary: 'El paciente quiere verificar su cita del jueves.'
+  }).summary),
+  /verificar su cita del jueves/
+);
+
+// Y si algún día el contrato admite el objeto handoff, ese gana.
+const fromModel = deriveHandoffRequest({
+  modelHandoff: { reason_code: 'complaint', summary: 'Molesto por la espera.' },
+  signals: { asks_for_human: true },
+  patientMessage: 'ponme con alguien'
+});
+assert.equal(fromModel.reason_code, 'complaint');
+assert.match(String(fromModel.summary), /Molesto por la espera/);
+
+assert.equal(
+  deriveHandoffRequest({
+    modelHandoff: { reason_code: 'motivo_inventado' },
+    signals: { asks_for_human: true },
+    patientMessage: 'x'
+  }).reason_code,
+  'human_requested',
+  'un reason_code inválido del modelo no se propaga: se usa el deducido'
+);
+
 // --- Detección de la petición en la respuesta del Adapter ---------------
 
 assert.equal(detectHandoffRequest({ handoff_required: true }), true);
