@@ -560,7 +560,13 @@ export async function returnConversationToBot(input: {
     handoff_id: null,
     handoff_reason: null,
     handoff_priority: null,
-    handoff_destination: null
+    handoff_destination: null,
+    // Quién atendió pertenece al episodio, no a la conversación. Si no se limpia
+    // aquí, el siguiente handoff aparece con un agente asignado antes de que
+    // nadie lo haya cogido, justo en la consulta que se usa para diagnosticar.
+    // El histórico no se pierde: queda en la fila de helios_handoff_events.
+    human_accepted_at: null,
+    human_accepted_by: null
   });
 
   const failures: string[] = [];
