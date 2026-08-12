@@ -42,10 +42,22 @@ export interface HandoffAttributeKeys {
   priority: string;
 }
 
+/**
+ * Etiquetas de la encuesta de satisfaccion. Van APARTE de HandoffLabels a
+ * proposito: son etiquetas DE LA CLINICA, no de Helios. Helios las escribe
+ * porque el operador lo pidio, pero NUNCA las retira, y por eso no pueden
+ * acabar por descuido en managedLabels(), que es la lista de lo que se limpia.
+ */
+export interface CsatLabels {
+  send: string;
+  exclude: string;
+}
+
 export interface HandoffRouting {
   tenant_id: string;
   teams: Partial<Record<HandoffDestination, string>>;
   labels: HandoffLabels;
+  csat_labels: CsatLabels;
   attribute_keys: HandoffAttributeKeys;
   telegram_chat_id: string | null;
   transition_message: string | null;
@@ -60,6 +72,11 @@ export const DEFAULT_HANDOFF_LABELS: HandoffLabels = Object.freeze({
   // aplicara una de la clinica no podria distinguir la que puso el de la que puso
   // una persona a mano, y al limpiar borraria trabajo ajeno.
   failed: 'helios-fallo-tecnico'
+});
+
+export const DEFAULT_CSAT_LABELS: CsatLabels = Object.freeze({
+  send: 'csat-enviar',
+  exclude: 'csat-excluir'
 });
 
 export const DEFAULT_HANDOFF_ATTRIBUTE_KEYS: HandoffAttributeKeys = Object.freeze({
@@ -88,6 +105,7 @@ function buildDefault(tenantId: string): HandoffRouting {
     tenant_id: tenantId,
     teams: {},
     labels: { ...DEFAULT_HANDOFF_LABELS },
+    csat_labels: { ...DEFAULT_CSAT_LABELS },
     attribute_keys: { ...DEFAULT_HANDOFF_ATTRIBUTE_KEYS },
     telegram_chat_id: optionalString(process.env.TELEGRAM_ALERT_CHAT_ID),
     transition_message: null
@@ -135,6 +153,10 @@ export function parseHandoffRouting(raw: string): Map<string, HandoffRouting> {
         return_requested:
           optionalString(value?.labels?.return_requested) ?? base.labels.return_requested,
         failed: optionalString(value?.labels?.failed) ?? base.labels.failed
+      },
+      csat_labels: {
+        send: optionalString(value?.csat?.send) ?? base.csat_labels.send,
+        exclude: optionalString(value?.csat?.exclude) ?? base.csat_labels.exclude
       },
       attribute_keys: {
         case_id: optionalString(value?.attribute_keys?.case_id) ?? base.attribute_keys.case_id,

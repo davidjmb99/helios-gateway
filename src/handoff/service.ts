@@ -21,6 +21,7 @@
  */
 
 import { config } from '../config.js';
+import { markExcluded } from '../csat/service.js';
 import { chatwootClient } from '../chatwoot/client.js';
 import { logsRepository, stateRepository, bufferRepository } from '../repositories/database.js';
 import { handoffEventRepository, notificationOutboxRepository } from '../repositories/handoff.js';
@@ -759,6 +760,18 @@ export async function escalateTechnicalFailure(input: {
   error_code: string;
   stage_of_failure: string;
 }): Promise<CompleteHandoffResult | null> {
+  // Encuesta de satisfacción: si Helios ha fallado, no se le pregunta al paciente
+  // qué tal el servicio. Se marca AQUÍ, en el único sitio por el que pasan todos
+  // los fallos técnicos, para que no se pueda olvidar en una rama nueva. Es el
+  // motivo de exclusión más grave y pisa a cualquier otro ya anotado.
+  await markExcluded({
+    tenantId: input.tenantContext.tenant_id,
+    conversationId: input.conversation_id,
+    contactId: input.contact_id,
+    traceId: input.trace_id,
+    reason: 'technical_failure'
+  });
+
   try {
     const opened = await openHandoff({
       tenantContext: input.tenantContext,

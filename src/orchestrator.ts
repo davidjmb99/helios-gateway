@@ -21,6 +21,7 @@ import { resolveTenantContextByTenantId } from './tenants/context.js';
 import { maskPhoneForLog } from './utils/sanitizeForLog.js';
 import { createBatchIdentity, createOutboxIdentity } from './durable/identity.js';
 import { detectSignals } from './chatwoot/normalizer.js';
+import { markEligibleIfAppointment, markExcluded } from './csat/service.js';
 import {
   deriveHandoffRequest,
   detectHandoffRequest,
@@ -648,6 +649,33 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
           'model'
         )
       });
+
+      // Encuesta de satisfacción: una conversación que ha necesitado a una
+      // persona queda fuera, por decisión del operador. Se guarda el motivo MÁS
+      // ESPECÍFICO que se conozca, no un simple «hubo handoff»: así el recuento
+      // de exclusiones sirve como métrica de calidad y no solo como descarte.
+      await markExcluded({
+        tenantId,
+        conversationId,
+        contactId: contact_id,
+        traceId,
+        reason: openedHandoff.request.reason_code === 'complaint'
+          ? 'complaint'
+          : 'human_handoff'
+      });
+    }
+
+    // Frustración detectada por texto: fuera de la encuesta aunque no se haya
+    // llegado a derivar. Se usa la señal CRUDA, no la que se le manda a Hermes
+    // (que suma asks_for_human): pedir un humano no es estar enfadado.
+    if (possibleFrustration) {
+      await markExcluded({
+        tenantId,
+        conversationId,
+        contactId: contact_id,
+        traceId,
+        reason: 'frustration'
+      });
     }
 
     let transitionOutboxKey: string | null = null;
@@ -917,6 +945,17 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         await logsRepository.save({
             trace_id: traceId, tenant_id: tenantId, conversation_id: conversationId, contact_id: contact_id,
             event_type: 'operation_log', metadata: { operation: operationSummary, tools: safeToolCalls }
+        });
+
+        // Encuesta de satisfacción: una cita agendada o reprogramada CON ÉXITO es
+        // lo que convierte la conversación en encuestable. El dato sale del propio
+        // contrato de salida de Hermes, no de una interpretación del texto.
+        await markEligibleIfAppointment({
+            tenantId,
+            conversationId,
+            contactId: contact_id,
+            traceId,
+            operation: hermesResponse.operation
         });
     }
 

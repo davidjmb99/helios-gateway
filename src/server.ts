@@ -4,6 +4,7 @@ import fastifyStatic from '@fastify/static';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
+import { applyCsatOnResolution, csatMetrics } from './csat/service.js';
 import { normalizeChatwootPayload } from './chatwoot/normalizer.js';
 import { resolveTenantContext, TenantContextError, validateWebhookTenantRoute } from './tenants/context.js';
 import {
@@ -153,6 +154,13 @@ server.get('/health', async (request, reply) => {
         ...staleHandoffMetrics,
         threshold_hours: config.HELIOS_HANDOFF_STALE_HOURS
       }
+    },
+    csat: {
+      // enabled=false NO significa apagado del todo: la decisión se sigue
+      // anotando y contando, pero no se escribe ninguna etiqueta en Chatwoot.
+      enabled: config.HELIOS_CSAT_ENABLED,
+      observe_only: !config.HELIOS_CSAT_ENABLED,
+      ...csatMetrics
     },
     hermesMode: getHermesStatus()
   };
@@ -541,6 +549,22 @@ async function handleConversationSignal(payload: any, urlTenantId: string | unde
   if (!signal.conversation_id) {
     return { ok: true, status: 'ignored', reason: 'conversation_id no presente en el webhook' };
   }
+
+  // Encuesta de satisfacción. Va ANTES del flag del handoff y de toda la lógica
+  // de etapas A PROPÓSITO: la conversación que hay que encuestar es justo la que
+  // Helios llevó de principio a fin, y esa no genera ninguna señal de handoff.
+  // Si esto estuviera más abajo, no se ejecutaría nunca en el caso que importa.
+  // No lanza: se traga sus propios errores para no tumbar la señal.
+  if (String(signal.status ?? '') === 'resolved') {
+    await applyCsatOnResolution({
+      tenantId: tenantContext.tenant_id,
+      accountId: tenantContext.account_id,
+      conversationId: signal.conversation_id,
+      contactId: signal.contact_id || 'unknown',
+      traceId: `csat-${signal.conversation_id}`
+    });
+  }
+
   if (!config.HELIOS_HANDOFF_ENABLED) {
     return { ok: true, status: 'ignored', reason: 'handoff_disabled' };
   }

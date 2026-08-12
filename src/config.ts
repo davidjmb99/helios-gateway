@@ -115,6 +115,14 @@ export const config = {
   // depender de que alguien se acuerde de escribir /fin.
   HELIOS_HANDOFF_STALE_HOURS: envNumber(process.env.HELIOS_HANDOFF_STALE_HOURS, 5),
   HELIOS_HANDOFF_SWEEP_MS: envNumber(process.env.HELIOS_HANDOFF_SWEEP_MS, 10 * 60 * 1000),
+  // --- Encuesta de satisfacción (CSAT) ---
+  // APAGADO por defecto, y no es celo excesivo: un fallo aquí significa mandarle
+  // una encuesta de satisfacción a un paciente que acaba de quejarse. Con el flag
+  // apagado se sigue anotando en Supabase qué conversaciones serían aptas y qué
+  // conversaciones quedan excluidas y por qué, pero NO se escribe ninguna
+  // etiqueta en Chatwoot. Así se puede comprobar la decisión con datos reales
+  // antes de dejar que toque el flujo de encuestas de la clínica.
+  HELIOS_CSAT_ENABLED: envBool(process.env.HELIOS_CSAT_ENABLED, false),
   TELEGRAM_BOT_TOKEN: (process.env.TELEGRAM_BOT_TOKEN ?? '').trim(),
   TELEGRAM_API_BASE_URL: (process.env.TELEGRAM_API_BASE_URL ?? 'https://api.telegram.org').trim(),
 
