@@ -78,30 +78,57 @@ assert.notEqual(
   'otra conversación da otro handoff'
 );
 
-// --- Nota privada (ítem 20) --------------------------------------------------
+// --- Nota privada: texto limpio para el equipo, sin jerga tecnica -----------
 
-const note = buildPrivateNote(openedHandoff(), verifiedPatient);
-assert.match(note, /possible_urgency/, 'incluye el reason code');
-assert.match(note, /Prioridad: urgent/);
-assert.match(note, /Responsable Clínico/, 'el destino aparece en lenguaje del equipo');
-assert.match(note, /hinchazón desde ayer/, 'incluye el resumen');
-assert.match(note, /Xavier Mercado/, 'identidad verificada');
-assert.match(note, /Alta en CRM: sí/);
-assert.match(note, /Acción requerida:/);
-assert.match(note, /Helios Case ID: 3f2a1b8c/);
-assert.match(note, /Conversación: 44/);
-assert.match(note, /Trace: trace-abc/);
-assert.doesNotMatch(note, /\+34600111222/, 'la nota no repite el teléfono: Chatwoot ya muestra el contacto');
-assert.doesNotMatch(note, /@/, 'la nota no incluye correo');
+const recapEjemplo = {
+  messages: [
+    { role: 'patient' as const, text: 'Buenas, tengo una molestia en una muela', at: '2026-08-11T09:00:00.000Z' },
+    { role: 'helios' as const, text: 'Entiendo. ¿Desde cuándo la notas?', at: '2026-08-11T09:01:00.000Z' },
+    { role: 'patient' as const, text: 'Desde el lunes, prefiero hablar con alguien', at: '2026-08-11T09:02:00.000Z' }
+  ],
+  total_messages: 3,
+  truncated: false
+};
+
+const note = buildPrivateNote(openedHandoff(), verifiedPatient, recapEjemplo);
+
+// Lo que el equipo necesita para actuar sin leer toda la conversación.
+assert.match(note, /Un paciente necesita atención humana/);
+assert.match(note, /Paciente: Xavier Mercado/, 'nombre y apellido');
+assert.match(note, /Motivo: posible urgencia/, 'el motivo en palabras, no en código');
+assert.match(note, /Prioridad: Urgente/, 'la prioridad en castellano');
+assert.match(note, /Para: Responsable Clínico/);
+assert.match(note, /Le interesa: urgencias/);
+assert.match(note, /Lo último que se habló/);
+assert.match(note, /molestia en una muela/, 'el resumen son los mensajes reales');
+assert.match(note, /Helios: Entiendo/, 'se distingue quién dijo cada cosa');
+assert.match(note, /escribe \/fin/, 'la acción requerida explica cómo devolverla');
+assert.match(note, /Referencia interna: 3f2a1b8c/, 'una sola referencia para poder correlacionar');
+
+// Y lo que NO debe aparecer: nada técnico.
+assert.doesNotMatch(note, /possible_urgency/, 'sin códigos internos');
+assert.doesNotMatch(note, /Trace:/, 'sin trazas');
+assert.doesNotMatch(note, /Alta en CRM/, 'el estado del CRM no le dice nada a quien atiende');
+assert.doesNotMatch(note, /Conversación: 44/, 'el id de conversación ya lo ve en Chatwoot');
+assert.doesNotMatch(note, /\+34600111222/, 'el teléfono ya lo ve en la ficha del contacto');
+assert.doesNotMatch(note, /xavier@example\.com/, 'sin correo');
+
+// Conversación larga: hay que recomendar leerla entera.
+const notaLarga = buildPrivateNote(openedHandoff(), verifiedPatient, {
+  messages: recapEjemplo.messages,
+  total_messages: 42,
+  truncated: true
+});
+assert.match(notaLarga, /de 42 mensajes/);
+assert.match(notaLarga, /leer la conversación completa/);
 
 const noteWithoutIdentity = buildPrivateNote(openedHandoff(), {
   first_name: null,
   last_name: null,
   identity_complete: false,
   crm_synced: false
-});
-assert.match(noteWithoutIdentity, /identidad incompleta/);
-assert.match(noteWithoutIdentity, /Alta en CRM: no/);
+}, recapEjemplo);
+assert.match(noteWithoutIdentity, /todavía no ha dado su nombre/);
 assert.doesNotMatch(noteWithoutIdentity, /Xavier/);
 
 // --- Mención al equipo en la nota privada -----------------------------------
@@ -134,7 +161,7 @@ const technicalNote = buildPrivateNote(
   verifiedPatient
 );
 assert.match(technicalNote, /Soporte Helios/);
-assert.match(technicalNote, /avisar a Soporte Helios/, 'la acción requerida cambia en un fallo técnico');
+assert.match(technicalNote, /avisa a Soporte Helios/, 'la acción requerida cambia en un fallo técnico');
 
 // --- Alerta al equipo -------------------------------------------------------
 
@@ -150,7 +177,7 @@ assert.equal(
 );
 const serializedPayload = JSON.stringify(payload);
 assert.doesNotMatch(serializedPayload, /\+34600111222/, 'la alerta no lleva el teléfono');
-assert.doesNotMatch(serializedPayload, /Mercado/, 'la alerta lleva solo el nombre de pila');
+assert.match(String(payload.patient_full_name), /Xavier Mercado/, 'el equipo necesita nombre y apellido');
 
 const anonymousPayload = buildNotificationPayload(openedHandoff(), {
   first_name: 'Xavier',
@@ -167,7 +194,7 @@ assert.equal(
 // --- Texto del aviso de Telegram --------------------------------------------
 
 const telegram = renderTelegramMessage(payload as any);
-assert.match(telegram, /Helios ha derivado una conversación/);
+assert.match(telegram, /Un paciente necesita atención humana/);
 assert.match(telegram, /🔴 URGENTE/);
 assert.match(telegram, /Xavier/);
 assert.match(telegram, /https:\/\/chat\.example\.com\/app\/accounts\/2\/conversations\/44/);
@@ -181,8 +208,8 @@ const technicalTelegram = renderTelegramMessage(
     { first_name: null, last_name: null, identity_complete: false, crm_synced: false }
   ) as any
 );
-assert.match(technicalTelegram, /Helios no pudo atender un mensaje/);
-assert.match(technicalTelegram, /paciente sin identificar/);
+assert.match(technicalTelegram, /Helios no ha podido atender un mensaje/);
+assert.match(technicalTelegram, /todavía no ha dado su nombre/);
 assert.doesNotMatch(technicalTelegram, /undefined/);
 
 // --- Mensaje de transición --------------------------------------------------

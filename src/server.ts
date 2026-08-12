@@ -33,6 +33,7 @@ import { startRecoveryWorker } from './services/inbound-recovery-worker.js';
 import { recoveryMetrics } from './services/inbound-recovery-worker.js';
 import { startOutboxWorker, outboxMetrics } from './services/chatwoot-outbox-worker.js';
 import { startNotificationWorker, notificationMetrics } from './services/notification-outbox-worker.js';
+import { startStaleHandoffWorker, staleHandoffMetrics } from './services/handoff-stale-worker.js';
 import { componentHealth } from './services/component-health.js';
 import { refreshDependencyHealth } from './services/health-probes.js';
 import { assertSupabaseSuccess } from './supabase/assert-success.js';
@@ -147,7 +148,11 @@ server.get('/health', async (request, reply) => {
     recovery: recoveryMetrics,
     handoff: {
       enabled: config.HELIOS_HANDOFF_ENABLED,
-      notifications: notificationMetrics
+      notifications: notificationMetrics,
+      stale_return: {
+        ...staleHandoffMetrics,
+        threshold_hours: config.HELIOS_HANDOFF_STALE_HOURS
+      }
     },
     hermesMode: getHermesStatus()
   };
@@ -1064,6 +1069,9 @@ const stopOutboxWorker = process.env.NODE_ENV !== 'test'
 const stopNotificationWorker = process.env.NODE_ENV !== 'test'
   ? startNotificationWorker()
   : () => Promise.resolve();
+const stopStaleHandoffWorker = process.env.NODE_ENV !== 'test'
+  ? startStaleHandoffWorker()
+  : () => Promise.resolve();
 
 const start = async () => {
   try {
@@ -1088,6 +1096,7 @@ async function gracefulShutdown(signal: string) {
   await stopRecoveryWorker();
   await stopOutboxWorker();
   await stopNotificationWorker();
+  await stopStaleHandoffWorker();
   
   server.close().then(() => {
     console.log('[Helios Gateway] Fastify server closed.');

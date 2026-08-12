@@ -24,7 +24,9 @@ import { config } from '../config.js';
 import { chatwootClient } from '../chatwoot/client.js';
 import { logsRepository, stateRepository, bufferRepository } from '../repositories/database.js';
 import { handoffEventRepository, notificationOutboxRepository } from '../repositories/handoff.js';
+import { outboxRepository } from '../repositories/durable.js';
 import { createHandoffIdentity, shortFingerprint } from '../durable/identity.js';
+import { ConversationRecap, buildRecap, renderRecap } from './recap.js';
 import type { TenantContext } from '../tenants/context.js';
 import {
   HandoffDestination,
@@ -239,6 +241,12 @@ export async function completeHandoff(input: CompleteHandoffInput): Promise<Comp
 
   const finalStage: HandoffStage = input.final_stage ?? 'human_queue';
 
+  // El resumen que verá el equipo: los últimos mensajes reales de la conversación.
+  const recap = await loadConversationRecap(
+    tenantContext.tenant_id,
+    conversationId
+  ).catch(() => null);
+
   const existing = await handoffEventRepository.getByHandoffId(opened.handoff_id);
   let steps: Record<string, any> = { ...(existing?.chatwoot_steps || {}) };
   const failedSteps: string[] = [];
@@ -312,7 +320,7 @@ export async function completeHandoff(input: CompleteHandoffInput): Promise<Comp
     const noteId = await chatwootClient.createHandoffPrivateNote(
       accountId,
       conversationId,
-      buildPrivateNote(opened, input.patient)
+      buildPrivateNote(opened, input.patient, recap)
     );
     return { chatwoot_message_id: noteId };
   });
@@ -335,7 +343,7 @@ export async function completeHandoff(input: CompleteHandoffInput): Promise<Comp
       contact_id: opened.contact_id,
       channel: 'telegram',
       destination: routing.telegram_chat_id,
-      payload: buildNotificationPayload(opened, input.patient)
+      payload: buildNotificationPayload(opened, input.patient, recap)
     });
     return { notification_key: notificationKey, row_created: created, configured: Boolean(routing.telegram_chat_id) };
   });
@@ -385,6 +393,24 @@ export async function completeHandoff(input: CompleteHandoffInput): Promise<Comp
 }
 
 /**
+ * Lee el diálogo real de las dos tablas donde vive: el buffer guarda lo que
+ * escribieron el paciente y el equipo, y el outbox lo que envió Helios.
+ */
+export async function loadConversationRecap(
+  tenantId: string,
+  conversationId: string
+): Promise<ConversationRecap> {
+  const limit = Math.max(1, config.HELIOS_RECAP_MESSAGE_LIMIT);
+  const [bufferRows, outboxRows] = await Promise.all([
+    bufferRepository.listRecentForConversation(tenantId, conversationId, limit * 2)
+      .catch(() => [] as any[]),
+    outboxRepository.listRecentForConversation(tenantId, conversationId, limit)
+      .catch(() => [] as any[])
+  ]);
+  return buildRecap(bufferRows, outboxRows, limit);
+}
+
+/**
  * Nota privada (ítem 20): motivo, resumen, datos administrativos confirmados,
  * prioridad, acción requerida e identificadores.
  *
@@ -412,38 +438,40 @@ export function teamMention(teamId: string | null, destination: HandoffDestinati
 
 export function buildPrivateNote(
   opened: OpenedHandoff,
-  patient: CompleteHandoffInput['patient']
+  patient: CompleteHandoffInput['patient'],
+  recap?: ConversationRecap | null
 ): string {
   const { request } = opened;
   const destination = DESTINATION_LABELS[request.destination] || request.destination;
   const mention = teamMention(opened.destination_team_id, request.destination);
-  const reason = REASON_LABELS[request.reason_code] || request.reason_code;
-  const identity = patient.identity_complete
-    ? [patient.first_name, patient.last_name].filter(Boolean).join(' ') || 'identidad completa sin nombre legible'
-    : 'identidad incompleta: el paciente aún no ha dado nombre, apellido y correo';
+  const nombre = patient.identity_complete
+    ? [patient.first_name, patient.last_name].filter(Boolean).join(' ')
+    : null;
 
-  const action = request.origin === 'technical_failure'
-    ? 'Helios no ha podido atender el mensaje. Responder manualmente y avisar a Soporte Helios.'
-    : 'Atender al paciente desde esta conversación. Al terminar, aplicar la macro de retorno para devolverla a Helios.';
+  const accion = request.origin === 'technical_failure'
+    ? 'Helios no ha podido atender el mensaje. Responde tú y avisa a Soporte Helios.'
+    : 'Atiende al paciente desde esta conversación. Cuando termines, escribe /fin en una nota privada para devolvérsela a Helios.';
+
+  const recapLines = recap
+    ? renderRecap(recap, config.CLINIC_TIMEZONE || 'Europe/Madrid')
+    : [];
 
   return [
-    '🔻 Handoff de Helios',
-    // La mención va arriba para que el equipo mencionado lo vea al abrir la nota.
+    'Un paciente necesita atención humana',
     mention,
     '',
-    `Motivo: ${reason} (${request.reason_code})`,
-    `Prioridad: ${request.priority}`,
-    `Destino: ${destination}`,
-    request.summary ? `Resumen: ${request.summary}` : null,
-    request.treatment_interest ? `Interés de tratamiento: ${request.treatment_interest}` : null,
-    `Identidad: ${identity}`,
-    `Alta en CRM: ${patient.crm_synced ? 'sí' : 'no'}`,
+    `Paciente: ${nombre || 'todavía no ha dado su nombre'}`,
+    `Motivo: ${REASON_LABELS[request.reason_code] || request.reason_code}`,
+    `Prioridad: ${PRIORITY_LABELS_ES[request.priority] ?? request.priority}`,
+    `Para: ${destination}`,
+    request.treatment_interest ? `Le interesa: ${request.treatment_interest}` : null,
+    ...(recapLines.length
+      ? ['', 'Lo último que se habló:', ...recapLines.map(line => `  ${line}`)]
+      : request.summary ? ['', `Contexto: ${request.summary}`] : []),
     '',
-    `Acción requerida: ${action}`,
+    accion,
     '',
-    `Helios Case ID: ${opened.handoff_id}`,
-    `Conversación: ${opened.conversation_id}`,
-    `Trace: ${opened.trace_id}`
+    `Referencia interna: ${opened.handoff_id}`
   ].filter(line => line !== null).join('\n');
 }
 
@@ -453,10 +481,21 @@ export function buildPrivateNote(
  */
 export function buildNotificationPayload(
   opened: OpenedHandoff,
-  patient: CompleteHandoffInput['patient']
+  patient: CompleteHandoffInput['patient'],
+  recap?: ConversationRecap | null
 ): Record<string, unknown> {
   const { request, tenantContext } = opened;
   return {
+    patient_full_name: patient.identity_complete
+      ? [patient.first_name, patient.last_name].filter(Boolean).join(' ') || null
+      : null,
+    recap: recap
+      ? {
+          lines: renderRecap(recap, config.CLINIC_TIMEZONE || 'Europe/Madrid'),
+          total_messages: recap.total_messages,
+          truncated: recap.truncated
+        }
+      : null,
     kind: 'handoff_created',
     handoff_id: opened.handoff_id,
     tenant_id: tenantContext.tenant_id,

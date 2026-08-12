@@ -47,25 +47,27 @@ const PRIORITY_MARK: Record<string, string> = {
 /** Mensaje del aviso. Sin secretos y con la PII mínima: nombre de pila si está verificado. */
 export function renderTelegramMessage(payload: Record<string, any>): string {
   const priority = PRIORITY_MARK[String(payload.priority)] || String(payload.priority ?? '');
-  const who = payload.patient_first_name
-    ? String(payload.patient_first_name)
-    : (payload.identity_complete ? 'paciente sin nombre legible' : 'paciente sin identificar');
+  const quien = payload.patient_full_name
+    || payload.patient_first_name
+    || 'un paciente que todavía no ha dado su nombre';
+
+  const recapLines: string[] = Array.isArray(payload?.recap?.lines) ? payload.recap.lines : [];
 
   return [
     payload.origin === 'technical_failure'
-      ? '⚠️ Helios no pudo atender un mensaje'
-      : '🔻 Helios ha derivado una conversación',
+      ? 'Helios no ha podido atender un mensaje'
+      : 'Un paciente necesita atención humana',
     '',
-    `Clínica: ${payload.clinic_id ?? payload.tenant_id ?? '—'}`,
-    `Paciente: ${who}`,
+    `Paciente: ${quien}`,
     `Motivo: ${payload.reason_label ?? payload.reason_code ?? '—'}`,
     `Prioridad: ${priority}`,
-    `Va a: ${payload.destination_label ?? payload.destination ?? '—'}`,
-    payload.summary ? `Contexto: ${payload.summary}` : null,
-    payload.treatment_interest ? `Interés: ${payload.treatment_interest}` : null,
+    `Para: ${payload.destination_label ?? payload.destination ?? '—'}`,
+    payload.treatment_interest ? `Le interesa: ${payload.treatment_interest}` : null,
+    ...(recapLines.length
+      ? ['', 'Lo último que se habló:', ...recapLines]
+      : payload.summary ? ['', `Contexto: ${payload.summary}`] : []),
     '',
-    `Abrir conversación: ${payload.conversation_url ?? '—'}`,
-    `Caso: ${payload.handoff_id ?? '—'}`
+    `Abrir la conversación: ${payload.conversation_url ?? '—'}`
   ].filter(line => line !== null).join('\n');
 }
 

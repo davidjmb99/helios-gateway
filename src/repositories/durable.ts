@@ -232,6 +232,29 @@ export const outboxRepository = {
     return Boolean(result.data);
   },
 
+  /**
+   * Últimos mensajes que Helios envió en una conversación. Junto con el buffer
+   * (paciente y equipo) permite reconstruir el diálogo real sin leer Chatwoot.
+   */
+  async listRecentForConversation(
+    tenantId: string,
+    conversationId: string,
+    limit: number
+  ): Promise<Array<{ content: string; created_at: string }>> {
+    const result = await supabase
+      .from('helios_chatwoot_outbox')
+      .select('content, created_at')
+      .eq('tenant_id', tenantId)
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: false })
+      .limit(Math.max(1, Math.min(limit, 50)));
+    assertSupabaseSuccess(result, 'chatwoot_outbox.list_recent', {
+      tenant_id: tenantId,
+      row_id: conversationId
+    });
+    return (result.data || []) as Array<{ content: string; created_at: string }>;
+  },
+
   async claim(limit = 10): Promise<any[]> {
     const result = await supabase.rpc('claim_helios_chatwoot_outbox', {
       p_lease_owner: workerId,

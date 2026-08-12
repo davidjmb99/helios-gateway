@@ -218,6 +218,26 @@ export const bufferRepository = {
       .sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   },
 
+  /** Últimos mensajes de una conversación, sin filtro de fecha. Para el resumen. */
+  async listRecentForConversation(
+    tenant_id: string,
+    conversation_id: string,
+    limit: number
+  ): Promise<any[]> {
+    const result = await supabase
+      .from('helios_inbound_buffer')
+      .select('body, direction, author, created_at')
+      .eq('tenant_id', tenant_id)
+      .eq('conversation_id', conversation_id)
+      .order('created_at', { ascending: false })
+      .limit(Math.max(1, Math.min(limit, 100)));
+    assertSupabaseSuccess(result, 'inbound_buffer.list_recent', {
+      tenant_id,
+      row_id: conversation_id
+    });
+    return result.data || [];
+  },
+
   async getUnprocessed(tenant_id: string, conversation_id: string, trace_id?: string): Promise<any[]> {
     let query = supabase
       .from('helios_inbound_buffer')

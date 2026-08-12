@@ -1,0 +1,152 @@
+/**
+ * Devuelve a la IA los handoff que llevan horas sin actividad.
+ *
+ * POR QUÉ EXISTE. Depender de que alguien se acuerde de escribir /fin o de aplicar
+ * la macro es depender de la memoria de una persona con turnos y prisa. Si se
+ * olvida, la conversación queda en modo humano para siempre: el paciente escribe
+ * al día siguiente, Helios está callado por diseño, y nadie contesta. Eso ya pasó
+ * de verdad la noche del 10 al 11 de agosto.
+ *
+ * Por eso hay una red de seguridad basada en el tiempo, no en la disciplina.
+ * Se aplica a TODAS las etapas en manos humanas, incluida handoff_failed: un fallo
+ * técnico tampoco puede dejar al paciente incomunicado indefinidamente.
+ */
+
+import { config } from '../config.js';
+import { supabase } from '../supabase/client.js';
+import { assertSupabaseSuccess } from '../supabase/assert-success.js';
+import { logsRepository } from '../repositories/database.js';
+import { resolveTenantContextByTenantId } from '../tenants/context.js';
+import { returnConversationToBot } from '../handoff/service.js';
+import { HANDOFF_STAGES, isHumanOwnedStage } from '../handoff/stage.js';
+
+let running = false;
+let interval: NodeJS.Timeout | null = null;
+
+export const staleHandoffMetrics = {
+  returned: 0,
+  failed: 0,
+  last_sweep_at: null as string | null,
+  last_error_code: null as string | null
+};
+
+const HUMAN_OWNED = HANDOFF_STAGES.filter(isHumanOwnedStage);
+
+/**
+ * Última señal de vida de la conversación: el mensaje más reciente en cualquier
+ * dirección. Si no hay ninguno, sirve el momento en que se pidió el handoff.
+ */
+async function lastActivityAt(tenantId: string, conversationId: string): Promise<string | null> {
+  const result = await supabase
+    .from('helios_inbound_buffer')
+    .select('created_at')
+    .eq('tenant_id', tenantId)
+    .eq('conversation_id', conversationId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  assertSupabaseSuccess(result, 'inbound_buffer.last_activity', {
+    tenant_id: tenantId,
+    row_id: conversationId
+  });
+  return result.data?.created_at ?? null;
+}
+
+export async function runStaleHandoffSweep(): Promise<void> {
+  if (running) return;
+  running = true;
+  try {
+    if (!config.HELIOS_HANDOFF_ENABLED) return;
+
+    const staleHours = Math.max(1, config.HELIOS_HANDOFF_STALE_HOURS);
+    const cutoff = new Date(Date.now() - staleHours * 60 * 60 * 1000);
+
+    // Solo candidatas: en manos humanas y sin cambios de estado recientes. El
+    // filtro definitivo es el último mensaje real, que se comprueba después.
+    const candidates = await supabase
+      .from('helios_conversation_state')
+      .select('tenant_id, conversation_id, contact_id, inbox_id, phone, stage, handoff_id, handoff_requested_at')
+      .in('stage', HUMAN_OWNED)
+      .lt('updated_at', cutoff.toISOString())
+      .limit(50);
+    assertSupabaseSuccess(candidates, 'conversation_state.list_stale_handoffs');
+
+    staleHandoffMetrics.last_sweep_at = new Date().toISOString();
+
+    for (const row of candidates.data || []) {
+      try {
+        const lastMessage = await lastActivityAt(row.tenant_id, row.conversation_id);
+        const reference = lastMessage || row.handoff_requested_at;
+        if (!reference) continue;
+        if (new Date(reference).getTime() > cutoff.getTime()) continue;
+
+        const idleHours = Math.round(
+          (Date.now() - new Date(reference).getTime()) / 36_000
+        ) / 100;
+
+        await returnConversationToBot({
+          tenantContext: resolveTenantContextByTenantId(row.tenant_id),
+          conversation_id: row.conversation_id,
+          contact_id: row.contact_id || 'unknown',
+          inbox_id: row.inbox_id || 'unknown',
+          phone: row.phone || '',
+          trace_id: `stale-handoff-${row.conversation_id}-${cutoff.getTime()}`,
+          handoff_id: row.handoff_id || null,
+          accepted_by: null
+        });
+
+        await logsRepository.save({
+          trace_id: `stale-handoff-${row.conversation_id}`,
+          tenant_id: row.tenant_id,
+          conversation_id: row.conversation_id,
+          contact_id: row.contact_id || 'unknown',
+          event_type: 'HANDOFF_RETURNED_BY_INACTIVITY',
+          metadata: {
+            handoff_id: row.handoff_id,
+            from_stage: row.stage,
+            idle_hours: idleHours,
+            threshold_hours: staleHours,
+            last_activity_at: reference
+          }
+        });
+
+        staleHandoffMetrics.returned += 1;
+        console.log(JSON.stringify({
+          event: 'handoff_returned_by_inactivity',
+          conversation_id: row.conversation_id,
+          from_stage: row.stage,
+          idle_hours: idleHours
+        }));
+      } catch (error: any) {
+        staleHandoffMetrics.failed += 1;
+        staleHandoffMetrics.last_error_code = error?.code || 'STALE_HANDOFF_RETURN_FAILED';
+        console.error(JSON.stringify({
+          event: 'handoff_stale_return_failed',
+          conversation_id: row.conversation_id,
+          error_code: staleHandoffMetrics.last_error_code
+        }));
+      }
+    }
+  } finally {
+    running = false;
+  }
+}
+
+export function startStaleHandoffWorker() {
+  if (process.env.NODE_ENV === 'test') return async () => {};
+  const tick = () => {
+    void runStaleHandoffSweep().catch(error => {
+      staleHandoffMetrics.last_error_code = error?.code || 'STALE_HANDOFF_SWEEP_FAILED';
+      console.error(JSON.stringify({
+        event: 'handoff_stale_sweep_failed',
+        error_code: staleHandoffMetrics.last_error_code
+      }));
+    });
+  };
+  tick();
+  interval = setInterval(tick, Math.max(60_000, config.HELIOS_HANDOFF_SWEEP_MS));
+  return async () => {
+    if (interval) clearInterval(interval);
+    interval = null;
+  };
+}

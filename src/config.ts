@@ -109,6 +109,12 @@ export const config = {
   HELIOS_NOTIFICATION_MAX_ATTEMPTS: envNumber(process.env.HELIOS_NOTIFICATION_MAX_ATTEMPTS, 8),
   HELIOS_NOTIFICATION_POLL_MS: envNumber(process.env.HELIOS_NOTIFICATION_POLL_MS, 15000),
   HELIOS_HUMAN_TRANSCRIPT_LIMIT: envNumber(process.env.HELIOS_HUMAN_TRANSCRIPT_LIMIT, 16),
+  // Mensajes del resumen que ve el equipo en la nota privada y en el aviso.
+  HELIOS_RECAP_MESSAGE_LIMIT: envNumber(process.env.HELIOS_RECAP_MESSAGE_LIMIT, 8),
+  // Un handoff sin actividad más de estas horas vuelve solo a la IA: no se puede
+  // depender de que alguien se acuerde de escribir /fin.
+  HELIOS_HANDOFF_STALE_HOURS: envNumber(process.env.HELIOS_HANDOFF_STALE_HOURS, 5),
+  HELIOS_HANDOFF_SWEEP_MS: envNumber(process.env.HELIOS_HANDOFF_SWEEP_MS, 10 * 60 * 1000),
   TELEGRAM_BOT_TOKEN: (process.env.TELEGRAM_BOT_TOKEN ?? '').trim(),
   TELEGRAM_API_BASE_URL: (process.env.TELEGRAM_API_BASE_URL ?? 'https://api.telegram.org').trim(),
 
