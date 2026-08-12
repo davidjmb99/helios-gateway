@@ -99,16 +99,17 @@ assert.match(note, /Motivo: posible urgencia/, 'el motivo en palabras, no en có
 assert.match(note, /Prioridad: Urgente/, 'la prioridad en castellano');
 assert.match(note, /Para: Responsable Clínico/);
 assert.match(note, /Le interesa: urgencias/);
-assert.match(note, /Lo último que se habló/);
+assert.match(note, /Últimos mensajes de la conversación/);
 assert.match(note, /molestia en una muela/, 'el resumen son los mensajes reales');
 assert.match(note, /Helios: Entiendo/, 'se distingue quién dijo cada cosa');
+assert.match(note, /· \d{2}:\d{2} /, 'cada intervención lleva viñeta y hora para no apelmazarse');
 assert.match(note, /escribe \/fin/, 'la acción requerida explica cómo devolverla');
-assert.match(note, /Referencia interna: 3f2a1b8c/, 'una sola referencia para poder correlacionar');
 
 // Y lo que NO debe aparecer: nada técnico.
 assert.doesNotMatch(note, /possible_urgency/, 'sin códigos internos');
 assert.doesNotMatch(note, /Trace:/, 'sin trazas');
 assert.doesNotMatch(note, /Alta en CRM/, 'el estado del CRM no le dice nada a quien atiende');
+assert.doesNotMatch(note, /Referencia interna/, 'ni identificadores internos al final de la nota');
 assert.doesNotMatch(note, /Conversación: 44/, 'el id de conversación ya lo ve en Chatwoot');
 assert.doesNotMatch(note, /\+34600111222/, 'el teléfono ya lo ve en la ficha del contacto');
 assert.doesNotMatch(note, /xavier@example\.com/, 'sin correo');

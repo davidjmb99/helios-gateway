@@ -20,6 +20,7 @@ import {
 import { resolveTenantContextByTenantId } from './tenants/context.js';
 import { maskPhoneForLog } from './utils/sanitizeForLog.js';
 import { createBatchIdentity, createOutboxIdentity } from './durable/identity.js';
+import { detectSignals } from './chatwoot/normalizer.js';
 import {
   deriveHandoffRequest,
   detectHandoffRequest,
@@ -418,10 +419,23 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       if (patientProfile) patientProfile.chatwoot_display_name = chatwootDisplayName;
     }
 
-    const possibleFrustration = rawMessages.some(m => m.signals?.possible_frustration || false);
-    const possibleEmergency = rawMessages.some(m => m.signals?.possible_emergency || false);
-    const asksForHuman = rawMessages.some(m => m.signals?.asks_for_human || false);
-    const asksForFinancing = rawMessages.some(m => m.signals?.asks_for_financing || false);
+    // Las señales se recalculan aquí sobre el texto consolidado del lote.
+    // No basta con leerlas de las filas: helios_inbound_buffer NO tiene columna
+    // `signals`, así que m.signals es siempre undefined y todo salía en false.
+    // Consecuencia real en producción: Hermes recibía las cuatro señales
+    // apagadas en cada turno, y cada derivación se etiquetaba como «excepción
+    // operativa» con prioridad alta en vez del motivo verdadero.
+    // Se mantiene el OR con la fila para no romper los tests que construyen
+    // mensajes en memoria con signals ya puestas.
+    const batchSignals = detectSignals(consolidatedText);
+    const possibleFrustration =
+      rawMessages.some(m => m.signals?.possible_frustration || false) || batchSignals.possible_frustration;
+    const possibleEmergency =
+      rawMessages.some(m => m.signals?.possible_emergency || false) || batchSignals.possible_emergency;
+    const asksForHuman =
+      rawMessages.some(m => m.signals?.asks_for_human || false) || batchSignals.asks_for_human;
+    const asksForFinancing =
+      rawMessages.some(m => m.signals?.asks_for_financing || false) || batchSignals.asks_for_financing;
 
     const retryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
     const parentTraceId = retryCount > 0 ? rawMessages[0]?.trace_id : null;

@@ -138,7 +138,9 @@ function bufferRow(conversationId: string, contactId: string, body: string, over
     response_idempotency_key: null,
     trace_id: `trace-${conversationId}`,
     phone: '+34600111222',
-    signals: {},
+    // OJO: aquí NO va `signals`. helios_inbound_buffer no tiene esa columna, y
+    // un fixture que se la invente esconde justo el fallo que dejó todas las
+    // derivaciones como «excepción operativa» durante días.
     ...overrides
   };
 }
@@ -414,15 +416,12 @@ adapterScript = {
     ...okReply,
     reply: 'Te paso con el equipo.',
     message_for_client: 'Te paso con el equipo.',
-    handoff_required: true,
-    // Objeto del contrato del ítem 17: esto es lo que antes tumbaba el turno
-    // entero al colarse en un campo booleano.
-    handoff: {
-      reason_code: 'human_requested',
-      priority: 'normal',
-      summary: 'El paciente pide hablar con una persona del equipo.',
-      treatment_interest: 'ortodoncia'
-    }
+    handoff_required: true
+    // SIN objeto `handoff`. El contrato de salida admite exactamente diez claves
+    // raíz y el output guard de Hermes rechaza cualquier otra, así que ese objeto
+    // NO PUEDE llegar nunca en producción. Antes el test lo inyectaba y por eso
+    // pasaba en verde mientras la realidad fallaba: el motivo se daba por bueno
+    // sin ejercitar nunca la deducción a partir del texto del paciente.
   }
 };
 
@@ -432,7 +431,18 @@ assert.equal(adapterRequests.length, 1, 'C1: una sola llamada al Adapter');
 
 const handoffRows = db.table('helios_handoff_events');
 assert.equal(handoffRows.length, 1, 'C2: se registra un único handoff');
-assert.equal(handoffRows[0].reason_code, 'human_requested');
+// El motivo sale del texto del paciente («Quiero hablar con una persona»), que es
+// el único camino que existe de verdad.
+assert.equal(
+  handoffRows[0].reason_code,
+  'human_requested',
+  'C2b: el motivo se deduce del mensaje, no es «excepción operativa»'
+);
+assert.equal(
+  handoffRows[0].priority,
+  'normal',
+  'C2c: la prioridad la marca el motivo verdadero, no el «alta» del cajón de sastre'
+);
 assert.equal(handoffRows[0].destination, 'reception', 'C3: el motivo enruta a Recepción Clínica');
 assert.equal(handoffRows[0].stage, 'human_queue', 'C4: el handoff acaba entregado a la cola humana');
 assert.equal(handoffRows[0].status, 'pending');

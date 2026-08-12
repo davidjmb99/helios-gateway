@@ -24,7 +24,11 @@ export interface ConversationRecap {
   truncated: boolean;
 }
 
-const MAX_LINE_LENGTH = 180;
+// Corto a propósito. En la nota de Chatwoot y en Telegram el ancho es estrecho,
+// y con 180 cada mensaje ocupaba tres o cuatro líneas: el resumen se leía como
+// un muro de texto y dejaba de servir para lo que existe, que es echar un ojo
+// rápido antes de responder.
+const MAX_LINE_LENGTH = 110;
 
 function trimForRecap(text: unknown): string {
   const normalized = String(text ?? '').replace(/\s+/g, ' ').trim();
@@ -94,12 +98,15 @@ function shortTime(at: string, timeZone: string): string {
 /** El resumen en texto plano, tal como lo lee una persona. */
 export function renderRecap(recap: ConversationRecap, timeZone: string): string[] {
   if (recap.messages.length === 0) return [];
+  // La viñeta no es adorno: cuando un mensaje largo se parte en varias líneas,
+  // es lo único que permite ver de un vistazo dónde empieza cada intervención.
   const lines = recap.messages.map(message => {
     const time = shortTime(message.at, timeZone);
-    return `${time ? `${time} ` : ''}${ROLE_LABELS[message.role]}: ${message.text}`;
+    return `· ${time ? `${time} ` : ''}${ROLE_LABELS[message.role]}: ${message.text}`;
   });
   if (recap.truncated) {
     lines.push(
+      '',
       `(Son los últimos ${recap.messages.length} de ${recap.total_messages} mensajes. `
       + 'Conviene leer la conversación completa antes de responder.)'
     );

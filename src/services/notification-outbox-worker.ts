@@ -64,7 +64,7 @@ export function renderTelegramMessage(payload: Record<string, any>): string {
     `Para: ${payload.destination_label ?? payload.destination ?? '—'}`,
     payload.treatment_interest ? `Le interesa: ${payload.treatment_interest}` : null,
     ...(recapLines.length
-      ? ['', 'Lo último que se habló:', ...recapLines]
+      ? ['', 'Últimos mensajes de la conversación:', '', ...recapLines]
       : payload.summary ? ['', `Contexto: ${payload.summary}`] : []),
     '',
     `Abrir la conversación: ${payload.conversation_url ?? '—'}`

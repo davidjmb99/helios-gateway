@@ -35,11 +35,36 @@ export interface NormalizedMessage {
   human_agent_candidate: boolean;
   is_private: boolean;
   raw_payload: any;
-  signals: {
-    possible_frustration: boolean;
-    possible_emergency: boolean;
-    asks_for_human: boolean;
-    asks_for_financing: boolean;
+  signals: MessageSignals;
+}
+
+export interface MessageSignals {
+  possible_frustration: boolean;
+  possible_emergency: boolean;
+  asks_for_human: boolean;
+  asks_for_financing: boolean;
+}
+
+/**
+ * Señales de texto del mensaje del paciente.
+ *
+ * Pura y exportada a propósito, porque las mismas señales hacen falta en dos
+ * sitios: el webhook, que arma el payload para Hermes, y el worker del lote, que
+ * deduce el motivo del handoff.
+ *
+ * IMPORTANTE: no existe columna `signals` en helios_inbound_buffer. El webhook
+ * las calcula y se pierden al insertar la fila, así que el worker NO puede
+ * heredarlas del mensaje: tiene que recalcularlas sobre el texto consolidado.
+ * Cuando esto se pasó por alto, todas las señales llegaban en false y cada
+ * derivación salía como «excepción operativa» con prioridad alta.
+ */
+export function detectSignals(text: unknown): MessageSignals {
+  const t = String(text ?? '').toLowerCase();
+  return {
+    asks_for_human: /humano|agente|persona|hablar con alguien|operador/.test(t),
+    asks_for_financing: /financiar|financiamiento|cuotas|pago fraccionado|crédito|credito|pagar a plazos/.test(t),
+    possible_frustration: /molesto|enfadado|nadie responde|pérdida de tiempo|perdida de tiempo|solucion|queja|mal servicio/.test(t),
+    possible_emergency: /respirar|hinchazon|hinchazón|sangro|sangrando|golpe fuerte|urgencia|emergencia|dolor insoportable/.test(t)
   };
 }
 
@@ -169,12 +194,8 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
     && Boolean(conversation_id)
     && Boolean(message_id);
 
-  // Detección de señales
-  const textLower = text.toLowerCase();
-  const asks_for_human = /humano|agente|persona|hablar con alguien|operador/.test(textLower);
-  const asks_for_financing = /financiar|financiamiento|cuotas|pago fraccionado|crédito|credito|pagar a plazos/.test(textLower);
-  const possible_frustration = /molesto|enfadado|nadie responde|pérdida de tiempo|perdida de tiempo|solucion|queja|mal servicio/.test(textLower);
-  const possible_emergency = /respirar|hinchazon|hinchazón|sangro|sangrando|golpe fuerte|urgencia|emergencia|dolor insoportable/.test(textLower);
+  const { asks_for_human, asks_for_financing, possible_frustration, possible_emergency } =
+    detectSignals(text);
 
   const trace_id = body.trace_id || randomUUID();
 

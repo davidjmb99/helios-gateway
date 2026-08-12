@@ -466,12 +466,10 @@ export function buildPrivateNote(
     `Para: ${destination}`,
     request.treatment_interest ? `Le interesa: ${request.treatment_interest}` : null,
     ...(recapLines.length
-      ? ['', 'Lo último que se habló:', ...recapLines.map(line => `  ${line}`)]
+      ? ['', 'Últimos mensajes de la conversación:', '', ...recapLines]
       : request.summary ? ['', `Contexto: ${request.summary}`] : []),
     '',
-    accion,
-    '',
-    `Referencia interna: ${opened.handoff_id}`
+    accion
   ].filter(line => line !== null).join('\n');
 }
 
