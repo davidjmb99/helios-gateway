@@ -94,15 +94,21 @@ const note = buildPrivateNote(openedHandoff(), verifiedPatient, recapEjemplo);
 
 // Lo que el equipo necesita para actuar sin leer toda la conversación.
 assert.match(note, /Un paciente necesita atención humana/);
-assert.match(note, /Paciente: Xavier Mercado/, 'nombre y apellido');
-assert.match(note, /Motivo: posible urgencia/, 'el motivo en palabras, no en código');
-assert.match(note, /Prioridad: Urgente/, 'la prioridad en castellano');
-assert.match(note, /Para: Responsable Clínico/);
-assert.match(note, /Le interesa: urgencias/);
-assert.match(note, /Últimos mensajes de la conversación/);
+// Markdown de verdad: en Chatwoot un salto de línea suelto no llega al HTML del
+// correo, así que los datos van como lista y no como líneas sueltas.
+assert.match(note, /- \*\*Paciente:\*\* Xavier Mercado/, 'nombre y apellido');
+assert.match(note, /- \*\*Motivo:\*\* posible urgencia/, 'el motivo en palabras, no en código');
+assert.match(note, /- \*\*Prioridad:\*\* Urgente/, 'la prioridad en castellano');
+assert.match(note, /- \*\*Para:\*\* Responsable Clínico/);
+assert.match(note, /- \*\*Le interesa:\*\* urgencias/);
+assert.match(note, /\*\*Últimos mensajes de la conversación\*\*/);
 assert.match(note, /molestia en una muela/, 'el resumen son los mensajes reales');
-assert.match(note, /Helios: Entiendo/, 'se distingue quién dijo cada cosa');
-assert.match(note, /· \d{2}:\d{2} /, 'cada intervención lleva viñeta y hora para no apelmazarse');
+assert.match(note, /Helios:\*\* Entiendo/, 'se distingue quién dijo cada cosa');
+assert.match(
+  note,
+  /^- \*\*\d{2}:\d{2} · (Paciente|Helios|Equipo):\*\* /m,
+  'cada intervención es un punto de lista, con hora y con quién habló'
+);
 assert.match(note, /escribe \/fin/, 'la acción requerida explica cómo devolverla');
 
 // Y lo que NO debe aparecer: nada técnico.

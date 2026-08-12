@@ -452,22 +452,29 @@ export function buildPrivateNote(
     ? 'Helios no ha podido atender el mensaje. Responde tú y avisa a Soporte Helios.'
     : 'Atiende al paciente desde esta conversación. Cuando termines, escribe /fin en una nota privada para devolvérsela a Helios.';
 
+  // Markdown, no texto plano. Chatwoot renderiza el cuerpo de la nota y un salto
+  // de línea suelto se pierde al pasar a HTML: el correo de la mención llegaba
+  // con los cuatro datos y todo el resumen amontonados en un párrafo. Con
+  // encabezado, lista y líneas en blanco entre bloques se lee igual de bien en la
+  // app y en el correo. Que el markdown se procesa está comprobado: la mención
+  // llega como «@Recepción Clínica» y no con su sintaxis cruda.
   const recapLines = recap
-    ? renderRecap(recap, config.CLINIC_TIMEZONE || 'Europe/Madrid')
+    ? renderRecap(recap, config.CLINIC_TIMEZONE || 'Europe/Madrid', 'markdown')
     : [];
 
   return [
-    'Un paciente necesita atención humana',
+    '**Un paciente necesita atención humana**',
+    '',
     mention,
     '',
-    `Paciente: ${nombre || 'todavía no ha dado su nombre'}`,
-    `Motivo: ${REASON_LABELS[request.reason_code] || request.reason_code}`,
-    `Prioridad: ${PRIORITY_LABELS_ES[request.priority] ?? request.priority}`,
-    `Para: ${destination}`,
-    request.treatment_interest ? `Le interesa: ${request.treatment_interest}` : null,
+    `- **Paciente:** ${nombre || 'todavía no ha dado su nombre'}`,
+    `- **Motivo:** ${REASON_LABELS[request.reason_code] || request.reason_code}`,
+    `- **Prioridad:** ${PRIORITY_LABELS_ES[request.priority] ?? request.priority}`,
+    `- **Para:** ${destination}`,
+    request.treatment_interest ? `- **Le interesa:** ${request.treatment_interest}` : null,
     ...(recapLines.length
-      ? ['', 'Últimos mensajes de la conversación:', '', ...recapLines]
-      : request.summary ? ['', `Contexto: ${request.summary}`] : []),
+      ? ['', '**Últimos mensajes de la conversación**', '', ...recapLines]
+      : request.summary ? ['', `**Contexto:** ${request.summary}`] : []),
     '',
     accion
   ].filter(line => line !== null).join('\n');

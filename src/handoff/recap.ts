@@ -106,8 +106,25 @@ function localDayKey(at: string, timeZone: string): string {
   }
 }
 
-/** El resumen en texto plano, tal como lo lee una persona. */
-export function renderRecap(recap: ConversationRecap, timeZone: string): string[] {
+/**
+ * Estilo de salida del resumen.
+ *
+ * 'markdown' es para la nota privada de Chatwoot: allí el cuerpo se renderiza
+ * como markdown y un salto de línea suelto NO produce un salto en el HTML, así
+ * que el correo de la mención llegaba todo apelmazado en un párrafo. Con lista
+ * de verdad cada intervención es un bloque y se respeta en los dos sitios.
+ *
+ * 'plain' es para Telegram, que muestra el texto tal cual: allí los asteriscos
+ * se verían como asteriscos.
+ */
+export type RecapStyle = 'plain' | 'markdown';
+
+/** El resumen tal como lo lee una persona. */
+export function renderRecap(
+  recap: ConversationRecap,
+  timeZone: string,
+  style: RecapStyle = 'plain'
+): string[] {
   if (recap.messages.length === 0) return [];
   // La viñeta no es adorno: cuando un mensaje largo se parte en varias líneas,
   // es lo único que permite ver de un vistazo dónde empieza cada intervención.
@@ -118,14 +135,15 @@ export function renderRecap(recap: ConversationRecap, timeZone: string): string[
   const withDate = days.size > 1;
   const lines = recap.messages.map(message => {
     const stamp = formatStamp(message.at, timeZone, withDate);
-    return `· ${stamp ? `${stamp} ` : ''}${ROLE_LABELS[message.role]}: ${message.text}`;
+    const head = `${stamp ? `${stamp} · ` : ''}${ROLE_LABELS[message.role]}`;
+    return style === 'markdown'
+      ? `- **${head}:** ${message.text}`
+      : `· ${head}: ${message.text}`;
   });
   if (recap.truncated) {
-    lines.push(
-      '',
-      `(Son los últimos ${recap.messages.length} de ${recap.total_messages} mensajes. `
-      + 'Conviene leer la conversación completa antes de responder.)'
-    );
+    const aviso = `(Son los últimos ${recap.messages.length} de ${recap.total_messages} mensajes. `
+      + 'Conviene leer la conversación completa antes de responder.)';
+    lines.push('', style === 'markdown' ? `_${aviso}_` : aviso);
   }
   return lines;
 }
