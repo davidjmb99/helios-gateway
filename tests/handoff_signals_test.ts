@@ -115,16 +115,22 @@ assert.equal(
 
 assert.equal(
   interpret({
-    labels: ['urgente'],
+    labels: ['helios-fallo-tecnico'],
     meta: { team: { id: 5, name: 'Soporte Helios' } }
   }).target,
   'handoff_failed',
-  'urgente + Soporte Helios es un handoff fallido'
+  'helios-fallo-tecnico + Soporte Helios es un handoff fallido'
 );
 assert.equal(
-  interpret({ labels: ['urgente'], meta: { team: { id: 3, name: 'Recepción Clínica' } } }).target,
+  interpret({ labels: ['helios-fallo-tecnico'], meta: { team: { id: 3, name: 'Recepción Clínica' } } }).target,
   null,
-  'urgente sin Soporte Helios no significa handoff fallido'
+  'la etiqueta de fallo sin Soporte Helios no significa handoff fallido'
+);
+// 'urgente' es de la clínica: Helios no la interpreta ni la toca.
+assert.equal(
+  interpret({ labels: ['urgente'], meta: { team: { id: 5, name: 'Soporte Helios' } } }).target,
+  null,
+  'una etiqueta de la clínica no dispara nada en Helios'
 );
 
 assert.equal(

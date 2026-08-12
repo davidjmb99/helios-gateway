@@ -14,6 +14,7 @@ const { clearHandoffRoutingCache, resolveHandoffRouting } = await import('../src
 const {
   buildNotificationPayload,
   buildPrivateNote,
+  buildRecapNote,
   resolveTransitionMessage
 } = await import('../src/handoff/service.js');
 const { renderTelegramMessage } = await import('../src/services/notification-outbox-worker.js');
@@ -90,7 +91,7 @@ const recapEjemplo = {
   truncated: false
 };
 
-const note = buildPrivateNote(openedHandoff(), verifiedPatient, recapEjemplo);
+const note = buildPrivateNote(openedHandoff(), verifiedPatient);
 
 // Lo que el equipo necesita para actuar sin leer toda la conversación.
 assert.match(note, /Un paciente necesita atención humana/);
@@ -101,15 +102,17 @@ assert.match(note, /- \*\*Motivo:\*\* posible urgencia/, 'el motivo en palabras,
 assert.match(note, /- \*\*Prioridad:\*\* Urgente/, 'la prioridad en castellano');
 assert.match(note, /- \*\*Para:\*\* Responsable Clínico/);
 assert.match(note, /- \*\*Le interesa:\*\* urgencias/);
-assert.match(note, /\*\*Últimos mensajes de la conversación\*\*/);
-assert.match(note, /molestia en una muela/, 'el resumen son los mensajes reales');
-assert.match(note, /Helios:\*\* Entiendo/, 'se distingue quién dijo cada cosa');
-assert.match(
-  note,
-  /^- \*\*\d{2}:\d{2} · (Paciente|Helios|Equipo):\*\* /m,
-  'cada intervención es un punto de lista, con hora y con quién habló'
-);
 assert.match(note, /escribe \/fin/, 'la acción requerida explica cómo devolverla');
+
+// El resumen NO viaja en la nota de la mención. Esa es la que Chatwoot convierte
+// en correo, y al correo le añade por su cuenta su bloque «Previous messages»: con
+// el resumen dentro, la misma conversación llegaba dos veces.
+assert.doesNotMatch(
+  note,
+  /Últimos mensajes de la conversación/,
+  'el resumen va en su propia nota, no en la de la mención'
+);
+assert.doesNotMatch(note, /molestia en una muela/, 'y por tanto el correo no lo repite');
 
 // Y lo que NO debe aparecer: nada técnico.
 assert.doesNotMatch(note, /possible_urgency/, 'sin códigos internos');
@@ -120,21 +123,45 @@ assert.doesNotMatch(note, /Conversación: 44/, 'el id de conversación ya lo ve 
 assert.doesNotMatch(note, /\+34600111222/, 'el teléfono ya lo ve en la ficha del contacto');
 assert.doesNotMatch(note, /xavier@example\.com/, 'sin correo');
 
+// --- La nota del resumen: aparte y SIN mención ------------------------------
+// Una nota privada sin mención no dispara correo a nadie. Eso es lo que permite
+// que el resumen se vea en Chatwoot, donde hace falta, sin viajar duplicado.
+
+const recapNote = buildRecapNote(recapEjemplo) ?? '';
+assert.ok(recapNote.length > 0, 'con mensajes sí hay nota de resumen');
+assert.match(recapNote, /\*\*Últimos mensajes de la conversación\*\*/);
+assert.match(recapNote, /molestia en una muela/, 'el resumen son los mensajes reales');
+assert.match(recapNote, /Helios:\*\* Entiendo/, 'se distingue quién dijo cada cosa');
+assert.match(
+  recapNote,
+  /^- \*\*\d{2}:\d{2} · (Paciente|Helios|Equipo):\*\* /m,
+  'cada intervención es un punto de lista, con hora y con quién habló'
+);
+assert.doesNotMatch(
+  recapNote,
+  /mention:\/\//,
+  'SIN mención: es justo lo que evita el segundo correo'
+);
+
 // Conversación larga: hay que recomendar leerla entera.
-const notaLarga = buildPrivateNote(openedHandoff(), verifiedPatient, {
+const resumenLargo = buildRecapNote({
   messages: recapEjemplo.messages,
   total_messages: 42,
   truncated: true
-});
-assert.match(notaLarga, /de 42 mensajes/);
-assert.match(notaLarga, /leer la conversación completa/);
+}) ?? '';
+assert.match(resumenLargo, /de 42 mensajes/);
+assert.match(resumenLargo, /leer la conversación completa/);
+
+// Sin nada que resumir no se crea ninguna nota: nada de notas vacías.
+assert.equal(buildRecapNote(null), null);
+assert.equal(buildRecapNote({ messages: [], total_messages: 0, truncated: false }), null);
 
 const noteWithoutIdentity = buildPrivateNote(openedHandoff(), {
   first_name: null,
   last_name: null,
   identity_complete: false,
   crm_synced: false
-}, recapEjemplo);
+});
 assert.match(noteWithoutIdentity, /todavía no ha dado su nombre/);
 assert.doesNotMatch(noteWithoutIdentity, /Xavier/);
 

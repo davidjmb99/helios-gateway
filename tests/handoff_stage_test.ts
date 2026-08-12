@@ -321,10 +321,21 @@ assert.equal(labelForStage(fallback, 'human_queue'), 'helios-nuevo');
 assert.equal(labelForStage(fallback, 'handoff_requested'), 'helios-nuevo');
 assert.equal(labelForStage(fallback, 'human_active'), 'helios-en-curso');
 assert.equal(labelForStage(fallback, 'return_requested'), 'helios-retorno-solicitado');
-assert.equal(labelForStage(fallback, 'handoff_failed'), 'urgente');
+assert.equal(labelForStage(fallback, 'handoff_failed'), 'helios-fallo-tecnico');
 assert.equal(labelForStage(fallback, 'bot_active'), null);
-assert.equal(managedLabels(fallback).includes('urgente'), false, 'la prioridad nativa no se retira sola');
-assert.equal(managedLabels(fallback).length, 4);
+
+// INVARIANTE: Helios solo toca etiquetas de su propio espacio de nombres, y TODAS
+// las suyas se retiran al devolver la conversación a la IA. Antes la de fallo
+// técnico era 'urgente', una etiqueta de la clínica, y no estaba en la lista de
+// limpieza: se aplicaba y quedaba pegada para siempre. Ponerla en la lista sin
+// renombrarla habría sido peor, porque habría borrado la que pusiera a mano una
+// persona del equipo.
+assert.equal(managedLabels(fallback).includes('helios-fallo-tecnico'), true);
+assert.equal(managedLabels(fallback).length, 5);
+assert.ok(
+  managedLabels(fallback).every(label => label.startsWith('helios-')),
+  'ninguna etiqueta gestionada es de la clínica'
+);
 
 assert.equal(
   conversationDeepLink('https://chat.example.com/', '2', '44'),
