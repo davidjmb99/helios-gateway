@@ -80,18 +80,29 @@ export function buildRecap(
   };
 }
 
-/** Hora local legible, sin fecha: el equipo mira la conversación del día. */
-function shortTime(at: string, timeZone: string): string {
+function formatStamp(at: string, timeZone: string, withDate: boolean): string {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return '';
+  const options: Intl.DateTimeFormatOptions = withDate
+    ? { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }
+    : { hour: '2-digit', minute: '2-digit' };
+  try {
+    return new Intl.DateTimeFormat('es-ES', { ...options, timeZone }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat('es-ES', options).format(date);
+  }
+}
+
+/** Día local del mensaje, para saber si el resumen cruza la medianoche. */
+function localDayKey(at: string, timeZone: string): string {
   const date = new Date(at);
   if (Number.isNaN(date.getTime())) return '';
   try {
-    return new Intl.DateTimeFormat('es-ES', {
-      hour: '2-digit',
-      minute: '2-digit',
-      timeZone
+    return new Intl.DateTimeFormat('en-CA', {
+      year: 'numeric', month: '2-digit', day: '2-digit', timeZone
     }).format(date);
   } catch {
-    return new Intl.DateTimeFormat('es-ES', { hour: '2-digit', minute: '2-digit' }).format(date);
+    return date.toISOString().slice(0, 10);
   }
 }
 
@@ -100,9 +111,14 @@ export function renderRecap(recap: ConversationRecap, timeZone: string): string[
   if (recap.messages.length === 0) return [];
   // La viñeta no es adorno: cuando un mensaje largo se parte en varias líneas,
   // es lo único que permite ver de un vistazo dónde empieza cada intervención.
+  // Si el resumen cruza la medianoche hay que poner la fecha. Sin ella se lee
+  // «23:39» encima de «18:00» y parece que el orden está mal, cuando en realidad
+  // el primero es de anoche. Pasó de verdad con una derivación de dos días.
+  const days = new Set(recap.messages.map(m => localDayKey(m.at, timeZone)));
+  const withDate = days.size > 1;
   const lines = recap.messages.map(message => {
-    const time = shortTime(message.at, timeZone);
-    return `· ${time ? `${time} ` : ''}${ROLE_LABELS[message.role]}: ${message.text}`;
+    const stamp = formatStamp(message.at, timeZone, withDate);
+    return `· ${stamp ? `${stamp} ` : ''}${ROLE_LABELS[message.role]}: ${message.text}`;
   });
   if (recap.truncated) {
     lines.push(
