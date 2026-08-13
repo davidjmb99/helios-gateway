@@ -78,10 +78,19 @@ function nativePriority(priority: string): 'low' | 'medium' | 'high' | 'urgent' 
   return null;
 }
 
+/**
+ * Nombres de los equipos TAL COMO EXISTEN EN CHATWOOT. No son decorativos: de
+ * aquí sale el texto de la mención, así que si no coinciden con el equipo real el
+ * equipo lee un nombre que no reconoce.
+ *
+ * Actualizados el 13-08-2026, cuando la clínica reorganizó sus equipos:
+ * «Helios Recepción Digital» es la IA y NO es destino de derivación; las personas
+ * están en «Equipo De Recepción» y los fallos técnicos en «Soporte Técnico Helios».
+ */
 const DESTINATION_LABELS: Record<string, string> = {
-  reception: 'Recepción Clínica',
-  clinical_lead: 'Responsable Clínico',
-  helios_support: 'Soporte Helios'
+  reception: 'Equipo De Recepción',
+  clinical_lead: 'Equipo De Recepción',
+  helios_support: 'Soporte Técnico Helios'
 };
 
 /**
@@ -131,7 +140,24 @@ export async function openHandoff(input: OpenHandoffInput): Promise<OpenedHandof
     contact_id: input.contact_id,
     trigger_key: input.trigger_key
   });
-  const destinationTeamId = routing.teams[request.destination] ?? null;
+  // RESPALDO DE DESTINO. Una derivación NUNCA puede quedarse sin equipo: sin
+  // equipo no hay mención ni asignación, y nadie se enteraría. El caso que lo
+  // motiva es real: la clínica reorganizó sus equipos y desapareció el de
+  // «Responsable Clínico», al que apuntaban `clinical_question` y
+  // `possible_urgency`. Sin este respaldo, la derivación por POSIBLE URGENCIA —el
+  // caso más grave que existe— habría quedado sin nadie asignado.
+  // El respaldo va a recepción porque es quien está siempre presente, y queda
+  // registrado para que un destino mal configurado sea visible y no silencioso.
+  const requestedTeamId = routing.teams[request.destination] ?? null;
+  const destinationTeamId = requestedTeamId ?? routing.teams.reception ?? null;
+  if (!requestedTeamId && destinationTeamId) {
+    console.warn(JSON.stringify({
+      event: 'handoff_destination_team_fallback',
+      requested_destination: request.destination,
+      fell_back_to: 'reception',
+      reason_code: request.reason_code
+    }));
+  }
   const now = new Date().toISOString();
 
   const { created } = await handoffEventRepository.createOrGet({
@@ -468,7 +494,7 @@ export function buildPrivateNote(
     : null;
 
   const accion = request.origin === 'technical_failure'
-    ? 'Helios no ha podido atender el mensaje. Responde tú y avisa a Soporte Helios.'
+    ? 'Helios no ha podido atender el mensaje. Responde tú y avisa a Soporte Técnico Helios.'
     : 'Atiende al paciente desde esta conversación. Cuando termines, escribe /fin en una nota privada para devolvérsela a Helios.';
 
   // Markdown, no texto plano. Chatwoot renderiza el cuerpo de la nota y un salto

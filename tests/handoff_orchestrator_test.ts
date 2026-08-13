@@ -443,7 +443,7 @@ assert.equal(
   'normal',
   'C2c: la prioridad la marca el motivo verdadero, no el «alta» del cajón de sastre'
 );
-assert.equal(handoffRows[0].destination, 'reception', 'C3: el motivo enruta a Recepción Clínica');
+assert.equal(handoffRows[0].destination, 'reception', 'C3: el motivo enruta a Equipo De Recepción');
 assert.equal(handoffRows[0].stage, 'human_queue', 'C4: el handoff acaba entregado a la cola humana');
 assert.equal(handoffRows[0].status, 'pending');
 
@@ -492,7 +492,7 @@ addSection({
   facts: [
     { label: 'Mensajes de aviso al paciente', value: '1 (ni cero ni dos)', good: true },
     { label: 'Lo que se le dice', value: outboxC[0].content, good: true },
-    { label: 'A qué equipo va', value: 'Recepción Clínica', good: true },
+    { label: 'A qué equipo va', value: 'Equipo De Recepción', good: true },
     { label: 'Quién lleva ahora la conversación', value: 'el equipo humano', good: true },
     { label: 'Avisos al equipo creados', value: '1', good: true },
     { label: 'Estado del aviso de Telegram', value: 'esperando: falta configurar el bot', good: false },
@@ -504,7 +504,7 @@ addSection({
     rows: [[
       'el paciente pide una persona',
       handoffRows[0].priority,
-      'Recepción Clínica',
+      'Equipo De Recepción',
       'en cola del equipo'
     ]]
   }],

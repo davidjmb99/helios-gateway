@@ -100,7 +100,7 @@ assert.match(note, /Un paciente necesita atención humana/);
 assert.match(note, /- \*\*Paciente:\*\* Xavier Mercado/, 'nombre y apellido');
 assert.match(note, /- \*\*Motivo:\*\* posible urgencia/, 'el motivo en palabras, no en código');
 assert.match(note, /- \*\*Prioridad:\*\* Urgente/, 'la prioridad en castellano');
-assert.match(note, /- \*\*Para:\*\* Responsable Clínico/);
+assert.match(note, /- \*\*Para:\*\* Equipo De Recepción/);
 assert.match(note, /- \*\*Le interesa:\*\* urgencias/);
 assert.match(note, /escribe \/fin/, 'la acción requerida explica cómo devolverla');
 
@@ -170,10 +170,12 @@ assert.doesNotMatch(noteWithoutIdentity, /Xavier/);
 const { teamMention } = await import('../src/handoff/service.js');
 assert.equal(
   teamMention('3', 'reception'),
-  '[@Recepción Clínica](mention://team/3/recepcion-clinica)',
+  '[@Equipo De Recepción](mention://team/3/equipo-de-recepcion)',
   'el formato es el que verifica MentionService de Chatwoot'
 );
-assert.equal(teamMention('4', 'clinical_lead'), '[@Responsable Clínico](mention://team/4/responsable-clinico)');
+// Las preguntas clínicas y las urgencias van al mismo equipo de recepción: la
+// clínica no tiene equipo clínico propio desde la reorganización del 13-08-2026.
+assert.equal(teamMention('4', 'clinical_lead'), '[@Equipo De Recepción](mention://team/4/equipo-de-recepcion)');
 assert.equal(teamMention(null, 'reception'), null, 'sin ID configurado no se inventa mención');
 assert.equal(teamMention('   ', 'reception'), null);
 
@@ -183,7 +185,7 @@ const notaConEquipo = buildPrivateNote(
 );
 assert.match(
   notaConEquipo,
-  /\[@Recepción Clínica\]\(mention:\/\/team\/3\/recepcion-clinica\)/,
+  /\[@Equipo De Recepción\]\(mention:\/\/team\/3\/equipo-de-recepcion\)/,
   'la nota menciona al equipo cuando hay ID configurado'
 );
 assert.doesNotMatch(note, /mention:\/\//, 'sin ID configurado la nota no lleva mención');
@@ -194,8 +196,8 @@ const technicalNote = buildPrivateNote(
   }),
   verifiedPatient
 );
-assert.match(technicalNote, /Soporte Helios/);
-assert.match(technicalNote, /avisa a Soporte Helios/, 'la acción requerida cambia en un fallo técnico');
+assert.match(technicalNote, /Soporte Técnico Helios/);
+assert.match(technicalNote, /avisa a Soporte Técnico Helios/, 'la acción requerida cambia en un fallo técnico');
 
 // --- Alerta al equipo -------------------------------------------------------
 

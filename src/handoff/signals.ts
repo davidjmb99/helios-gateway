@@ -75,8 +75,14 @@ export interface SignalInterpretation {
 export function isSupportTeam(signal: ConversationSignal, routing: HandoffRouting): boolean {
   const configuredId = routing.teams.helios_support;
   if (configuredId && signal.team_id === configuredId) return true;
+  // Respaldo por nombre, para cuando el ID no está configurado todavía. Se buscan
+  // las dos palabras por separado y NO la frase exacta: la clínica renombró el
+  // equipo a «Soporte Técnico Helios» el 13-08-2026, y un `includes('soporte
+  // helios')` dejó de coincidir por la palabra intercalada. Este respaldo existe
+  // precisamente para el rato en que el ID aún no está puesto, así que no puede
+  // depender del orden ni de las palabras exactas del nombre.
   const name = (signal.team_name || '').toLowerCase();
-  return name.includes('soporte helios');
+  return name.includes('soporte') && name.includes('helios');
 }
 
 /**
