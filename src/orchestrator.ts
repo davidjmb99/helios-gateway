@@ -124,6 +124,23 @@ export function clearOrchestratorCache() {
   activeProcessing.clear();
 }
 
+/**
+ * ¿Va a reintentarlo alguien de verdad?
+ *
+ * Marcar un fallo como «recuperable» solo tiene sentido si existe un worker que lo
+ * vuelva a intentar. Con HELIOS_RECOVERY_MODE en `observe` o `disabled` NADIE
+ * reprocesa: el mensaje queda marcado para reintento, el contador nunca llega a
+ * cinco, la escalada por fallo definitivo NUNCA se dispara y el mensaje del
+ * paciente se muere en silencio. Es exactamente lo que el requisito A prohíbe.
+ *
+ * Así que la pregunta correcta no es «¿es este fallo recuperable?» sino «¿hay
+ * alguien que lo vaya a recuperar?». Si no lo hay, el fallo ES definitivo ahora
+ * mismo y tiene que escalar a Soporte Técnico Helios en el primer intento.
+ */
+function aiRecoveryIsRunning(): boolean {
+  return ['ai_only', 'full'].includes(config.HELIOS_RECOVERY_MODE);
+}
+
 export async function processBufferEvent(tenantId: string, conversationId: string, traceId: string): Promise<void> {
   const key = `${tenantId}:${conversationId}`;
   // Con el flag apagado, un handoff solo levanta el booleano legacy: sin efectos
@@ -583,7 +600,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       // Solo cuando el fallo es definitivo escala a una persona (requisito A).
       const ids = rawMessages.map(m => m.id);
       const retryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
-      const definitiveFailure = hermesResponse.recoverable === false || retryCount >= 5;
+      const definitiveFailure = hermesResponse.recoverable === false
+        || retryCount >= 5
+        || !aiRecoveryIsRunning();
       if (definitiveFailure) {
         await bufferRepository.markFailed(ids, errorCode);
       } else {
@@ -1151,7 +1170,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       else if (errStr.includes('503') || errStr.includes('502')) errorCode = 'HERMES_UNAVAILABLE';
 
       const maxRetryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
-      const definitiveFailure = !isRecoverable || maxRetryCount >= 5;
+      const definitiveFailure = !isRecoverable
+        || maxRetryCount >= 5
+        || !aiRecoveryIsRunning();
       if (isRecoverable) {
         if (maxRetryCount < 5) {
           await bufferRepository.markRecoverableError(ids, errorCode, maxRetryCount);

@@ -114,7 +114,7 @@ function renderSection(section: ReportSection, index: number): string {
         </ul>
       </div>
 
-      ${section.tables.length ? `<div class="bloque"><h3>Cómo quedaron los datos</h3>${section.tables.map(renderTable).join('')}</div>` : ''}
+      ${section.tables?.length ? `<div class="bloque"><h3>Cómo quedaron los datos</h3>${section.tables.map(renderTable).join('')}</div>` : ''}
 
       <p class="conclusion">${escapeHtml(section.conclusion)}</p>
     </section>`;

@@ -86,7 +86,7 @@ startReport({
   title: 'Verificación del handoff de Helios',
   subtitle: 'Seis escenarios ejecutados sobre el orquestador real, sin tocar producción.',
   outputPath: 'verificacion-handoff.html',
-  expectedSections: 6
+  expectedSections: 7
 });
 
 /** Filas del buffer en formato legible para el informe. */
@@ -735,7 +735,103 @@ addSection({
 });
 
 // ===========================================================================
+// ESCENARIO G — un error de contrato acaba en Soporte Técnico Helios
+// ===========================================================================
+// El operador lo pidió explícitamente: "cuando haya un problema técnico, un error
+// de Helios, por ejemplo por contrato, se pase al equipo de soporte técnico".
+//
+// Este camino NO estaba cubierto de punta a punta. Solo se probaba la función que
+// construye la nota, con un objeto de fallo técnico ya montado a mano: exactamente
+// el mismo patrón que dejó pasar el fallo de las señales (HEL-046). Aquí el fallo
+// lo produce el Adapter de verdad y la escalada tiene que salir sola.
+
+db = freshDatabase();
+db.seed('helios_inbound_buffer', [bufferRow('108', '20', 'Quiero pedir cita para una limpieza')]);
+db.seed('helios_conversation_state', [stateRow('108', '20')]);
+db.seed('helios_patient_profiles', [patientRow('20')]);
+
+// Respuesta que VIOLA el contrato: le falta message_for_client y manda un tipo
+// que no existe. Es lo que llega cuando el modelo se sale del formato pactado.
+adapterScript = {
+  status: 200,
+  body: {
+    ok: true,
+    reply: 'algo',
+    safe_to_send: 'quizás',
+    operation: { type: 'inventado_por_el_modelo', status: 'success' }
+  }
+};
+
+await processBufferEvent(TENANT, '108', 'trace-108');
+
+const tecnicos = db.table('helios_handoff_events');
+assert.equal(tecnicos.length, 1, 'G1: el fallo de contrato genera una derivación');
+assert.equal(
+  tecnicos[0].origin,
+  'technical_failure',
+  'G2: consta como fallo técnico, no como derivación clínica'
+);
+assert.equal(
+  tecnicos[0].destination,
+  'helios_support',
+  'G3: va a Soporte Técnico Helios, NO al equipo de recepción'
+);
+assert.equal(
+  tecnicos[0].stage,
+  'handoff_failed',
+  'G4: la etapa es la que espera el equipo técnico'
+);
+
+// Un error de contrato NO es un fallo de red: no se reintenta cinco veces antes
+// de avisar. Se escala en el primer intento, porque reintentar no lo va a arreglar.
+const bufferG = db.table('helios_inbound_buffer');
+assert.equal(bufferG[0].failed_at !== null, true, 'G5: el mensaje se marca fallido de inmediato');
+assert.equal(bufferG[0].retry_count, 0, 'G6: sin reintentos: reintentar un error de contrato es inútil');
+
+// Requisito A: el paciente no puede quedarse sin nada, pero tampoco recibe un
+// mensaje automático de disculpa. Lo atiende una persona.
+const outboxG = db.table('helios_chatwoot_outbox');
+assert.equal(outboxG.length, 0, 'G7: no se le manda al paciente ningún mensaje automático');
+
+const estadoG = db.table('helios_conversation_state')[0];
+assert.equal(estadoG.stage, 'handoff_failed', 'G8: la conversación queda en manos del equipo técnico');
+assert.equal(estadoG.human_handoff_active, true, 'G9: y Hermes deja de contestar');
+
+// La conversación queda además fuera de la encuesta de satisfacción: no se le
+// pregunta "¿qué tal el servicio?" a quien acaba de sufrir un fallo.
+assert.equal(
+  estadoG.csat_excluded_reason,
+  'technical_failure',
+  'G10: excluida de la encuesta, y con el motivo más grave registrado'
+);
+
+addSection({
+  id: 'G',
+  title: 'Helios se sale del contrato en mitad de una petición de cita',
+  question: '¿Quién se entera, y adónde va la conversación?',
+  inputs: ['Quiero pedir cita para una limpieza  (el Adapter responde fuera de contrato)'],
+  facts: [
+    { label: 'A qué equipo va', value: 'Soporte Técnico Helios', good: true },
+    { label: 'Etapa de la conversación', value: 'Fallo técnico', good: true },
+    { label: 'Reintentos antes de avisar', value: '0', good: true },
+    { label: 'Mensajes automáticos al paciente', value: '0', good: true },
+    { label: '¿Sigue contestando la IA?', value: 'no', good: true },
+    { label: 'Encuesta de satisfacción', value: 'excluida', good: true }
+  ],
+  tables: [{
+    caption: 'La derivación que se crea sola',
+    columns: ['Origen', 'A qué equipo', 'Etapa'],
+    rows: db.table('helios_handoff_events').map((row: any) => [
+      row.origin === 'technical_failure' ? 'fallo técnico' : row.origin,
+      row.destination === 'helios_support' ? 'Soporte Técnico Helios' : row.destination,
+      row.stage === 'handoff_failed' ? 'Fallo técnico' : row.stage
+    ])
+  }],
+  conclusion: 'Un error de contrato no se reintenta: reintentarlo no lo arregla. Se avisa al equipo técnico en el primer intento y el paciente pasa a manos de una persona, sin recibir una disculpa automática que no resolvería nada.'
+});
+
+// ===========================================================================
 
 await new Promise<void>(resolve => adapterServer.close(() => resolve()));
 
-console.log('handoff_orchestrator_test: PASS (6 escenarios end-to-end sobre processBufferEvent)');
+console.log('handoff_orchestrator_test: PASS (7 escenarios end-to-end sobre processBufferEvent)');
