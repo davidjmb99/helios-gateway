@@ -190,14 +190,57 @@ assert.match(
 );
 assert.doesNotMatch(note, /mention:\/\//, 'sin ID configurado la nota no lleva mención');
 
+// --- Fallo técnico: DOS equipos, con encargos distintos ---------------------
+// Si solo se avisara a soporte, el paciente esperaría respuesta de un equipo que
+// arregla programas y no atiende pacientes. Y si solo se avisara a recepción,
+// nadie arreglaría el fallo. Hacen falta los dos, y cada uno con su encargo.
+
 const technicalNote = buildPrivateNote(
   openedHandoff({
-    request: normalizeHandoffRequest({ reason_code: 'operational_exception' }, 'technical_failure')
+    request: normalizeHandoffRequest({
+      reason_code: 'operational_exception',
+      // El mismo texto que escribe escalateTechnicalFailure en produccion.
+      summary: 'Helios no pudo atender el mensaje: ADAPTER_UNSAFE_RESPONSE en hermes.call.'
+    }, 'technical_failure'),
+    destination_team_id: '2',
+    support_team_id: '3'
   }),
   verifiedPatient
 );
-assert.match(technicalNote, /Soporte Técnico Helios/);
-assert.match(technicalNote, /avisa a Soporte Técnico Helios/, 'la acción requerida cambia en un fallo técnico');
+
+assert.match(technicalNote, /Helios ha tenido un fallo técnico/);
+assert.match(
+  technicalNote,
+  /\[@Equipo De Recepción\]\(mention:\/\/team\/2\/[^)]+\) — continúa tú la conversación/,
+  'recepción sigue con el paciente, y se le dice explícitamente'
+);
+assert.match(
+  technicalNote,
+  /\[@Soporte Técnico Helios\]\(mention:\/\/team\/3\/[^)]+\) — revisad el error/,
+  'soporte se entera para arreglarlo, sin quedarse la conversación'
+);
+assert.match(
+  technicalNote,
+  /El paciente ya ha recibido un aviso/,
+  'y consta que al paciente ya se le ha dicho algo: no se queda callado'
+);
+// Al revés que en una derivación normal, aquí el detalle técnico SÍ es útil:
+// es por donde empieza a mirar quien tiene que arreglarlo.
+assert.match(technicalNote, /- \*\*Qué falló:\*\*/, 'soporte necesita saber qué falló');
+assert.match(technicalNote, /escribe \/fin/, 'y el retorno se explica igual que siempre');
+
+// Sin equipo de soporte configurado la nota no se rompe: recepción sigue
+// avisada, que es lo que impide que el paciente se quede sin nadie.
+const soloRecepcion = buildPrivateNote(
+  openedHandoff({
+    request: normalizeHandoffRequest({ reason_code: 'operational_exception' }, 'technical_failure'),
+    destination_team_id: '2',
+    support_team_id: null
+  }),
+  verifiedPatient
+);
+assert.match(soloRecepcion, /continúa tú la conversación/);
+assert.doesNotMatch(soloRecepcion, /revisad el error/);
 
 // --- Alerta al equipo -------------------------------------------------------
 

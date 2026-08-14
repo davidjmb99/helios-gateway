@@ -26,7 +26,7 @@ import { chatwootClient } from '../chatwoot/client.js';
 import { logsRepository, stateRepository, bufferRepository } from '../repositories/database.js';
 import { handoffEventRepository, notificationOutboxRepository } from '../repositories/handoff.js';
 import { outboxRepository } from '../repositories/durable.js';
-import { createHandoffIdentity, shortFingerprint } from '../durable/identity.js';
+import { createHandoffIdentity, createOutboxIdentity, shortFingerprint } from '../durable/identity.js';
 import { ConversationRecap, buildRecap, renderRecap } from './recap.js';
 import type { TenantContext } from '../tenants/context.js';
 import {
@@ -61,7 +61,13 @@ export interface OpenedHandoff {
   created: boolean;
   routing: HandoffRouting;
   request: NormalizedHandoffRequest;
+  /** Quién ATIENDE al paciente y se queda la conversación asignada. */
   destination_team_id: string | null;
+  /**
+   * Quién más tiene que enterarse, sin quedarse la conversación. Hoy solo se usa
+   * en los fallos técnicos: soporte arregla el error, pero NO atiende pacientes.
+   */
+  support_team_id: string | null;
   conversation_id: string;
   contact_id: string;
   inbox_id: string;
@@ -148,8 +154,18 @@ export async function openHandoff(input: OpenHandoffInput): Promise<OpenedHandof
   // caso más grave que existe— habría quedado sin nadie asignado.
   // El respaldo va a recepción porque es quien está siempre presente, y queda
   // registrado para que un destino mal configurado sea visible y no silencioso.
-  const requestedTeamId = routing.teams[request.destination] ?? null;
+  //
+  // UN FALLO TÉCNICO TIENE DOS DESTINATARIOS DISTINTOS, y confundirlos deja al
+  // paciente esperando a alguien que no le va a escribir: el equipo técnico
+  // arregla errores, no atiende pacientes. Así que la conversación se ASIGNA a
+  // recepción, que es quien sigue hablando con el paciente, y a soporte se le
+  // MENCIONA para que vea el error y lo arregle.
+  const isTechnical = request.origin === 'technical_failure';
+  const requestedTeamId = isTechnical
+    ? (routing.teams.reception ?? null)
+    : (routing.teams[request.destination] ?? null);
   const destinationTeamId = requestedTeamId ?? routing.teams.reception ?? null;
+  const supportTeamId = isTechnical ? (routing.teams.helios_support ?? null) : null;
   if (!requestedTeamId && destinationTeamId) {
     console.warn(JSON.stringify({
       event: 'handoff_destination_team_fallback',
@@ -218,6 +234,7 @@ export async function openHandoff(input: OpenHandoffInput): Promise<OpenedHandof
     routing,
     request,
     destination_team_id: destinationTeamId,
+    support_team_id: supportTeamId,
     conversation_id: input.conversation_id,
     contact_id: input.contact_id,
     inbox_id: input.inbox_id,
@@ -493,9 +510,32 @@ export function buildPrivateNote(
     ? [patient.first_name, patient.last_name].filter(Boolean).join(' ')
     : null;
 
-  const accion = request.origin === 'technical_failure'
-    ? 'Helios no ha podido atender el mensaje. Responde tú y avisa a Soporte Técnico Helios.'
-    : 'Atiende al paciente desde esta conversación. Cuando termines, escribe /fin en una nota privada para devolvérsela a Helios.';
+  // UN FALLO TÉCNICO SE AVISA A DOS EQUIPOS, con encargos distintos. Recepción
+  // continúa la conversación para que el paciente no se quede colgado, y soporte
+  // ve el error para arreglarlo. Si solo se avisara a soporte, el paciente
+  // esperaría una respuesta de alguien que arregla programas, no que atiende
+  // pacientes.
+  if (request.origin === 'technical_failure') {
+    const avisoRecepcion = teamMention(opened.destination_team_id, 'reception');
+    const avisoSoporte = teamMention(opened.support_team_id, 'helios_support');
+    return [
+      '**Helios ha tenido un fallo técnico**',
+      '',
+      avisoRecepcion ? `${avisoRecepcion} — continúa tú la conversación con el paciente.` : null,
+      avisoSoporte ? `${avisoSoporte} — revisad el error y arregladlo.` : null,
+      '',
+      `- **Paciente:** ${nombre || 'todavía no ha dado su nombre'}`,
+      `- **Prioridad:** ${PRIORITY_LABELS_ES[request.priority] ?? request.priority}`,
+      // Aquí SÍ va el detalle técnico, al revés que en una derivación normal: es
+      // justo lo que soporte necesita para saber por dónde empezar.
+      request.summary ? `- **Qué falló:** ${request.summary}` : null,
+      '',
+      'El paciente ya ha recibido un aviso de que le atenderá una persona.',
+      'Cuando termines de atenderle, escribe /fin en una nota privada para devolvérsela a Helios.'
+    ].filter(line => line !== null).join('\n');
+  }
+
+  const accion = 'Atiende al paciente desde esta conversación. Cuando termines, escribe /fin en una nota privada para devolvérsela a Helios.';
 
   // Markdown, no texto plano. Chatwoot renderiza el cuerpo de la nota y un salto
   // de línea suelto se pierde al pasar a HTML: el correo de la mención llegaba
@@ -775,6 +815,18 @@ export async function loadHandoffContext(
  * El aviso llega al equipo por la nota privada y por Telegram en segundos, y es
  * la persona quien escribe al paciente.
  */
+/**
+ * Lo que se le dice al paciente cuando Helios falla.
+ *
+ * No se le pide perdón por algo que no entiende ni se le dan códigos de error: se
+ * le dice que hubo un problema y que sigue una persona. Callarse, que es lo que
+ * hacía antes, es lo peor de las tres opciones: el paciente se queda mirando el
+ * chat sin saber si le han leído.
+ */
+const MENSAJE_FALLO_TECNICO =
+  'Disculpe, he tenido un problema técnico y no he podido completar su solicitud. '
+  + 'Ya he avisado al equipo de la clínica: una persona continuará con usted por aquí mismo.';
+
 export async function escalateTechnicalFailure(input: {
   tenantContext: TenantContext;
   conversation_id: string;
@@ -785,6 +837,14 @@ export async function escalateTechnicalFailure(input: {
   trigger_key: string;
   error_code: string;
   stage_of_failure: string;
+  /**
+   * Lote al que pertenece el mensaje. Hace falta para poder encolar el aviso al
+   * paciente: helios_chatwoot_outbox tiene clave foránea contra
+   * helios_processing_batches, así que sin lote real NO se puede encolar nada.
+   * Cuando falta, el handoff se hace igual y recepción sigue viendo la
+   * conversación: simplemente el aviso lo escribe una persona.
+   */
+  batch_key?: string | null;
 }): Promise<CompleteHandoffResult | null> {
   // Encuesta de satisfacción: si Helios ha fallado, no se le pregunta al paciente
   // qué tal el servicio. Se marca AQUÍ, en el único sitio por el que pasan todos
@@ -817,9 +877,47 @@ export async function escalateTechnicalFailure(input: {
       }
     });
 
+    // Aviso al paciente. Va por el outbox durable, igual que cualquier otro
+    // mensaje: si Chatwoot es justo lo que está fallando, la fila espera y se
+    // entrega cuando se recupere, en vez de perderse.
+    let transitionOutboxKey: string | null = null;
+    if (input.batch_key) {
+      try {
+        const identity = createOutboxIdentity({
+          tenant_id: input.tenantContext.tenant_id,
+          account_id: input.tenantContext.account_id,
+          conversation_id: input.conversation_id,
+          contact_id: input.contact_id,
+          source_message_ids_hash: `technical:${input.error_code}`,
+          content: MENSAJE_FALLO_TECNICO
+        });
+        await outboxRepository.create({
+          outbox_key: identity.outbox_key,
+          batch_key: input.batch_key,
+          tenant_id: input.tenantContext.tenant_id,
+          account_id: input.tenantContext.account_id,
+          conversation_id: input.conversation_id,
+          contact_id: input.contact_id,
+          source_message_ids_hash: `technical:${input.error_code}`,
+          adapter_request_key: `technical:${input.trigger_key}`,
+          content: MENSAJE_FALLO_TECNICO,
+          content_hash: identity.content_hash
+        }, input.trace_id);
+        transitionOutboxKey = identity.outbox_key;
+      } catch (outboxError: any) {
+        // Que no se pueda avisar al paciente NO puede impedir que el equipo se
+        // entere: eso dejaría la conversación muerta, que es lo que se quiere
+        // evitar. Se registra y se sigue.
+        console.error(JSON.stringify({
+          event: 'technical_failure_patient_notice_failed',
+          error_code: outboxError?.code || 'OUTBOX_CREATE_FAILED'
+        }));
+      }
+    }
+
     return await completeHandoff({
       opened,
-      transition_outbox_key: null,
+      transition_outbox_key: transitionOutboxKey,
       patient: {
         first_name: null,
         last_name: null,

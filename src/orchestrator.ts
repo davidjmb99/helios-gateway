@@ -619,7 +619,10 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
           trace_id: traceId,
           trigger_key: durableBatchKey,
           error_code: errorCode,
-          stage_of_failure: 'adapter_response_incomplete'
+          stage_of_failure: 'adapter_response_incomplete',
+          // Aquí el lote SIEMPRE existe: hemos llegado a tener respuesta del
+          // Adapter, así que se puede encolar el aviso al paciente.
+          batch_key: durableBatchKey
         });
       }
 
@@ -1208,7 +1211,11 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
             trace_id: traceId,
             trigger_key: durableBatchKey || `conversation:${conversationId}`,
             error_code: errorCode,
-            stage_of_failure: processingStage
+            stage_of_failure: processingStage,
+            // Aquí el lote puede no existir todavía: si el fallo ocurrió antes de
+            // crearlo no hay contra qué encolar, y el aviso al paciente lo escribe
+            // recepción, que ya tiene la conversación asignada.
+            batch_key: durableBatchClaimed ? durableBatchKey : null
           });
         } catch (escalationError: any) {
           console.error(JSON.stringify({

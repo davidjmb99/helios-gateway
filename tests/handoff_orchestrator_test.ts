@@ -788,10 +788,21 @@ const bufferG = db.table('helios_inbound_buffer');
 assert.equal(bufferG[0].failed_at !== null, true, 'G5: el mensaje se marca fallido de inmediato');
 assert.equal(bufferG[0].retry_count, 0, 'G6: sin reintentos: reintentar un error de contrato es inútil');
 
-// Requisito A: el paciente no puede quedarse sin nada, pero tampoco recibe un
-// mensaje automático de disculpa. Lo atiende una persona.
+// EL PACIENTE NO SE PUEDE QUEDAR CALLADO. Antes no se le mandaba nada y se
+// quedaba mirando el chat sin saber si le habían leído, esperando a un equipo
+// técnico que arregla programas y no atiende pacientes.
 const outboxG = db.table('helios_chatwoot_outbox');
-assert.equal(outboxG.length, 0, 'G7: no se le manda al paciente ningún mensaje automático');
+assert.equal(outboxG.length, 1, 'G7: al paciente se le avisa, una sola vez');
+assert.match(
+  outboxG[0].content,
+  /problema técnico/,
+  'G7b: se le dice que hubo un problema, sin códigos de error'
+);
+assert.match(
+  outboxG[0].content,
+  /una persona continuará con usted/,
+  'G7c: y que sigue una persona, que es lo que necesita saber'
+);
 
 const estadoG = db.table('helios_conversation_state')[0];
 assert.equal(estadoG.stage, 'handoff_failed', 'G8: la conversación queda en manos del equipo técnico');
@@ -814,7 +825,7 @@ addSection({
     { label: 'A qué equipo va', value: 'Soporte Técnico Helios', good: true },
     { label: 'Etapa de la conversación', value: 'Fallo técnico', good: true },
     { label: 'Reintentos antes de avisar', value: '0', good: true },
-    { label: 'Mensajes automáticos al paciente', value: '0', good: true },
+    { label: 'Aviso al paciente', value: '1 mensaje', good: true },
     { label: '¿Sigue contestando la IA?', value: 'no', good: true },
     { label: 'Encuesta de satisfacción', value: 'excluida', good: true }
   ],
@@ -827,7 +838,7 @@ addSection({
       row.stage === 'handoff_failed' ? 'Fallo técnico' : row.stage
     ])
   }],
-  conclusion: 'Un error de contrato no se reintenta: reintentarlo no lo arregla. Se avisa al equipo técnico en el primer intento y el paciente pasa a manos de una persona, sin recibir una disculpa automática que no resolvería nada.'
+  conclusion: 'Un error de contrato no se reintenta: reintentarlo no lo arregla. Se avisa en el primer intento, y a DOS equipos con encargos distintos: recepción continúa la conversación para que el paciente no se quede colgado, y soporte ve el error para arreglarlo. Al paciente se le dice que hubo un problema y que sigue una persona.'
 });
 
 // ===========================================================================
