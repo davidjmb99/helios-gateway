@@ -8,6 +8,24 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
   <style>
+    /*
+     * TEMA CLARO. El panel se diseno en oscuro con clases de Tailwind puestas a
+     * mano, asi que no hay variables que cambiar: se remapean los colores de la
+     * paleta que realmente se usan. Es una primera pasada honesta, no un rediseno.
+     */
+    html.tema-claro body { background: #f1f5f9; color: #0f172a; }
+    html.tema-claro .bg-slate-950, html.tema-claro .bg-slate-950\/40,
+    html.tema-claro .bg-slate-950\/50, html.tema-claro .bg-slate-950\/30,
+    html.tema-claro .bg-slate-950\/60 { background-color: #e2e8f0 !important; }
+    html.tema-claro .bg-slate-900, html.tema-claro .bg-slate-900\/40,
+    html.tema-claro .bg-slate-900\/30, html.tema-claro .bg-slate-900\/60 { background-color: #ffffff !important; }
+    html.tema-claro .bg-slate-800 { background-color: #e2e8f0 !important; }
+    html.tema-claro .border-slate-800, html.tema-claro .border-slate-800\/80,
+    html.tema-claro .border-slate-700 { border-color: #cbd5e1 !important; }
+    html.tema-claro .text-slate-100, html.tema-claro .text-slate-200,
+    html.tema-claro .text-slate-300 { color: #0f172a !important; }
+    html.tema-claro .text-slate-400, html.tema-claro .text-slate-500 { color: #475569 !important; }
+
     body { font-family: 'Outfit', sans-serif; }
     .code-font { font-family: 'Fira Code', monospace; }
     .message-clamp {
@@ -86,6 +104,7 @@
         </div>
         <div class="flex items-center gap-4">
           <div id="hermes-mode-badge" class="px-2.5 py-1 rounded-full text-xs font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">Hermes: Cargando...</div>
+          <button onclick="abrirAjustes()" class="text-xs text-slate-300 hover:text-white font-semibold bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg px-3 py-1.5 transition-all">Ajustes</button>
           <button onclick="handleLogout()" class="text-xs text-red-400 hover:text-red-300 font-semibold bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg px-3 py-1.5 transition-all">Cerrar Sesión</button>
         </div>
       </div>
@@ -2069,6 +2088,248 @@
       doRefreshCycle();
       startPolling();
     }
+
+    // ====================== AJUSTES ======================
+    //
+    // La clinica NO se elige aqui: el servidor la saca del token de sesion. Esta
+    // pantalla solo la MUESTRA para que se vea que se esta borrando, y para poder
+    // pedirla escrita como confirmacion.
+
+    let datosTenantId = null;
+    let datosTablas = [];
+
+    function abrirAjustes() {
+      document.getElementById('ajustes-overlay').classList.remove('hidden');
+      setAjustesTab('apariencia');
+      pintarBotonesTema();
+    }
+
+    function cerrarAjustes() {
+      document.getElementById('ajustes-overlay').classList.add('hidden');
+      const input = document.getElementById('datos-confirm-input');
+      if (input) input.value = '';
+      revisarConfirmacion();
+    }
+
+    function setAjustesTab(tab) {
+      const tabs = ['apariencia', 'datos'];
+      tabs.forEach(t => {
+        const boton = document.getElementById('ajustes-tab-' + t);
+        const panel = document.getElementById('ajustes-panel-' + t);
+        const activo = t === tab;
+        panel.classList.toggle('hidden', !activo);
+        boton.className = activo
+          ? 'px-3 py-1.5 text-xs font-bold rounded-lg bg-amber-500 text-slate-950'
+          : 'px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200';
+      });
+      if (tab === 'datos') cargarConteos();
+    }
+
+    // --- Tema -----------------------------------------------------------------
+
+    function aplicarTema(tema) {
+      document.documentElement.classList.toggle('tema-claro', tema === 'light');
+      localStorage.setItem('helios_tema', tema);
+      pintarBotonesTema();
+    }
+
+    function pintarBotonesTema() {
+      const actual = localStorage.getItem('helios_tema') || 'dark';
+      ['dark', 'light'].forEach(t => {
+        const boton = document.getElementById('btn-tema-' + t);
+        if (!boton) return;
+        boton.className = t === actual
+          ? 'flex-1 rounded-xl border border-amber-500 bg-amber-500/10 px-4 py-3 text-xs font-bold text-amber-300'
+          : 'flex-1 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-xs font-bold text-slate-200 hover:border-amber-500';
+      });
+    }
+
+    // Se aplica ANTES de pintar nada para que no haya un parpadeo de oscuro a claro.
+    (function temaInicial() {
+      if ((localStorage.getItem('helios_tema') || 'dark') === 'light') {
+        document.documentElement.classList.add('tema-claro');
+      }
+    })();
+
+    // --- Base de datos --------------------------------------------------------
+
+    async function cargarConteos() {
+      const contenedor = document.getElementById('datos-tablas');
+      const cargando = document.getElementById('datos-cargando');
+      cargando.classList.remove('hidden');
+      contenedor.innerHTML = '';
+      document.getElementById('datos-confirmacion').classList.add('hidden');
+      document.getElementById('datos-resultado').classList.add('hidden');
+
+      try {
+        const res = await fetch('/admin/data/counts', {
+          headers: { 'Authorization': 'Bearer ' + getSessionToken() }
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+
+        datosTenantId = data.tenant_id;
+        datosTablas = data.tablas || [];
+        document.getElementById('ajustes-clinica').textContent = 'Clínica: ' + datosTenantId;
+        document.getElementById('datos-tenant-esperado').textContent = datosTenantId;
+
+        const grupos = {};
+        datosTablas.forEach(t => { (grupos[t.grupo] = grupos[t.grupo] || []).push(t); });
+
+        contenedor.innerHTML = Object.entries(grupos).map(([grupo, filas]) => `
+          <div>
+            <h4 class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">${escapeHtml(grupo)}</h4>
+            <div class="space-y-1.5">
+              ${filas.map(f => `
+                <label class="flex items-start gap-2.5 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 cursor-pointer hover:border-slate-600">
+                  <input type="checkbox" class="datos-check mt-0.5" value="${escapeHtml(f.tabla)}"
+                         onchange="revisarSeleccion()" ${f.filas === 0 ? 'disabled' : ''}>
+                  <span class="flex-1">
+                    <span class="block text-xs text-slate-200">${escapeHtml(f.etiqueta)}</span>
+                    <span class="block text-[10px] text-slate-500 font-mono">${f.filas < 0 ? 'error al contar' : f.filas.toLocaleString() + ' filas'}</span>
+                    ${f.advertencia ? `<span class="block text-[10px] text-amber-400/90 mt-1 leading-snug">${escapeHtml(f.advertencia)}</span>` : ''}
+                  </span>
+                </label>
+              `).join('')}
+            </div>
+          </div>
+        `).join('');
+
+        cargando.classList.add('hidden');
+        revisarSeleccion();
+      } catch (err) {
+        cargando.textContent = 'No se pudieron cargar los datos.';
+      }
+    }
+
+    function seleccionadas() {
+      return Array.from(document.querySelectorAll('.datos-check:checked')).map(c => c.value);
+    }
+
+    function revisarSeleccion() {
+      const hay = seleccionadas().length > 0;
+      document.getElementById('datos-confirmacion').classList.toggle('hidden', !hay);
+      revisarConfirmacion();
+    }
+
+    function revisarConfirmacion() {
+      const boton = document.getElementById('datos-btn-borrar');
+      const input = document.getElementById('datos-confirm-input');
+      if (!boton || !input) return;
+      const escrito = input.value.trim();
+      boton.disabled = !(seleccionadas().length > 0 && datosTenantId && escrito === datosTenantId);
+    }
+
+    async function ejecutarPurga() {
+      const boton = document.getElementById('datos-btn-borrar');
+      const tablas = seleccionadas();
+      const confirmacion = document.getElementById('datos-confirm-input').value.trim();
+      boton.disabled = true;
+      boton.textContent = 'Eliminando…';
+
+      try {
+        const res = await fetch('/admin/data/purge', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + getSessionToken(),
+            'Content-Type': 'application/json'
+          },
+          // NO se manda tenant_id: el servidor lo saca del token. Aunque se
+          // mandara, lo ignoraria.
+          body: JSON.stringify({ tables: tablas, confirmation: confirmacion })
+        });
+        const data = await res.json();
+        const caja = document.getElementById('datos-resultado');
+        caja.classList.remove('hidden');
+
+        if (!res.ok || data.error) {
+          caja.innerHTML = '<span class="text-red-400">No se borró nada: ' + escapeHtml(data.error_code || 'error') + '</span>';
+        } else {
+          const lineas = (data.tablas || []).map(t => '· ' + escapeHtml(t.tabla) + ': ' + t.filas.toLocaleString());
+          const extra = (data.anadidas_por_dependencia || []).length
+            ? '<div class="mt-2 text-amber-400">Se añadieron por dependencia: ' + data.anadidas_por_dependencia.join(', ') + '</div>'
+            : '';
+          caja.innerHTML = '<b class="text-emerald-400">Se eliminaron ' + data.total.toLocaleString() + ' filas.</b>'
+            + '<div class="mt-2 font-mono text-[10px] text-slate-400">' + lineas.join('<br>') + '</div>' + extra;
+          document.getElementById('datos-confirm-input').value = '';
+          await cargarConteos();
+        }
+      } catch (err) {
+        document.getElementById('datos-resultado').classList.remove('hidden');
+        document.getElementById('datos-resultado').innerHTML = '<span class="text-red-400">Fallo de red.</span>';
+      } finally {
+        boton.textContent = 'Eliminar datos';
+        revisarConfirmacion();
+      }
+    }
+
   </script>
+
+  <!-- ====================== AJUSTES ====================== -->
+  <div id="ajustes-overlay" class="hidden fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm" onclick="if(event.target===this) cerrarAjustes()">
+    <div class="max-w-3xl mx-auto mt-10 mb-10 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden">
+
+      <div class="flex items-center justify-between px-5 py-4 border-b border-slate-800 bg-slate-950/50">
+        <div>
+          <h2 class="text-sm font-bold text-slate-100">Ajustes</h2>
+          <div id="ajustes-clinica" class="text-[10px] text-slate-500 font-mono mt-0.5"></div>
+        </div>
+        <button onclick="cerrarAjustes()" class="text-slate-400 hover:text-slate-100 text-xl leading-none px-2">&times;</button>
+      </div>
+
+      <nav class="flex gap-1 px-3 py-2 border-b border-slate-800 bg-slate-950/30">
+        <button id="ajustes-tab-apariencia" onclick="setAjustesTab('apariencia')" class="px-3 py-1.5 text-xs font-bold rounded-lg bg-amber-500 text-slate-950">Apariencia</button>
+        <button id="ajustes-tab-datos" onclick="setAjustesTab('datos')" class="px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200">Base de datos</button>
+      </nav>
+
+      <!-- Apariencia -->
+      <div id="ajustes-panel-apariencia" class="p-5 space-y-4">
+        <div>
+          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Tema</h3>
+          <p class="text-[11px] text-slate-500 mb-3">Se guarda en este navegador. No afecta a nadie más.</p>
+          <div class="flex gap-2">
+            <button onclick="aplicarTema('dark')" id="btn-tema-dark" class="flex-1 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-xs font-bold text-slate-200 hover:border-amber-500">Oscuro</button>
+            <button onclick="aplicarTema('light')" id="btn-tema-light" class="flex-1 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-xs font-bold text-slate-200 hover:border-amber-500">Claro</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Base de datos -->
+      <div id="ajustes-panel-datos" class="hidden p-5 space-y-4">
+        <div class="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+          <p class="text-[11px] text-amber-200 leading-relaxed">
+            Esto borra datos <b>solo de tu clínica</b> y no se puede deshacer.
+            No toca Cal.com, HubSpot ni Chatwoot: las citas y los contactos que ya
+            existan seguirán ahí.
+          </p>
+        </div>
+
+        <div id="datos-cargando" class="text-xs text-slate-500 py-6 text-center">Cargando…</div>
+        <div id="datos-tablas" class="space-y-4"></div>
+
+        <div id="datos-confirmacion" class="hidden space-y-3 border-t border-slate-800 pt-4">
+          <label class="block text-[11px] text-slate-400">
+            Para confirmar, escribe el identificador de tu clínica:
+            <span id="datos-tenant-esperado" class="font-mono text-amber-400"></span>
+          </label>
+          <input id="datos-confirm-input" type="text" autocomplete="off" spellcheck="false"
+                 oninput="revisarConfirmacion()"
+                 class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-100 focus:border-amber-500 focus:outline-none"
+                 placeholder="escribe aquí">
+          <div class="flex gap-2">
+            <button onclick="cerrarAjustes()" class="flex-1 rounded-lg border border-slate-700 px-4 py-2 text-xs font-bold text-slate-300 hover:bg-slate-800">Cancelar</button>
+            <button id="datos-btn-borrar" disabled onclick="ejecutarPurga()"
+                    class="flex-1 rounded-lg bg-red-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-red-500">
+              Eliminar datos
+            </button>
+          </div>
+        </div>
+
+        <div id="datos-resultado" class="hidden rounded-xl border border-slate-700 bg-slate-950/60 p-3 text-[11px] text-slate-300"></div>
+      </div>
+
+    </div>
+  </div>
+
 </body>
 </html>
