@@ -21,7 +21,7 @@ type Row = Record<string, any>;
 
 export interface RecordedOp {
   table: string;
-  op: 'select' | 'insert' | 'update' | 'upsert' | 'rpc';
+  op: 'select' | 'insert' | 'update' | 'upsert' | 'delete' | 'rpc';
   detail?: Record<string, any>;
 }
 
@@ -74,7 +74,7 @@ class FakeQuery implements PromiseLike<any> {
   constructor(
     private readonly db: FakeSupabase,
     private readonly table: string,
-    private readonly op: 'select' | 'insert' | 'update' | 'upsert',
+    private readonly op: 'select' | 'insert' | 'update' | 'upsert' | 'delete',
     private readonly payload: any = null,
     private readonly options: any = {}
   ) {}
@@ -189,7 +189,15 @@ class FakeQuery implements PromiseLike<any> {
 
     if (this.op === 'select') {
       this.db.record({ table: this.table, op: 'select' });
-      return this.shape(rows.filter(row => matches(row, this.filters)));
+      const encontradas = rows.filter(row => matches(row, this.filters));
+      if (this.options?.count === 'exact') {
+        return {
+          data: this.options?.head ? null : encontradas,
+          error: null,
+          count: encontradas.length
+        };
+      }
+      return this.shape(encontradas);
     }
 
     if (this.op === 'insert') {
@@ -220,6 +228,23 @@ class FakeQuery implements PromiseLike<any> {
         detail: { count: inserted.length, payload: incoming[0] }
       });
       return this.selected ? this.shape(inserted) : { data: null, error: null };
+    }
+
+    if (this.op === 'delete') {
+      const quedan: any[] = [];
+      const borradas: any[] = [];
+      for (const fila of rows) {
+        (matches(fila, this.filters) ? borradas : quedan).push(fila);
+      }
+      this.db.replace(this.table, quedan);
+      this.db.record({
+        table: this.table,
+        op: 'delete',
+        detail: { count: borradas.length }
+      });
+      const salida: any = { data: this.selected ? borradas : null, error: null };
+      if (this.options?.count === 'exact') salida.count = borradas.length;
+      return salida;
     }
 
     if (this.op === 'update') {
@@ -291,6 +316,11 @@ export class FakeSupabase {
     this.tables.set(name, rows.map(row => ({ ...row })));
   }
 
+  /** Sustituye el contenido de una tabla. Lo usa el borrado. */
+  replace(name: string, rows: Row[]): void {
+    this.tables.set(name, rows);
+  }
+
   record(op: RecordedOp): void {
     this.ops.push(op);
   }
@@ -301,10 +331,17 @@ export class FakeSupabase {
 
   from(table: string) {
     return {
-      select: (columns?: string) => new FakeQuery(this, table, 'select').select(columns),
+      // Se aceptan las opciones del cliente real: { count: 'exact', head: true }
+      // es lo que usa el panel para contar filas sin traerselas.
+      select: (columns?: string, options: any = {}) =>
+        new FakeQuery(this, table, 'select', null, options).select(columns),
       insert: (payload: any) => new FakeQuery(this, table, 'insert', payload),
       update: (payload: any) => new FakeQuery(this, table, 'update', payload),
-      upsert: (payload: any, options: any = {}) => new FakeQuery(this, table, 'upsert', payload, options)
+      upsert: (payload: any, options: any = {}) => new FakeQuery(this, table, 'upsert', payload, options),
+      // El borrado devuelve `count` como el cliente real cuando se le pide
+      // { count: 'exact' }: el vaciado de datos del panel lo usa para decir
+      // cuantas filas cayo cada tabla.
+      delete: (options: any = {}) => new FakeQuery(this, table, 'delete', null, options)
     };
   }
 

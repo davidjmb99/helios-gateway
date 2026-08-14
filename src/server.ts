@@ -38,6 +38,7 @@ import { startStaleHandoffWorker, staleHandoffMetrics } from './services/handoff
 import { startLeadFollowupWorker } from './services/lead-followup-worker.js';
 import { leadMetrics } from './leads/service.js';
 import { cifrarContrasena, esHashSeguro, verificarContrasena } from './admin/passwords.js';
+import { contarFilas, purgarDatos } from './admin/data-purge.js';
 import { componentHealth } from './services/component-health.js';
 import { refreshDependencyHealth } from './services/health-probes.js';
 import { assertSupabaseSuccess } from './supabase/assert-success.js';
@@ -174,6 +175,41 @@ server.get('/health', async (request, reply) => {
     },
     hermesMode: getHermesStatus()
   };
+});
+
+// --- Datos de la clínica: ver y vaciar --------------------------------------
+//
+// La clínica SIEMPRE sale de checkAuth, o sea del token de sesión. Nunca del
+// cuerpo de la petición. Es lo único que impide que una clínica borre datos de
+// otra manipulando el navegador, y por eso no hay ni un parámetro para elegirla.
+
+server.get('/admin/data/counts', async (request, reply) => {
+  const tenantId = await checkAuth(request, reply);
+  try {
+    return { ok: true, tenant_id: tenantId, tablas: await contarFilas(tenantId) };
+  } catch (err: any) {
+    return reply.status(500).send({ error: true, error_code: 'DATA_COUNTS_FAILED' });
+  }
+});
+
+server.post('/admin/data/purge', async (request, reply) => {
+  const tenantId = await checkAuth(request, reply);
+  const cuerpo = (request.body || {}) as { tables?: unknown; confirmation?: unknown };
+
+  const resultado = await purgarDatos({
+    tenantId,
+    solicitadoPor: tenantId,
+    tablas: cuerpo.tables,
+    confirmacion: cuerpo.confirmation,
+    ip: request.ip || null
+  });
+
+  if (!resultado.ok) {
+    // 400 y no 500: los fallos aquí son de lo que pidió quien llama -confirmación
+    // que no coincide, tabla fuera de la lista blanca-, no del servidor.
+    return reply.status(400).send({ error: true, error_code: resultado.error });
+  }
+  return resultado;
 });
 
 // Endpoint de Autenticación
