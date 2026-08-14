@@ -159,6 +159,23 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
   // Filtro A: Validar si es una nota privada o evento no apto
   const isPrivate = body.private === true || body.messages?.[0]?.private === true;
 
+  // ¿Lo escribió el propio Helios por iniciativa propia?
+  //
+  // El eco de las respuestas normales se descarta buscando el message_id en
+  // helios_chatwoot_outbox. Pero el seguimiento de leads NO pasa por el outbox
+  // —no nace de ningún lote y la tabla exige uno—, así que su message_id no está
+  // allí y Helios leería su propio mensaje como si lo hubiera escrito una persona
+  // del equipo: se guardaría con autoría equivocada, ensuciaría el resumen que ve
+  // recepción y falsearía el recuento de mensajes del equipo.
+  //
+  // Por eso el envío va marcado con content_attributes.helios_lead_followup, y
+  // aquí se reconoce. Es una marca que pone el propio Gateway al enviar: si
+  // alguna vez no llegara de vuelta, el peor caso es el comportamiento anterior.
+  const contentAttributes = body.content_attributes
+    ?? body.messages?.[0]?.content_attributes
+    ?? {};
+  const esSeguimientoDeHelios = Boolean(contentAttributes?.helios_lead_followup);
+
   if (event !== 'message_created') {
     should_process = false;
     ignore_reason = `Evento de Chatwoot no soportado: ${event}`;
@@ -190,6 +207,7 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
     && explicitlyOutgoing
     && !isPrivate
     && !senderIsAgentBot
+    && !esSeguimientoDeHelios
     && Boolean(text)
     && Boolean(conversation_id)
     && Boolean(message_id);

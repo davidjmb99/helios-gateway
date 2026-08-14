@@ -146,6 +146,39 @@ async function nombreVerificado(tenantId: string, contactId: string): Promise<st
   return nombre || null;
 }
 
+/**
+ * Deja constancia del seguimiento en su propia tabla.
+ *
+ * Va aparte de los logs a propósito: esto es una métrica de negocio que se le va
+ * a enseñar a la clínica a fin de mes, y un log puede rotarse o cambiar de forma
+ * cuando cambia el código. La clave es determinista para que un reintento del
+ * barrido no cuente dos veces el mismo seguimiento e infle el número.
+ */
+async function registrarSeguimiento(input: {
+  fila: any;
+  interest: string;
+  mensaje: string;
+  estado: 'sent' | 'simulated';
+  providerMessageId: string | null;
+}): Promise<void> {
+  const { fila } = input;
+  const clave = `lead:${fila.tenant_id}:${fila.conversation_id}:${fila.lead_interest_at}`;
+  const result = await supabase
+    .from('helios_lead_followups')
+    .upsert({
+      followup_key: clave,
+      tenant_id: fila.tenant_id,
+      conversation_id: fila.conversation_id,
+      contact_id: fila.contact_id || 'unknown',
+      interest: input.interest,
+      interest_at: fila.lead_interest_at,
+      message: input.mensaje,
+      status: input.estado,
+      provider_message_id: input.providerMessageId
+    }, { onConflict: 'followup_key', ignoreDuplicates: true });
+  if (result.error) throw Object.assign(new Error('LEAD_LOG_WRITE_FAILED'), { cause: result.error });
+}
+
 async function procesarLead(fila: any, ahora: Date): Promise<void> {
   const decision = decidirSeguimiento(fila, ahora, VENTANA_POR_DEFECTO);
   if (decision.action === 'skip') {
@@ -175,35 +208,43 @@ async function procesarLead(fila: any, ahora: Date): Promise<void> {
   // mandarlo dos veces, se pierde: molestar es peor que no insistir.
   await patch(fila.tenant_id, fila.conversation_id, { lead_followup_at: ahora.toISOString() });
 
-  if (!config.HELIOS_LEADS_ENABLED) {
-    // Modo observación: queda registrado el texto exacto que se habría mandado.
-    await logsRepository.save({
-      trace_id: `lead-${fila.conversation_id}`,
-      tenant_id: fila.tenant_id,
-      conversation_id: fila.conversation_id,
-      contact_id: fila.contact_id || 'unknown',
-      event_type: 'LEAD_FOLLOWUP_SIMULATED',
-      metadata: { interest: decision.interest, message: mensaje, observe_only: true }
-    }).catch(() => undefined);
-    return;
+  let providerMessageId: string | null = null;
+  let estado: 'sent' | 'simulated' = 'simulated';
+
+  if (config.HELIOS_LEADS_ENABLED) {
+    const tenantContext = resolveTenantContextByTenantId(fila.tenant_id);
+    const respuesta = await chatwootClient.sendMessage(
+      tenantContext.account_id,
+      fila.conversation_id,
+      mensaje,
+      // ESTA MARCA NO ES DECORATIVA. El eco de las respuestas normales se
+      // descarta buscando el message_id en el outbox, y este mensaje no pasa por
+      // ahí: sin la marca, Helios leería su propio seguimiento como si lo hubiera
+      // escrito una persona del equipo.
+      { helios_lead_followup: decision.interest }
+    );
+    providerMessageId = respuesta?.data?.id ? String(respuesta.data.id) : null;
+    estado = 'sent';
+    leadMetrics.sent += 1;
   }
 
-  const tenantContext = resolveTenantContextByTenantId(fila.tenant_id);
-  await chatwootClient.sendMessage(
-    tenantContext.account_id,
-    fila.conversation_id,
+  // El registro se guarda SIEMPRE, también en observación: contar los simulados
+  // por separado es justo lo que permite validar la decisión antes de encender.
+  await registrarSeguimiento({
+    fila,
+    interest: decision.interest,
     mensaje,
-    { helios_lead_followup: decision.interest }
-  );
-  leadMetrics.sent += 1;
+    estado,
+    providerMessageId
+  }).catch(() => undefined);
 
   await logsRepository.save({
     trace_id: `lead-${fila.conversation_id}`,
     tenant_id: fila.tenant_id,
     conversation_id: fila.conversation_id,
     contact_id: fila.contact_id || 'unknown',
-    event_type: 'LEAD_FOLLOWUP_SENT',
-    metadata: { interest: decision.interest, message: mensaje }
+    event_type: estado === 'sent' ? 'LEAD_FOLLOWUP_SENT' : 'LEAD_FOLLOWUP_SIMULATED',
+    metadata: { interest: decision.interest, message: mensaje, observe_only: estado === 'simulated' }
   }).catch(() => undefined);
 }
 
