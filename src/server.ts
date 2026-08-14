@@ -37,6 +37,7 @@ import { startNotificationWorker, notificationMetrics } from './services/notific
 import { startStaleHandoffWorker, staleHandoffMetrics } from './services/handoff-stale-worker.js';
 import { startLeadFollowupWorker } from './services/lead-followup-worker.js';
 import { leadMetrics } from './leads/service.js';
+import { cifrarContrasena, esHashSeguro, verificarContrasena } from './admin/passwords.js';
 import { componentHealth } from './services/component-health.js';
 import { refreshDependencyHealth } from './services/health-probes.js';
 import { assertSupabaseSuccess } from './supabase/assert-success.js';
@@ -194,9 +195,33 @@ server.post('/api/auth/login', async (request, reply) => {
       return reply.status(401).send({ error: 'Credenciales inválidas.' });
     }
 
-    // Para la demo, comparación directa del password
-    if (tenant.password_hash !== password) {
+    if (!verificarContrasena(password, tenant.password_hash)) {
       return reply.status(401).send({ error: 'Credenciales inválidas.' });
+    }
+
+    // La contraseña era correcta. Si estaba guardada EN CLARO —como estuvo hasta
+    // el 15-08-2026— se reescribe cifrada ahora mismo. Así la tabla se migra sola
+    // a medida que la gente entra, sin script y sin que nadie se quede fuera.
+    if (!esHashSeguro(tenant.password_hash)) {
+      await supabase
+        .from('helios_tenants')
+        .update({ password_hash: cifrarContrasena(password) })
+        .eq('tenant_id', tenant.tenant_id)
+        .then(({ error: upgradeError }) => {
+          if (upgradeError) {
+            // No se bloquea el acceso por esto: la contraseña ya se verificó. Se
+            // reintentará en el siguiente inicio de sesión.
+            console.warn(JSON.stringify({
+              event: 'password_upgrade_failed',
+              tenant_id: tenant.tenant_id
+            }));
+          } else {
+            console.log(JSON.stringify({
+              event: 'password_upgraded_to_hash',
+              tenant_id: tenant.tenant_id
+            }));
+          }
+        });
     }
 
     // Retornamos el token (usamos el tenant_id como token para simplicidad en la demo)
@@ -273,6 +298,8 @@ async function getAdministrativeObservability(request: any, reply: any) {
 
 // Las tablas operativas son la fuente principal; los logs solo complementan la timeline.
 server.get('/admin/observability', async (request, reply) => {
+  // Exponia metricas de la clinica sin pedir nada. El panel ya mandaba el token.
+  const tenantIdAutenticado = await checkAuth(request, reply);
   return getAdministrativeObservability(request, reply);
 });
 
@@ -311,6 +338,8 @@ server.get('/admin/conversations/:conversation_id/messages', async (request, rep
 
 // Alias compatible para consumidores del endpoint de estadísticas anterior.
 server.get('/admin/stats', async (request, reply) => {
+  // Exponia estadisticas de la clinica sin pedir nada.
+  await checkAuth(request, reply);
   const result = await getAdministrativeObservability(request, reply);
   const stats = result.stats;
   return {
@@ -1053,6 +1082,10 @@ server.post('/test/chatwoot-message', async (request, reply) => {
 
 // 4. POST /admin/reactivate-ai
 server.post('/admin/reactivate-ai', async (request, reply) => {
+  // SIN AUTENTICACION hasta el 15-08-2026: cualquiera que diera con la URL podia
+  // cambiar el estado de la IA en produccion. Nada lo llamaba automaticamente,
+  // asi que exigir sesion no rompe ningun flujo.
+  await checkAuth(request, reply);
   const { tenant_id, conversation_id } = request.body as any;
   if (!tenant_id || !conversation_id) {
     return reply.status(400).send({ error: 'tenant_id y conversation_id son obligatorios.' });
@@ -1072,6 +1105,8 @@ server.post('/admin/reactivate-ai', async (request, reply) => {
 
 // 5. POST /admin/disable-ai
 server.post('/admin/disable-ai', async (request, reply) => {
+  // SIN AUTENTICACION hasta el 15-08-2026: cualquiera podia APAGAR Helios entero.
+  await checkAuth(request, reply);
   const { tenant_id, conversation_id } = request.body as any;
   if (!tenant_id || !conversation_id) {
     return reply.status(400).send({ error: 'tenant_id y conversation_id son obligatorios.' });
