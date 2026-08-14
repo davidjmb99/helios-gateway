@@ -22,6 +22,7 @@
 
 import { config } from '../config.js';
 import { markExcluded } from '../csat/service.js';
+import { blockLead } from '../leads/service.js';
 import { chatwootClient } from '../chatwoot/client.js';
 import { logsRepository, stateRepository, bufferRepository } from '../repositories/database.js';
 import { handoffEventRepository, notificationOutboxRepository } from '../repositories/handoff.js';
@@ -851,6 +852,15 @@ export async function escalateTechnicalFailure(input: {
   // los fallos técnicos, para que no se pueda olvidar en una rama nueva. Es el
   // motivo de exclusión más grave y pisa a cualquier otro ya anotado.
   await markExcluded({
+    tenantId: input.tenantContext.tenant_id,
+    conversationId: input.conversation_id,
+    contactId: input.contact_id,
+    traceId: input.trace_id,
+    reason: 'technical_failure'
+  });
+  // Si Helios acaba de fallarle, no se le persigue al día siguiente con un
+  // «¿te sigue interesando?».
+  await blockLead({
     tenantId: input.tenantContext.tenant_id,
     conversationId: input.conversation_id,
     contactId: input.contact_id,

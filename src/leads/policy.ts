@@ -89,14 +89,30 @@ export interface FranjaHoraria {
 /** Horario semanal. La clave es el día según getDay(): 0 domingo, 6 sábado. */
 export type HorarioClinica = Record<number, FranjaHoraria[]>;
 
+/**
+ * HORARIO EN EL QUE SE PUEDE ESCRIBIR, que NO es el horario de la clínica.
+ *
+ * La clínica atiende de 10:00 a 20:00 y los sábados hasta las 15:00. Pero mandar
+ * un mensaje no es lo mismo que atender: el operador decidió que a partir de las
+ * 8:00 ya es hora decente para escribir a alguien, aunque la puerta todavía no
+ * esté abierta. Las CITAS se siguen ofreciendo solo en horario de clínica, y de
+ * eso se encarga la disponibilidad real de Cal.com, no este archivo.
+ *
+ * La diferencia no es cosmética: abre dos horas por la mañana que resuelven justo
+ * el caso que antes se quedaba sin seguimiento. Una consulta de las nueve de la
+ * mañana vence a las nueve de la mañana siguiente, y con el horario de clínica no
+ * había ni un minuto válido; con las 8:00 sí lo hay.
+ */
+const ABRE_MENSAJES = 8 * 60;
+
 export const HORARIO_COI: HorarioClinica = {
-  0: [],                                  // domingo cerrado
-  1: [{ desde: 10 * 60, hasta: 20 * 60 }],
-  2: [{ desde: 10 * 60, hasta: 20 * 60 }],
-  3: [{ desde: 10 * 60, hasta: 20 * 60 }],
-  4: [{ desde: 10 * 60, hasta: 20 * 60 }],
-  5: [{ desde: 10 * 60, hasta: 20 * 60 }],
-  6: [{ desde: 10 * 60, hasta: 15 * 60 }] // sábado, media jornada
+  0: [],                                        // domingo: ni mensajes ni citas
+  1: [{ desde: ABRE_MENSAJES, hasta: 20 * 60 }],
+  2: [{ desde: ABRE_MENSAJES, hasta: 20 * 60 }],
+  3: [{ desde: ABRE_MENSAJES, hasta: 20 * 60 }],
+  4: [{ desde: ABRE_MENSAJES, hasta: 20 * 60 }],
+  5: [{ desde: ABRE_MENSAJES, hasta: 20 * 60 }],
+  6: [{ desde: ABRE_MENSAJES, hasta: 15 * 60 }] // sábado, media jornada
 };
 
 const DIAS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];

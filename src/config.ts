@@ -123,6 +123,13 @@ export const config = {
   // etiqueta en Chatwoot. Así se puede comprobar la decisión con datos reales
   // antes de dejar que toque el flujo de encuestas de la clínica.
   HELIOS_CSAT_ENABLED: envBool(process.env.HELIOS_CSAT_ENABLED, false),
+  // --- Seguimiento de leads ---
+  // APAGADO por defecto. Con el flag apagado se anota quien es lead, quien queda
+  // descartado y con que texto EXACTO se le habria escrito, pero no le llega nada
+  // a nadie. Un fallo aqui significa mandarle publicidad a un paciente que se fue
+  // enfadado, o escribir a alguien fuera del plazo de WhatsApp.
+  HELIOS_LEADS_ENABLED: envBool(process.env.HELIOS_LEADS_ENABLED, false),
+  HELIOS_LEADS_SWEEP_MS: envNumber(process.env.HELIOS_LEADS_SWEEP_MS, 10 * 60 * 1000),
   TELEGRAM_BOT_TOKEN: (process.env.TELEGRAM_BOT_TOKEN ?? '').trim(),
   TELEGRAM_API_BASE_URL: (process.env.TELEGRAM_API_BASE_URL ?? 'https://api.telegram.org').trim(),
 

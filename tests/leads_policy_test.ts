@@ -63,7 +63,12 @@ assert.equal(momentoLocal(madrid(10, 10, 30), 'Europe/Madrid').minuto, 10 * 60 +
 assert.equal(momentoLocal(madrid(10, 10), 'Europe/Madrid').dia, 1, '10 de agosto de 2026 es lunes');
 
 assert.equal(clinicaAbierta(madrid(10, 12), 'Europe/Madrid', HORARIO_COI), true, 'lunes al mediodía');
-assert.equal(clinicaAbierta(madrid(10, 9), 'Europe/Madrid', HORARIO_COI), false, 'antes de abrir');
+// ESCRIBIR NO ES ATENDER. La clínica abre a las 10:00, pero a las 8:00 ya es hora
+// decente para mandar un mensaje. Las CITAS se siguen ofreciendo solo en horario
+// de clínica, y de eso se encarga la disponibilidad de Cal.com.
+assert.equal(clinicaAbierta(madrid(10, 8), 'Europe/Madrid', HORARIO_COI), true, 'a las 8:00 ya se puede escribir');
+assert.equal(clinicaAbierta(madrid(10, 9), 'Europe/Madrid', HORARIO_COI), true, 'y a las 9:00 también');
+assert.equal(clinicaAbierta(madrid(10, 7), 'Europe/Madrid', HORARIO_COI), false, 'a las 7:00 todavía no');
 assert.equal(clinicaAbierta(madrid(10, 20), 'Europe/Madrid', HORARIO_COI), false, 'a las 20:00 ya cerró');
 assert.equal(clinicaAbierta(madrid(15, 14), 'Europe/Madrid', HORARIO_COI), true, 'sábado por la mañana');
 assert.equal(clinicaAbierta(madrid(15, 16), 'Europe/Madrid', HORARIO_COI), false, 'sábado tarde, cerrado');
@@ -87,15 +92,19 @@ assert.equal(
 const horasDespues = ((tarde as Date).getTime() - madrid(10, 17).getTime()) / 3600_000;
 assert.ok(horasDespues >= 12 && horasDespues <= 23, `dentro de la ventana (fueron ${horasDespues} h)`);
 
-// EL CASO QUE OBLIGA A RENUNCIAR. Una consulta de las nueve de la mañana tiene su
-// plazo a las nueve de la mañana siguiente, cuando la clínica lleva cerrada desde
-// las 20:00 y aún no ha abierto. No hay ningún momento válido.
+// LO QUE ARREGLA LA REGLA DE LAS 8:00. Una consulta de las nueve de la mañana
+// vence a las nueve de la mañana siguiente. Con el horario de clínica no había ni
+// un minuto válido y esa conversación se quedaba sin seguimiento; abriendo los
+// mensajes a las 8:00, sí lo hay.
 const manana = calcularMomentoDeEnvio(madrid(11, 9), VENTANA_POR_DEFECTO);
+assert.ok(manana, 'una consulta de la mañana ya no se queda sin seguimiento');
 assert.equal(
-  manana,
-  null,
-  'de madrugada o antes de abrir no se fuerza el envío: se renuncia'
+  momentoLocal(manana as Date, 'Europe/Madrid').minuto >= 8 * 60,
+  true,
+  'y el mensaje sale a partir de las 8:00, nunca de madrugada'
 );
+const horasManana = ((manana as Date).getTime() - madrid(11, 9).getTime()) / 3600_000;
+assert.ok(horasManana <= 23, `y dentro del plazo de WhatsApp (${horasManana} h)`);
 
 // Sábado por la tarde: el plazo vence el domingo, que está cerrado todo el día.
 assert.equal(

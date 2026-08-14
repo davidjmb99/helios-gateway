@@ -22,6 +22,8 @@ import { maskPhoneForLog } from './utils/sanitizeForLog.js';
 import { createBatchIdentity, createOutboxIdentity } from './durable/identity.js';
 import { detectSignals } from './chatwoot/normalizer.js';
 import { markEligibleIfAppointment, markExcluded } from './csat/service.js';
+import { blockLead, markLeadInterest } from './leads/service.js';
+import { pideQueNoLeEscriban } from './leads/messages.js';
 import {
   deriveHandoffRequest,
   detectHandoffRequest,
@@ -676,20 +678,35 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       // persona queda fuera, por decisión del operador. Se guarda el motivo MÁS
       // ESPECÍFICO que se conozca, no un simple «hubo handoff»: así el recuento
       // de exclusiones sirve como métrica de calidad y no solo como descarte.
+      const motivoLead = openedHandoff.request.reason_code === 'complaint'
+        ? 'complaint'
+        : 'human_handoff';
       await markExcluded({
         tenantId,
         conversationId,
         contactId: contact_id,
         traceId,
-        reason: openedHandoff.request.reason_code === 'complaint'
-          ? 'complaint'
-          : 'human_handoff'
+        reason: motivoLead
+      });
+      // A quien lleva una persona, o se fue enfadado, no se le hace seguimiento
+      // comercial. No es el momento de vender.
+      await blockLead({
+        tenantId, conversationId, contactId: contact_id, traceId, reason: motivoLead
       });
     }
 
     // Frustración detectada por texto: fuera de la encuesta aunque no se haya
     // llegado a derivar. Se usa la señal CRUDA, no la que se le manda a Hermes
     // (que suma asks_for_human): pedir un humano no es estar enfadado.
+    // Salida fácil del seguimiento comercial. Se comprueba sobre el texto del
+    // paciente, no sobre lo que interprete el modelo: es una petición explícita y
+    // debe cumplirse igual aunque el modelo no la mencione.
+    if (pideQueNoLeEscriban(consolidatedText)) {
+      await blockLead({
+        tenantId, conversationId, contactId: contact_id, traceId, reason: 'opted_out'
+      });
+    }
+
     if (possibleFrustration) {
       await markExcluded({
         tenantId,
@@ -697,6 +714,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         contactId: contact_id,
         traceId,
         reason: 'frustration'
+      });
+      await blockLead({
+        tenantId, conversationId, contactId: contact_id, traceId, reason: 'complaint'
       });
     }
 
@@ -979,6 +999,25 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
             traceId,
             operation: hermesResponse.operation
         });
+
+        // Seguimiento de leads. Preguntar por huecos y no reservar deja un lead;
+        // reservar de verdad lo cierra, porque escribirle "¿te sigue interesando?"
+        // a quien ya tiene hora no es insistir: es no habernos enterado.
+        const tipoOperacion = String(hermesResponse.operation?.type ?? '').toLowerCase();
+        const operacionOk = String(hermesResponse.operation?.status ?? '').toLowerCase() === 'success';
+        if (tipoOperacion === 'appointment_created' && operacionOk) {
+            await blockLead({
+                tenantId, conversationId, contactId: contact_id, traceId, reason: 'booked'
+            });
+        } else {
+            await markLeadInterest({
+                tenantId,
+                conversationId,
+                contactId: contact_id,
+                traceId,
+                operation: hermesResponse.operation
+            });
+        }
     }
 
     // E. Ejecutar las herramientas locales (legacy support)

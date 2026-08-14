@@ -35,6 +35,8 @@ import { recoveryMetrics } from './services/inbound-recovery-worker.js';
 import { startOutboxWorker, outboxMetrics } from './services/chatwoot-outbox-worker.js';
 import { startNotificationWorker, notificationMetrics } from './services/notification-outbox-worker.js';
 import { startStaleHandoffWorker, staleHandoffMetrics } from './services/handoff-stale-worker.js';
+import { startLeadFollowupWorker } from './services/lead-followup-worker.js';
+import { leadMetrics } from './leads/service.js';
 import { componentHealth } from './services/component-health.js';
 import { refreshDependencyHealth } from './services/health-probes.js';
 import { assertSupabaseSuccess } from './supabase/assert-success.js';
@@ -154,6 +156,13 @@ server.get('/health', async (request, reply) => {
         ...staleHandoffMetrics,
         threshold_hours: config.HELIOS_HANDOFF_STALE_HOURS
       }
+    },
+    leads: {
+      // enabled=false NO significa apagado del todo: se sigue anotando quién es
+      // lead y con qué texto se le habría escrito, pero no le llega nada a nadie.
+      enabled: config.HELIOS_LEADS_ENABLED,
+      observe_only: !config.HELIOS_LEADS_ENABLED,
+      ...leadMetrics
     },
     csat: {
       // enabled=false NO significa apagado del todo: la decisión se sigue
@@ -1093,6 +1102,9 @@ const stopOutboxWorker = process.env.NODE_ENV !== 'test'
 const stopNotificationWorker = process.env.NODE_ENV !== 'test'
   ? startNotificationWorker()
   : () => Promise.resolve();
+const stopLeadFollowupWorker = process.env.NODE_ENV !== 'test'
+  ? startLeadFollowupWorker()
+  : async () => {};
 const stopStaleHandoffWorker = process.env.NODE_ENV !== 'test'
   ? startStaleHandoffWorker()
   : () => Promise.resolve();
@@ -1121,6 +1133,7 @@ async function gracefulShutdown(signal: string) {
   await stopOutboxWorker();
   await stopNotificationWorker();
   await stopStaleHandoffWorker();
+  await stopLeadFollowupWorker();
   
   server.close().then(() => {
     console.log('[Helios Gateway] Fastify server closed.');
