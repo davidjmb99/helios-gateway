@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import { ajustarUsoDelNombre } from './chatwoot/name-style.js';
 import { 
   idempotencyRepository, 
   bufferRepository, 
@@ -588,7 +589,31 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     });
 
     // Interpretar resultados del Adapter: si safe_to_send=false o error_code presente o message_for_client vacío, NO publicar
-    const replyText = hermesResponse.message_for_client || '';
+    //
+    // ESTILO DEL NOMBRE, y va AQUÍ por un motivo que no es cosmético: la clave del
+    // outbox se calcula a partir del CONTENIDO, así que el texto tiene que quedar
+    // definitivo antes de eso. Ajustarlo después dejaría la clave sin corresponder
+    // con lo que se manda, y esa clave es lo que impide enviar dos veces lo mismo.
+    //
+    // Se pasa el nombre VERIFICADO, nunca el alias de Chatwoot: el alias es lo que
+    // el paciente tenga puesto en WhatsApp y puede ser cualquier cosa.
+    const estiloNombre = ajustarUsoDelNombre(
+      hermesResponse.message_for_client || '',
+      profileStatus.identityComplete ? profileStatus.firstName : null
+    );
+    const replyText = estiloNombre.texto;
+    if (estiloNombre.quitados > 0) {
+      // Se registra el número para poder RESPONDER si esto sirve. El intento
+      // anterior fue una regla en el prompt y, según el operador, «nunca funcionó»;
+      // sin un contador no se puede saber si este sí.
+      console.log(JSON.stringify({
+        event: 'name_style_ajustado',
+        trace_id: traceId,
+        conversation_id: conversationId,
+        quitados: estiloNombre.quitados,
+        conservado: estiloNombre.conservado
+      }));
+    }
     const safeToSend = hermesResponse.safe_to_send !== false;
     const hasErrorCode = !!hermesResponse.error_code;
     const ok = hermesResponse.ok !== false;
