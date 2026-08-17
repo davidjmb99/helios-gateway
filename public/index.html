@@ -2657,7 +2657,15 @@
   </script>
 
   <!-- ====================== AJUSTES ====================== -->
-  <div id="ajustes-overlay" class="hidden fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm" onclick="if(event.target===this) cerrarAjustes()">
+  <!--
+    overflow-y-auto es OBLIGATORIO: el contenedor es fixed inset-0, o sea de la
+    altura exacta de la ventana. Sin el, todo lo que pase de esa altura queda
+    inalcanzable, y la pestana de Base de datos son trece tablas con su descripcion.
+    No es un problema de estilo: la mitad de la pantalla no se podia usar.
+    Los dos overscroll-contain evitan que al llegar al final del modal se empiece a
+    mover el panel de detras.
+  -->
+  <div id="ajustes-overlay" class="hidden fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm overflow-y-auto overscroll-contain" onclick="if(event.target===this) cerrarAjustes()">
     <div class="max-w-3xl mx-auto mt-10 mb-10 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden">
 
       <div class="flex items-center justify-between px-5 py-4 border-b border-slate-800 bg-slate-950/50">
