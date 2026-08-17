@@ -1,6 +1,6 @@
-import { config } from '../config.js';
 import { bufferRepository } from '../repositories/database.js';
 import { NormalizedMessage } from '../chatwoot/normalizer.js';
+import { obtenerBufferMs } from '../tenants/settings.js';
 
 type BufferCallback = (tenantId: string, conversationId: string, traceId: string) => Promise<void>;
 
@@ -17,7 +17,8 @@ class BufferService {
 
   /**
    * Encola un mensaje entrante en el buffer.
-   * Si ya hay un temporizador activo para esa conversación, lo reinicia para esperar otros 5 segundos.
+   * Si ya hay un temporizador activo para esa conversación, lo reinicia para esperar
+   * de nuevo el tiempo configurado por esa clínica.
    */
   public async addMessage(msg: NormalizedMessage): Promise<void> {
     const key = `${msg.tenant_id}:${msg.conversation_id}`;
@@ -34,13 +35,25 @@ class BufferService {
     // 1. Persistimos el mensaje en la base de datos de respaldo
     await bufferRepository.save(msg);
 
-    // 2. Limpiamos el timer existente si el cliente sigue escribiendo
+    // 2. Leemos la espera de ESTA clínica.
+    //
+    // Va aquí y no más abajo por un motivo concreto: entre limpiar el timer viejo
+    // y poner el nuevo no puede haber ningún `await`. Si lo hubiera, dos mensajes
+    // casi simultáneos podrían quedarse los dos sin timer durante ese hueco. Al
+    // resolver la espera antes, el limpiar y el agendar siguen siendo seguidos y
+    // síncronos, igual que cuando el valor venía de una constante.
+    //
+    // Esta llamada está cacheada y nunca lanza: si no se puede leer, devuelve el
+    // valor de siempre.
+    const esperaMs = await obtenerBufferMs(msg.tenant_id);
+
+    // 3. Limpiamos el timer existente si el cliente sigue escribiendo
     if (this.activeTimers.has(key)) {
       clearTimeout(this.activeTimers.get(key));
       this.activeTimers.delete(key);
     }
 
-    // 3. Agendamos un nuevo timer de 5 segundos
+    // 4. Agendamos un nuevo timer con la espera de la clínica
     const timer = setTimeout(async () => {
       this.activeTimers.delete(key);
       this.activeGroupTraces.delete(key); // Limpiamos el trace de grupo al hacer el flush
@@ -51,7 +64,7 @@ class BufferService {
           console.error(`[Buffer Error] Error procesando callback para la clave ${key}:`, error);
         }
       }
-    }, config.BUFFER_MS);
+    }, esperaMs);
 
     this.activeTimers.set(key, timer);
   }

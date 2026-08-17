@@ -21,8 +21,15 @@
 import { supabase } from '../supabase/client.js';
 
 export interface TablaPurgable {
+  /**
+   * El nombre REAL en Supabase, y se muestra tal cual en el panel. Es lo que
+   * permite comparar lo que dice esta pantalla con lo que se ve en el editor de
+   * Supabase al limpiar a mano; con solo la etiqueta bonita no cuadraba nada.
+   */
   tabla: string;
   etiqueta: string;
+  /** Qué se guarda ahí y para qué sirve, en una frase. */
+  descripcion: string;
   grupo: string;
   /**
    * Tablas que hay que vaciar ANTES que esta por clave foránea. Si alguien elige
@@ -38,25 +45,92 @@ export interface TablaPurgable {
  * que helios_processing_batches porque tiene clave foránea contra ella.
  */
 export const TABLAS_PURGABLES: TablaPurgable[] = [
-  { tabla: 'helios_chatwoot_outbox', etiqueta: 'Mensajes enviados por Helios', grupo: 'Conversaciones' },
-  { tabla: 'helios_processing_batches', etiqueta: 'Lotes de procesamiento', grupo: 'Conversaciones', requiere: ['helios_chatwoot_outbox'] },
-  { tabla: 'helios_inbound_buffer', etiqueta: 'Mensajes recibidos', grupo: 'Conversaciones' },
-  { tabla: 'helios_message_idempotency', etiqueta: 'Control de mensajes repetidos', grupo: 'Conversaciones' },
-  { tabla: 'helios_conversation_state', etiqueta: 'Estado de las conversaciones', grupo: 'Conversaciones' },
+  {
+    tabla: 'helios_chatwoot_outbox',
+    etiqueta: 'Mensajes enviados por Helios',
+    descripcion: 'Cada respuesta que Helios publicó y el identificador que devolvió Chatwoot. Es como reconoce sus propios mensajes cuando le vuelven por el webhook, para no contestarse a sí mismo.',
+    grupo: 'Conversaciones'
+  },
+  {
+    tabla: 'helios_processing_batches',
+    etiqueta: 'Lotes de procesamiento',
+    descripcion: 'Una fila por ráfaga de mensajes procesada: cuándo entró, cuándo se contestó y con qué resultado. Es el candado que impide contestar dos veces lo mismo.',
+    grupo: 'Conversaciones',
+    requiere: ['helios_chatwoot_outbox']
+  },
+  {
+    tabla: 'helios_inbound_buffer',
+    etiqueta: 'Mensajes recibidos',
+    descripcion: 'Los mensajes del paciente tal como llegan, guardados mientras se espera a ver si sigue escribiendo. Es el respaldo del buffer: si el proceso se reinicia a mitad, los mensajes no se pierden.',
+    grupo: 'Conversaciones'
+  },
+  {
+    tabla: 'helios_message_idempotency',
+    etiqueta: 'Control de mensajes repetidos',
+    descripcion: 'Una huella por mensaje recibido. Si Chatwoot manda el mismo webhook dos veces, el repetido se descarta aquí antes de llegar al agente.',
+    grupo: 'Conversaciones'
+  },
+  {
+    tabla: 'helios_conversation_state',
+    etiqueta: 'Estado de las conversaciones',
+    descripcion: 'Por conversación: si la atiende una persona o la IA, desde cuándo, si hay un seguimiento comercial pendiente y a quién no se le debe escribir.',
+    grupo: 'Conversaciones'
+  },
 
-  { tabla: 'helios_handoff_events', etiqueta: 'Derivaciones a persona', grupo: 'Derivaciones y avisos' },
-  { tabla: 'helios_notification_outbox', etiqueta: 'Avisos al equipo', grupo: 'Derivaciones y avisos' },
+  {
+    tabla: 'helios_handoff_events',
+    etiqueta: 'Derivaciones a persona',
+    descripcion: 'Cada vez que una conversación pasó a un humano: el motivo, el equipo al que fue, quién la aceptó y cuándo volvió a la IA.',
+    grupo: 'Derivaciones y avisos'
+  },
+  {
+    tabla: 'helios_notification_outbox',
+    etiqueta: 'Avisos al equipo',
+    descripcion: 'Los avisos a Slack y las notas a los equipos de Chatwoot, pendientes o ya enviados. Es lo que evita que un mismo aviso se mande dos veces.',
+    grupo: 'Derivaciones y avisos'
+  },
 
-  { tabla: 'helios_lead_followups', etiqueta: 'Seguimientos comerciales', grupo: 'Comercial' },
-  { tabla: 'helios_financing_cases', etiqueta: 'Casos de financiación', grupo: 'Comercial' },
+  {
+    tabla: 'helios_lead_followups',
+    etiqueta: 'Seguimientos comerciales',
+    descripcion: 'Los mensajes de seguimiento a quien preguntó y no agendó: a quién, cuándo, con qué texto y si se envió de verdad o solo se simuló.',
+    grupo: 'Comercial',
+    advertencia: 'De aquí salen los números de seguimiento que se le enseñan a la clínica a fin de mes. Si lo borras, ese mes ya no se puede medir.'
+  },
+  {
+    tabla: 'helios_financing_cases',
+    etiqueta: 'Casos de financiación',
+    descripcion: 'Las consultas de financiación que quedaron anotadas para que alguien las retome.',
+    grupo: 'Comercial'
+  },
 
-  { tabla: 'helios_gateway_logs', etiqueta: 'Registro del Gateway', grupo: 'Trazas' },
-  { tabla: 'helios_adapter_events', etiqueta: 'Trazas del Adapter', grupo: 'Trazas',
-    advertencia: 'Aquí viven los tokens, el coste y los tiempos. Si lo borras pierdes la referencia para comparar.' },
-  { tabla: 'helios_adapter_executions', etiqueta: 'Ejecuciones del Adapter', grupo: 'Trazas' },
+  {
+    tabla: 'helios_gateway_logs',
+    etiqueta: 'Registro del Gateway',
+    descripcion: 'El diario técnico paso a paso de cada mensaje. Es lo primero que se mira cuando algo falla y hay que reconstruir qué pasó.',
+    grupo: 'Trazas'
+  },
+  {
+    tabla: 'helios_adapter_events',
+    etiqueta: 'Trazas del Adapter',
+    descripcion: 'Lo que ocurrió en cada llamada al modelo: tokens de entrada y salida, cuántos vinieron de caché, el coste y los tiempos.',
+    grupo: 'Trazas',
+    advertencia: 'Aquí viven los tokens, el coste y los tiempos. Si lo borras pierdes la referencia para comparar.'
+  },
+  {
+    tabla: 'helios_adapter_executions',
+    etiqueta: 'Ejecuciones del Adapter',
+    descripcion: 'Una fila por ejecución del agente, con el enlace a su traza y el resultado. Es el índice por el que se navegan las trazas.',
+    grupo: 'Trazas'
+  },
 
-  { tabla: 'helios_patient_profiles', etiqueta: 'Perfiles de paciente', grupo: 'Pacientes',
-    advertencia: 'Helios volverá a pedir nombre, apellidos y correo. Si conservas los contactos en HubSpot, se crearán duplicados o se volverán a emparejar.' }
+  {
+    tabla: 'helios_patient_profiles',
+    etiqueta: 'Perfiles de paciente',
+    descripcion: 'El nombre, los apellidos y el correo verificados de cada paciente, y el enlace con su contacto de HubSpot.',
+    grupo: 'Pacientes',
+    advertencia: 'Helios volverá a pedir nombre, apellidos y correo. Si conservas los contactos en HubSpot, se crearán duplicados o se volverán a emparejar.'
+  }
 ];
 
 const PERMITIDAS = new Set(TABLAS_PURGABLES.map(t => t.tabla));
@@ -70,7 +144,14 @@ export interface ResultadoPurga {
 }
 
 /** Cuenta lo que hay ahora, para que nadie borre a ciegas. */
-export async function contarFilas(tenantId: string): Promise<Array<{ tabla: string; etiqueta: string; grupo: string; filas: number; advertencia?: string }>> {
+export async function contarFilas(tenantId: string): Promise<Array<{
+  tabla: string;
+  etiqueta: string;
+  descripcion: string;
+  grupo: string;
+  filas: number;
+  advertencia?: string;
+}>> {
   const salida = [];
   for (const definicion of TABLAS_PURGABLES) {
     const resultado = await supabase
@@ -80,6 +161,7 @@ export async function contarFilas(tenantId: string): Promise<Array<{ tabla: stri
     salida.push({
       tabla: definicion.tabla,
       etiqueta: definicion.etiqueta,
+      descripcion: definicion.descripcion,
       grupo: definicion.grupo,
       advertencia: definicion.advertencia,
       filas: resultado.error ? -1 : (resultado.count ?? 0)

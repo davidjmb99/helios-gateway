@@ -159,4 +159,41 @@ assert.ok(
   'los perfiles de paciente avisan de la consecuencia'
 );
 
+// --- Cada fila se puede reconocer en Supabase --------------------------------
+// El panel muestra el NOMBRE REAL de la tabla además de la etiqueta. Con solo la
+// etiqueta bonita no se podía comparar la pantalla con lo que se ve en el editor
+// de Supabase al limpiar a mano, que es justo cuando se usa esto.
+
+assert.ok(
+  conteo.every(c => c.tabla.startsWith('helios_')),
+  'el identificador que se muestra es el nombre real de la tabla'
+);
+assert.ok(
+  conteo.every(c => c.descripcion && c.descripcion.length > 40),
+  'y cada tabla explica qué guarda, no solo cómo se llama'
+);
+
+// La lista tiene que ser EXACTAMENTE la que se limpia a mano según
+// «Limpieza total Helios.md». Si mañana aparece una tabla nueva y no se añade
+// aquí, el botón dejaría datos de la clínica detrás sin que nadie se enterase.
+assert.deepEqual(
+  TABLAS_PURGABLES.map(t => t.tabla).sort(),
+  [
+    'helios_adapter_events',
+    'helios_adapter_executions',
+    'helios_chatwoot_outbox',
+    'helios_conversation_state',
+    'helios_financing_cases',
+    'helios_gateway_logs',
+    'helios_handoff_events',
+    'helios_inbound_buffer',
+    'helios_lead_followups',
+    'helios_message_idempotency',
+    'helios_notification_outbox',
+    'helios_patient_profiles',
+    'helios_processing_batches'
+  ],
+  'la lista del panel es la misma que la del procedimiento de limpieza manual'
+);
+
 console.log('data_purge_test: PASS');

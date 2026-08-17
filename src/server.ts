@@ -39,6 +39,7 @@ import { startLeadFollowupWorker } from './services/lead-followup-worker.js';
 import { leadMetrics } from './leads/service.js';
 import { cifrarContrasena, esHashSeguro, verificarContrasena } from './admin/passwords.js';
 import { contarFilas, purgarDatos } from './admin/data-purge.js';
+import { leerAjustes, guardarBufferMs } from './tenants/settings.js';
 import { componentHealth } from './services/component-health.js';
 import { refreshDependencyHealth } from './services/health-probes.js';
 import { assertSupabaseSuccess } from './supabase/assert-success.js';
@@ -207,6 +208,27 @@ server.post('/admin/data/purge', async (request, reply) => {
   if (!resultado.ok) {
     // 400 y no 500: los fallos aquí son de lo que pidió quien llama -confirmación
     // que no coincide, tabla fuera de la lista blanca-, no del servidor.
+    return reply.status(400).send({ error: true, error_code: resultado.error });
+  }
+  return resultado;
+});
+
+// --- Ajustes de la clínica ---------------------------------------------------
+//
+// Misma regla que arriba: la clínica sale del token, no del cuerpo. Aquí importa
+// igual, porque cambiar el buffer de otra clínica le cambiaría el comportamiento
+// del bot a un negocio ajeno.
+
+server.get('/admin/settings', async (request, reply) => {
+  const tenantId = await checkAuth(request, reply);
+  return { ok: true, tenant_id: tenantId, ...(await leerAjustes(tenantId)) };
+});
+
+server.post('/admin/settings/buffer', async (request, reply) => {
+  const tenantId = await checkAuth(request, reply);
+  const cuerpo = (request.body || {}) as { buffer_ms?: unknown };
+  const resultado = await guardarBufferMs(tenantId, cuerpo.buffer_ms);
+  if (!resultado.ok) {
     return reply.status(400).send({ error: true, error_code: resultado.error });
   }
   return resultado;

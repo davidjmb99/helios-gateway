@@ -2112,7 +2112,7 @@
     }
 
     function setAjustesTab(tab) {
-      const tabs = ['apariencia', 'datos'];
+      const tabs = ['apariencia', 'buffer', 'datos'];
       tabs.forEach(t => {
         const boton = document.getElementById('ajustes-tab-' + t);
         const panel = document.getElementById('ajustes-panel-' + t);
@@ -2123,18 +2123,93 @@
           : 'px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200';
       });
       if (tab === 'datos') cargarConteos();
+      if (tab === 'buffer') cargarBuffer();
+    }
+
+    // --- Buffer ---------------------------------------------------------------
+    //
+    // El tiempo que Helios espera antes de contestar, por si la persona sigue
+    // escribiendo. Es por clinica: se guarda en la base, no en una variable de
+    // entorno, asi que cambiarlo NO necesita redeploy.
+
+    async function cargarBuffer() {
+      const caja = document.getElementById('buffer-opciones');
+      const estado = document.getElementById('buffer-estado');
+      estado.textContent = 'Cargando…';
+      caja.innerHTML = '';
+      try {
+        const res = await fetch('/admin/settings', {
+          headers: { 'Authorization': 'Bearer ' + getSessionToken() }
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+
+        caja.innerHTML = (data.opciones || []).map(ms => `
+          <button onclick="guardarBuffer(${ms})" id="buffer-opt-${ms}"
+                  class="rounded-xl border px-4 py-3 text-xs font-bold ${ms === data.buffer_ms
+                    ? 'border-amber-500 bg-amber-500/10 text-amber-300'
+                    : 'border-slate-700 bg-slate-800 text-slate-200 hover:border-amber-500'}">
+            ${(ms / 1000).toString().replace('.', ',')} segundos
+          </button>
+        `).join('');
+
+        estado.innerHTML = data.origen === 'clinica'
+          ? 'Valor elegido para esta clínica.'
+          : 'Sin elegir: se está usando el valor por defecto del sistema (' +
+            (data.por_defecto / 1000).toString().replace('.', ',') + ' s).';
+      } catch (err) {
+        estado.textContent = 'No se pudo cargar el ajuste.';
+      }
+    }
+
+    async function guardarBuffer(ms) {
+      const estado = document.getElementById('buffer-estado');
+      estado.textContent = 'Guardando…';
+      try {
+        const res = await fetch('/admin/settings/buffer', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + getSessionToken(),
+            'Content-Type': 'application/json'
+          },
+          // Igual que en el borrado: NO se manda la clinica. El servidor la saca
+          // del token, para que nadie pueda cambiarle el buffer a otra.
+          body: JSON.stringify({ buffer_ms: ms })
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error_code || 'error');
+        await cargarBuffer();
+        document.getElementById('buffer-estado').innerHTML =
+          '<span class="text-emerald-400">Guardado. Se aplica al próximo mensaje que entre.</span>';
+      } catch (err) {
+        estado.innerHTML = '<span class="text-red-400">No se pudo guardar: ' + escapeHtml(String(err.message)) + '</span>';
+      }
     }
 
     // --- Tema -----------------------------------------------------------------
+    //
+    // localStorage puede estar bloqueado: navegador con el almacenamiento
+    // desactivado, modo restringido, o la pagina abierta desde un data: URL. Ahi
+    // leerlo LANZA. Y como todo el panel vive en un unico bloque de script, una
+    // excepcion suelta aqui no rompe el tema: rompe la pagina entera, porque el
+    // resto de funciones ya no se llegan a definir. De ahi los try.
+
+    function leerTema() {
+      try { return localStorage.getItem('helios_tema') || 'dark'; } catch (e) { return 'dark'; }
+    }
+
+    function escribirTema(tema) {
+      try { localStorage.setItem('helios_tema', tema); } catch (e) { /* sin memoria: dura esta visita */ }
+    }
 
     function aplicarTema(tema) {
       document.documentElement.classList.toggle('tema-claro', tema === 'light');
-      localStorage.setItem('helios_tema', tema);
+      escribirTema(tema);
       pintarBotonesTema();
     }
 
     function pintarBotonesTema() {
-      const actual = localStorage.getItem('helios_tema') || 'dark';
+      const actual = leerTema();
       ['dark', 'light'].forEach(t => {
         const boton = document.getElementById('btn-tema-' + t);
         if (!boton) return;
@@ -2146,7 +2221,7 @@
 
     // Se aplica ANTES de pintar nada para que no haya un parpadeo de oscuro a claro.
     (function temaInicial() {
-      if ((localStorage.getItem('helios_tema') || 'dark') === 'light') {
+      if (leerTema() === 'light') {
         document.documentElement.classList.add('tema-claro');
       }
     })();
@@ -2181,13 +2256,17 @@
             <h4 class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">${escapeHtml(grupo)}</h4>
             <div class="space-y-1.5">
               ${filas.map(f => `
-                <label class="flex items-start gap-2.5 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 cursor-pointer hover:border-slate-600">
-                  <input type="checkbox" class="datos-check mt-0.5" value="${escapeHtml(f.tabla)}"
+                <label class="flex items-start gap-2.5 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2.5 cursor-pointer hover:border-slate-600">
+                  <input type="checkbox" class="datos-check mt-1" value="${escapeHtml(f.tabla)}"
                          onchange="revisarSeleccion()" ${f.filas === 0 ? 'disabled' : ''}>
-                  <span class="flex-1">
-                    <span class="block text-xs text-slate-200">${escapeHtml(f.etiqueta)}</span>
-                    <span class="block text-[10px] text-slate-500 font-mono">${f.filas < 0 ? 'error al contar' : f.filas.toLocaleString() + ' filas'}</span>
-                    ${f.advertencia ? `<span class="block text-[10px] text-amber-400/90 mt-1 leading-snug">${escapeHtml(f.advertencia)}</span>` : ''}
+                  <span class="flex-1 min-w-0">
+                    <span class="flex items-baseline justify-between gap-3">
+                      <span class="font-mono text-[11px] font-bold text-amber-300 break-all">${escapeHtml(f.tabla)}</span>
+                      <span class="shrink-0 font-mono text-[10px] ${f.filas === 0 ? 'text-slate-600' : 'text-slate-400'}">${f.filas < 0 ? 'error al contar' : f.filas.toLocaleString() + ' filas'}</span>
+                    </span>
+                    <span class="block text-xs text-slate-200 mt-1">${escapeHtml(f.etiqueta)}</span>
+                    ${f.descripcion ? `<span class="block text-[10px] text-slate-400 mt-0.5 leading-relaxed">${escapeHtml(f.descripcion)}</span>` : ''}
+                    ${f.advertencia ? `<span class="block text-[10px] text-amber-400/90 mt-1.5 leading-snug border-l-2 border-amber-500/40 pl-2">${escapeHtml(f.advertencia)}</span>` : ''}
                   </span>
                 </label>
               `).join('')}
@@ -2279,6 +2358,7 @@
 
       <nav class="flex gap-1 px-3 py-2 border-b border-slate-800 bg-slate-950/30">
         <button id="ajustes-tab-apariencia" onclick="setAjustesTab('apariencia')" class="px-3 py-1.5 text-xs font-bold rounded-lg bg-amber-500 text-slate-950">Apariencia</button>
+        <button id="ajustes-tab-buffer" onclick="setAjustesTab('buffer')" class="px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200">Buffer</button>
         <button id="ajustes-tab-datos" onclick="setAjustesTab('datos')" class="px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200">Base de datos</button>
       </nav>
 
@@ -2291,6 +2371,29 @@
             <button onclick="aplicarTema('dark')" id="btn-tema-dark" class="flex-1 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-xs font-bold text-slate-200 hover:border-amber-500">Oscuro</button>
             <button onclick="aplicarTema('light')" id="btn-tema-light" class="flex-1 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-xs font-bold text-slate-200 hover:border-amber-500">Claro</button>
           </div>
+        </div>
+      </div>
+
+      <!-- Buffer -->
+      <div id="ajustes-panel-buffer" class="hidden p-5 space-y-4">
+        <div>
+          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Tiempo de espera antes de contestar</h3>
+          <p class="text-[11px] text-slate-400 leading-relaxed mb-3">
+            Cuando entra un mensaje, Helios espera este tiempo por si la persona
+            sigue escribiendo. Todo lo que llegue dentro de la espera se lee junto
+            y se contesta en un solo mensaje.
+          </p>
+          <div id="buffer-opciones" class="grid grid-cols-2 gap-2"></div>
+          <div id="buffer-estado" class="text-[11px] text-slate-400 mt-3"></div>
+        </div>
+        <div class="rounded-xl border border-slate-700 bg-slate-950/40 p-3">
+          <p class="text-[10px] text-slate-400 leading-relaxed">
+            <b class="text-slate-300">Más corto</b> responde antes, pero si el paciente
+            escribe en varios trozos es más fácil que se le contesten por separado:
+            dos respuestas donde debía haber una, y el doble de coste.
+            <b class="text-slate-300">Más largo</b> agrupa mejor y sale más barato,
+            pero la espera se empieza a notar.
+          </p>
         </div>
       </div>
 
