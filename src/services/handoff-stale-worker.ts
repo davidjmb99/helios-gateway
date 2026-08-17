@@ -19,6 +19,8 @@ import { logsRepository } from '../repositories/database.js';
 import { resolveTenantContextByTenantId } from '../tenants/context.js';
 import { returnConversationToBot } from '../handoff/service.js';
 import { HANDOFF_STAGES, isHumanOwnedStage } from '../handoff/stage.js';
+import { decidirVuelta } from '../handoff/stale-policy.js';
+import { obtenerHorasVuelta, umbralMinimoDeVuelta } from '../tenants/settings.js';
 
 let running = false;
 let interval: NodeJS.Timeout | null = null;
@@ -58,16 +60,28 @@ export async function runStaleHandoffSweep(): Promise<void> {
   try {
     if (!config.HELIOS_HANDOFF_ENABLED) return;
 
-    const staleHours = Math.max(1, config.HELIOS_HANDOFF_STALE_HOURS);
-    const cutoff = new Date(Date.now() - staleHours * 60 * 60 * 1000);
+    const ahora = Date.now();
+
+    // EL UMBRAL ES POR CLÍNICA, así que la consulta se hace con el MÁS PERMISIVO
+    // de todos -el más pequeño-. Si se hiciera con el umbral por defecto, una
+    // clínica que haya elegido menos horas nunca entraría en la lista y no se le
+    // devolvería nada. Cada fila se filtra después con el umbral de SU clínica.
+    const umbralMasPermisivo = await umbralMinimoDeVuelta();
+    const cutoffAmplio = new Date(ahora - umbralMasPermisivo * 60 * 60 * 1000);
 
     // Solo candidatas: en manos humanas y sin cambios de estado recientes. El
     // filtro definitivo es el último mensaje real, que se comprueba después.
+    //
+    // El orden por updated_at ascendente importa ahora que la ventana es más
+    // amplia: con LIMIT 50 y sin orden, conversaciones que aún no han llegado a su
+    // umbral podrían desplazar a las que sí, y esas no volverían nunca. Primero
+    // las más antiguas, que son las más probables de estar pasadas de plazo.
     const candidates = await supabase
       .from('helios_conversation_state')
       .select('tenant_id, conversation_id, contact_id, inbox_id, phone, stage, handoff_id, handoff_requested_at')
       .in('stage', HUMAN_OWNED)
-      .lt('updated_at', cutoff.toISOString())
+      .lt('updated_at', cutoffAmplio.toISOString())
+      .order('updated_at', { ascending: true })
       .limit(50);
     assertSupabaseSuccess(candidates, 'conversation_state.list_stale_handoffs');
 
@@ -77,12 +91,13 @@ export async function runStaleHandoffSweep(): Promise<void> {
       try {
         const lastMessage = await lastActivityAt(row.tenant_id, row.conversation_id);
         const reference = lastMessage || row.handoff_requested_at;
-        if (!reference) continue;
-        if (new Date(reference).getTime() > cutoff.getTime()) continue;
 
-        const idleHours = Math.round(
-          (Date.now() - new Date(reference).getTime()) / 36_000
-        ) / 100;
+        const umbralDeEstaClinica = await obtenerHorasVuelta(row.tenant_id);
+        const decision = decidirVuelta({ referencia: reference, umbralHoras: umbralDeEstaClinica, ahora });
+        if (!decision.volver) continue;
+
+        const staleHours = decision.umbral_horas;
+        const idleHours = decision.horas_inactiva;
 
         await returnConversationToBot({
           tenantContext: resolveTenantContextByTenantId(row.tenant_id),
@@ -90,7 +105,7 @@ export async function runStaleHandoffSweep(): Promise<void> {
           contact_id: row.contact_id || 'unknown',
           inbox_id: row.inbox_id || 'unknown',
           phone: row.phone || '',
-          trace_id: `stale-handoff-${row.conversation_id}-${cutoff.getTime()}`,
+          trace_id: `stale-handoff-${row.conversation_id}-${cutoffAmplio.getTime()}`,
           handoff_id: row.handoff_id || null,
           accepted_by: null
         });

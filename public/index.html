@@ -2112,7 +2112,7 @@
     }
 
     function setAjustesTab(tab) {
-      const tabs = ['apariencia', 'buffer', 'datos'];
+      const tabs = ['apariencia', 'conversacion', 'datos'];
       tabs.forEach(t => {
         const boton = document.getElementById('ajustes-tab-' + t);
         const panel = document.getElementById('ajustes-panel-' + t);
@@ -2123,66 +2123,153 @@
           : 'px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200';
       });
       if (tab === 'datos') cargarConteos();
-      if (tab === 'buffer') cargarBuffer();
+      if (tab === 'conversacion') cargarConversacion();
     }
 
-    // --- Buffer ---------------------------------------------------------------
+    // --- Conversacion ---------------------------------------------------------
     //
-    // El tiempo que Helios espera antes de contestar, por si la persona sigue
-    // escribiendo. Es por clinica: se guarda en la base, no en una variable de
-    // entorno, asi que cambiarlo NO necesita redeploy.
+    // Dos tiempos que gobiernan el flujo, los dos POR CLINICA y guardados en la
+    // base, no en variables de entorno: cambiarlos NO necesita redeploy.
+    //
+    //   buffer_ms ............ cuanto espera Helios antes de contestar
+    //   handoff_stale_hours .. tras cuantas horas sin actividad retoma una
+    //                          conversacion que esta en manos de una persona
+    //
+    // ELEGIR NO GUARDA. Se marca la opcion, se ve que va a cambiar, y hasta que no
+    // se pulsa "Guardar cambios" no se toca nada. Estos dos ajustes cambian el
+    // comportamiento del bot con pacientes de verdad, y un clic accidental no
+    // deberia poder hacerlo.
 
-    async function cargarBuffer() {
-      const caja = document.getElementById('buffer-opciones');
-      const estado = document.getElementById('buffer-estado');
+    let ajustesActuales = null;
+    let ajustesPendientes = {};
+
+    const CAMPOS_AJUSTE = {
+      buffer_ms: {
+        nombre: 'La espera antes de contestar',
+        texto: ms => (ms / 1000).toString().replace('.', ',') + ' segundos'
+      },
+      handoff_stale_hours: {
+        nombre: 'La vuelta a la IA por inactividad',
+        texto: h => h === 1 ? '1 hora' : h + ' horas'
+      }
+    };
+
+    async function cargarConversacion() {
+      const estado = document.getElementById('ajustes-resumen');
       estado.textContent = 'Cargando…';
-      caja.innerHTML = '';
       try {
         const res = await fetch('/admin/settings', {
           headers: { 'Authorization': 'Bearer ' + getSessionToken() }
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
-
-        caja.innerHTML = (data.opciones || []).map(ms => `
-          <button onclick="guardarBuffer(${ms})" id="buffer-opt-${ms}"
-                  class="rounded-xl border px-4 py-3 text-xs font-bold ${ms === data.buffer_ms
-                    ? 'border-amber-500 bg-amber-500/10 text-amber-300'
-                    : 'border-slate-700 bg-slate-800 text-slate-200 hover:border-amber-500'}">
-            ${(ms / 1000).toString().replace('.', ',')} segundos
-          </button>
-        `).join('');
-
-        estado.innerHTML = data.origen === 'clinica'
-          ? 'Valor elegido para esta clínica.'
-          : 'Sin elegir: se está usando el valor por defecto del sistema (' +
-            (data.por_defecto / 1000).toString().replace('.', ',') + ' s).';
+        ajustesActuales = await res.json();
+        ajustesPendientes = {};
+        pintarConversacion();
       } catch (err) {
-        estado.textContent = 'No se pudo cargar el ajuste.';
+        estado.innerHTML = '<span class="text-red-400">No se pudieron cargar los ajustes.</span>';
       }
     }
 
-    async function guardarBuffer(ms) {
-      const estado = document.getElementById('buffer-estado');
-      estado.textContent = 'Guardando…';
+    function botonDeOpcion(campo, valor, actual) {
+      const elegido = (campo in ajustesPendientes ? ajustesPendientes[campo] : actual) === valor;
+      const sinGuardar = campo in ajustesPendientes && ajustesPendientes[campo] === valor;
+      const clases = elegido
+        ? (sinGuardar
+            ? 'border-amber-400 bg-amber-500/20 text-amber-200 ring-2 ring-amber-400/40'
+            : 'border-amber-500 bg-amber-500/10 text-amber-300')
+        : 'border-slate-700 bg-slate-800 text-slate-200 hover:border-amber-500';
+      return '<button onclick="elegirAjuste(\'' + campo + '\', ' + valor + ')"'
+        + ' class="rounded-xl border px-3 py-3 text-xs font-bold ' + clases + '">'
+        + escapeHtml(CAMPOS_AJUSTE[campo].texto(valor))
+        + (sinGuardar ? '<span class="block text-[9px] font-normal opacity-80 mt-0.5">sin guardar</span>' : '')
+        + '</button>';
+    }
+
+    function pintarConversacion() {
+      const a = ajustesActuales;
+      if (!a) return;
+
+      document.getElementById('buffer-opciones').innerHTML =
+        (a.buffer_opciones || []).map(ms => botonDeOpcion('buffer_ms', ms, a.buffer_ms)).join('');
+      document.getElementById('vuelta-opciones').innerHTML =
+        (a.handoff_stale_opciones || []).map(h => botonDeOpcion('handoff_stale_hours', h, a.handoff_stale_hours)).join('');
+
+      document.getElementById('buffer-estado').innerHTML = textoDeOrigen(
+        a.buffer_origen, CAMPOS_AJUSTE.buffer_ms.texto(a.buffer_por_defecto));
+      document.getElementById('vuelta-estado').innerHTML = textoDeOrigen(
+        a.handoff_stale_origen, CAMPOS_AJUSTE.handoff_stale_hours.texto(a.handoff_stale_por_defecto));
+
+      const campos = Object.keys(ajustesPendientes);
+      const resumen = document.getElementById('ajustes-resumen');
+      const boton = document.getElementById('ajustes-btn-guardar');
+      const descartar = document.getElementById('ajustes-btn-descartar');
+
+      if (campos.length === 0) {
+        resumen.innerHTML = '<span class="text-slate-500">No hay cambios sin guardar.</span>';
+        boton.disabled = true;
+        descartar.classList.add('hidden');
+      } else {
+        resumen.innerHTML = campos.map(campo =>
+          '· ' + escapeHtml(CAMPOS_AJUSTE[campo].nombre) + ': '
+          + escapeHtml(CAMPOS_AJUSTE[campo].texto(ajustesActuales[campo])) + ' → <b>'
+          + escapeHtml(CAMPOS_AJUSTE[campo].texto(ajustesPendientes[campo])) + '</b>'
+        ).join('<br>');
+        boton.disabled = false;
+        descartar.classList.remove('hidden');
+      }
+    }
+
+    function textoDeOrigen(origen, porDefecto) {
+      return origen === 'clinica'
+        ? '<span class="text-slate-400">Valor elegido para esta clínica.</span>'
+        : '<span class="text-slate-500">Sin elegir: se usa el valor por defecto del sistema ('
+          + escapeHtml(porDefecto) + ').</span>';
+    }
+
+    function elegirAjuste(campo, valor) {
+      // Volver a marcar lo que ya esta guardado no es un cambio: se quita de los
+      // pendientes en vez de mandar una escritura que no cambia nada.
+      if (ajustesActuales && ajustesActuales[campo] === valor) delete ajustesPendientes[campo];
+      else ajustesPendientes[campo] = valor;
+      pintarConversacion();
+    }
+
+    function descartarCambios() {
+      ajustesPendientes = {};
+      pintarConversacion();
+    }
+
+    async function guardarConversacion() {
+      const boton = document.getElementById('ajustes-btn-guardar');
+      const resumen = document.getElementById('ajustes-resumen');
+      const aGuardar = { ...ajustesPendientes };
+      boton.disabled = true;
+      boton.textContent = 'Guardando…';
       try {
-        const res = await fetch('/admin/settings/buffer', {
+        const res = await fetch('/admin/settings', {
           method: 'POST',
           headers: {
             'Authorization': 'Bearer ' + getSessionToken(),
             'Content-Type': 'application/json'
           },
           // Igual que en el borrado: NO se manda la clinica. El servidor la saca
-          // del token, para que nadie pueda cambiarle el buffer a otra.
-          body: JSON.stringify({ buffer_ms: ms })
+          // del token, para que nadie pueda cambiarle los tiempos a otra.
+          body: JSON.stringify(aGuardar)
         });
         const data = await res.json();
         if (!res.ok || data.error) throw new Error(data.error_code || 'error');
-        await cargarBuffer();
-        document.getElementById('buffer-estado').innerHTML =
-          '<span class="text-emerald-400">Guardado. Se aplica al próximo mensaje que entre.</span>';
+        // Se recarga del servidor en vez de dar por bueno lo enviado: lo que se
+        // muestra es lo que hay guardado, no lo que se pidio.
+        await cargarConversacion();
+        document.getElementById('ajustes-resumen').innerHTML =
+          '<span class="text-emerald-400">Guardado y activo. Se aplica a partir del próximo mensaje; '
+          + 'las conversaciones que ya estén esperando siguen con el valor anterior.</span>';
       } catch (err) {
-        estado.innerHTML = '<span class="text-red-400">No se pudo guardar: ' + escapeHtml(String(err.message)) + '</span>';
+        resumen.innerHTML = '<span class="text-red-400">No se guardó nada: '
+          + escapeHtml(String(err.message)) + '</span>';
+        pintarConversacion();
+      } finally {
+        boton.textContent = 'Guardar cambios';
       }
     }
 
@@ -2358,7 +2445,7 @@
 
       <nav class="flex gap-1 px-3 py-2 border-b border-slate-800 bg-slate-950/30">
         <button id="ajustes-tab-apariencia" onclick="setAjustesTab('apariencia')" class="px-3 py-1.5 text-xs font-bold rounded-lg bg-amber-500 text-slate-950">Apariencia</button>
-        <button id="ajustes-tab-buffer" onclick="setAjustesTab('buffer')" class="px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200">Buffer</button>
+        <button id="ajustes-tab-conversacion" onclick="setAjustesTab('conversacion')" class="px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200">Conversación</button>
         <button id="ajustes-tab-datos" onclick="setAjustesTab('datos')" class="px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200">Base de datos</button>
       </nav>
 
@@ -2374,8 +2461,9 @@
         </div>
       </div>
 
-      <!-- Buffer -->
-      <div id="ajustes-panel-buffer" class="hidden p-5 space-y-4">
+      <!-- Conversación -->
+      <div id="ajustes-panel-conversacion" class="hidden p-5 space-y-5">
+
         <div>
           <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Tiempo de espera antes de contestar</h3>
           <p class="text-[11px] text-slate-400 leading-relaxed mb-3">
@@ -2384,16 +2472,45 @@
             y se contesta en un solo mensaje.
           </p>
           <div id="buffer-opciones" class="grid grid-cols-2 gap-2"></div>
-          <div id="buffer-estado" class="text-[11px] text-slate-400 mt-3"></div>
-        </div>
-        <div class="rounded-xl border border-slate-700 bg-slate-950/40 p-3">
-          <p class="text-[10px] text-slate-400 leading-relaxed">
-            <b class="text-slate-300">Más corto</b> responde antes, pero si el paciente
+          <div id="buffer-estado" class="text-[11px] mt-2"></div>
+          <p class="text-[10px] text-slate-500 leading-relaxed mt-2">
+            <b class="text-slate-400">Más corto</b> responde antes, pero si el paciente
             escribe en varios trozos es más fácil que se le contesten por separado:
             dos respuestas donde debía haber una, y el doble de coste.
-            <b class="text-slate-300">Más largo</b> agrupa mejor y sale más barato,
+            <b class="text-slate-400">Más largo</b> agrupa mejor y sale más barato,
             pero la espera se empieza a notar.
           </p>
+        </div>
+
+        <div class="border-t border-slate-800 pt-5">
+          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Vuelta a la IA por inactividad</h3>
+          <p class="text-[11px] text-slate-400 leading-relaxed mb-3">
+            Cuando una conversación pasa a una persona y nadie escribe durante este
+            tiempo, Helios la retoma y vuelve a atender. Es la red de seguridad para
+            que un olvido no deje al paciente sin respuesta.
+          </p>
+          <div id="vuelta-opciones" class="grid grid-cols-3 gap-2"></div>
+          <div id="vuelta-estado" class="text-[11px] mt-2"></div>
+          <p class="text-[10px] text-slate-500 leading-relaxed mt-2">
+            <b class="text-slate-400">Menos horas</b> significa que Helios recupera antes
+            la conversación, con el riesgo de retomarla mientras alguien todavía la
+            está atendiendo por otro canal.
+            <b class="text-slate-400">Más horas</b> da margen al equipo, pero si a nadie
+            se le ocurre cerrar la derivación, el paciente espera más.
+            No se puede desactivar: sin esta red, un olvido deja una conversación
+            muda para siempre.
+          </p>
+        </div>
+
+        <div class="border-t border-slate-800 pt-4">
+          <div id="ajustes-resumen" class="text-[11px] text-amber-200 leading-relaxed mb-3"></div>
+          <div class="flex gap-2">
+            <button id="ajustes-btn-descartar" onclick="descartarCambios()" class="hidden flex-1 rounded-lg border border-slate-700 px-4 py-2 text-xs font-bold text-slate-300 hover:bg-slate-800">Descartar</button>
+            <button id="ajustes-btn-guardar" disabled onclick="guardarConversacion()"
+                    class="flex-1 rounded-lg bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-amber-400">
+              Guardar cambios
+            </button>
+          </div>
         </div>
       </div>
 

@@ -39,7 +39,7 @@ import { startLeadFollowupWorker } from './services/lead-followup-worker.js';
 import { leadMetrics } from './leads/service.js';
 import { cifrarContrasena, esHashSeguro, verificarContrasena } from './admin/passwords.js';
 import { contarFilas, purgarDatos } from './admin/data-purge.js';
-import { leerAjustes, guardarBufferMs } from './tenants/settings.js';
+import { leerAjustes, guardarAjustes } from './tenants/settings.js';
 import { componentHealth } from './services/component-health.js';
 import { refreshDependencyHealth } from './services/health-probes.js';
 import { assertSupabaseSuccess } from './supabase/assert-success.js';
@@ -157,7 +157,11 @@ server.get('/health', async (request, reply) => {
       notifications: notificationMetrics,
       stale_return: {
         ...staleHandoffMetrics,
-        threshold_hours: config.HELIOS_HANDOFF_STALE_HOURS
+        // Ya NO es el umbral efectivo: cada clínica puede tener el suyo en
+        // helios_tenants.handoff_stale_hours. Este es el que se usa cuando una
+        // clínica no ha elegido nada. El efectivo de cada una sale de
+        // GET /admin/settings, que va autenticado por clínica.
+        threshold_hours_por_defecto: config.HELIOS_HANDOFF_STALE_HOURS
       }
     },
     leads: {
@@ -224,10 +228,12 @@ server.get('/admin/settings', async (request, reply) => {
   return { ok: true, tenant_id: tenantId, ...(await leerAjustes(tenantId)) };
 });
 
-server.post('/admin/settings/buffer', async (request, reply) => {
+// Un solo endpoint para todos los ajustes: se manda solo lo que cambia, y si algo
+// viene mal NO se guarda nada. Media peticion aplicada dejaria la pantalla
+// mostrando un estado distinto del que hay de verdad.
+server.post('/admin/settings', async (request, reply) => {
   const tenantId = await checkAuth(request, reply);
-  const cuerpo = (request.body || {}) as { buffer_ms?: unknown };
-  const resultado = await guardarBufferMs(tenantId, cuerpo.buffer_ms);
+  const resultado = await guardarAjustes(tenantId, (request.body || {}) as Record<string, unknown>);
   if (!resultado.ok) {
     return reply.status(400).send({ error: true, error_code: resultado.error });
   }

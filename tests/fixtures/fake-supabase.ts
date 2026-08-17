@@ -30,6 +30,8 @@ type Filter =
   | { kind: 'in'; column: string; values: any[] }
   | { kind: 'gte'; column: string; value: any }
   | { kind: 'lte'; column: string; value: any }
+  | { kind: 'lt'; column: string; value: any }
+  | { kind: 'gt'; column: string; value: any }
   | { kind: 'is_null'; column: string; negated: boolean };
 
 /**
@@ -55,6 +57,13 @@ function matches(row: Row, filters: Filter[]): boolean {
         return new Date(current).getTime() >= new Date(filter.value).getTime();
       case 'lte':
         return new Date(current).getTime() <= new Date(filter.value).getTime();
+      // lt y gt son ESTRICTOS. Importan justo en el borde, que es donde vive el
+      // barrido de handoff: con lte, una conversación tocada exactamente en el
+      // corte entraría en la lista y en PostgREST no.
+      case 'lt':
+        return new Date(current).getTime() < new Date(filter.value).getTime();
+      case 'gt':
+        return new Date(current).getTime() > new Date(filter.value).getTime();
       case 'is_null':
         return filter.negated
           ? current !== null && current !== undefined
@@ -96,6 +105,16 @@ class FakeQuery implements PromiseLike<any> {
 
   lte(column: string, value: any) {
     this.filters.push({ kind: 'lte', column, value });
+    return this;
+  }
+
+  lt(column: string, value: any) {
+    this.filters.push({ kind: 'lt', column, value });
+    return this;
+  }
+
+  gt(column: string, value: any) {
+    this.filters.push({ kind: 'gt', column, value });
     return this;
   }
 
