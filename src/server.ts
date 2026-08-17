@@ -164,18 +164,19 @@ server.get('/health', async (request, reply) => {
         threshold_hours_por_defecto: config.HELIOS_HANDOFF_STALE_HOURS
       }
     },
+    // El modo de estas dos funciones es POR CLÍNICA desde HEL-072, así que aquí ya
+    // no se puede decir «enabled: false» y quedarse tan ancho: seria mentir igual
+    // que hacía threshold_hours con el umbral del handoff. Lo que se publica es el
+    // modo POR DEFECTO derivado del entorno; el efectivo de cada clínica sale de
+    // GET /admin/settings, que va autenticado por clínica.
     leads: {
-      // enabled=false NO significa apagado del todo: se sigue anotando quién es
-      // lead y con qué texto se le habría escrito, pero no le llega nada a nadie.
-      enabled: config.HELIOS_LEADS_ENABLED,
-      observe_only: !config.HELIOS_LEADS_ENABLED,
+      modo_por_defecto: config.HELIOS_LEADS_ENABLED ? 'on' : 'observe',
+      nota: 'el modo efectivo es por clinica: ver GET /admin/settings',
       ...leadMetrics
     },
     csat: {
-      // enabled=false NO significa apagado del todo: la decisión se sigue
-      // anotando y contando, pero no se escribe ninguna etiqueta en Chatwoot.
-      enabled: config.HELIOS_CSAT_ENABLED,
-      observe_only: !config.HELIOS_CSAT_ENABLED,
+      modo_por_defecto: config.HELIOS_CSAT_ENABLED ? 'on' : 'observe',
+      nota: 'el modo efectivo es por clinica: ver GET /admin/settings',
       ...csatMetrics
     },
     hermesMode: getHermesStatus()
