@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { leerContextoDeClinica } from '../tenants/settings.js';
 import { config } from '../config.js';
 import { HermesResponse, HermesResponseSchema } from './schema.js';
 import { debugTracker } from '../debug/debug-tracker.js';
@@ -40,6 +41,21 @@ export async function callHermes(payload: any, traceId: string): Promise<HermesR
 
   if (!accountId || !tenantId || !clinicId || !hermesProfile) {
     throw new Error('TENANT_NOT_CONFIGURED');
+  }
+
+  // El horario y el tono de ESTA clínica, para el contexto que viaja a Hermes. Con
+  // captura: un ajuste que no se puede leer no puede impedir contestarle a un
+  // paciente, así que en el peor caso el turno va sin este contexto extra.
+  let clinicHours: unknown = null;
+  let clinicTone: string | null = null;
+  let clinicTimezone = config.CLINIC_TIMEZONE;
+  try {
+    const ajustes = await leerContextoDeClinica(tenantId);
+    clinicHours = ajustes.horario;
+    clinicTone = ajustes.tono;
+    clinicTimezone = ajustes.zona;
+  } catch {
+    /* se sigue sin contexto de clínica */
   }
 
   // 1. Caso de Hermes Deshabilitado
@@ -104,7 +120,15 @@ Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos
         contact_id: contactId,
         phone: phone,
         patient_is_new: isNew,
-        missing_fields: missing
+        missing_fields: missing,
+        // CONTEXTO DE LA CLÍNICA, para que no haya que editar el perfil de Hermes
+        // por cada cliente nuevo. Van solo si la clínica los ha configurado, y hay
+        // que ser honesto con su alcance: el Gateway los MANDA, pero lo que Helios
+        // dice lo decide su SOUL. Sirven cuando el SOUL está escrito para leerlos.
+        // El tono está limitado en largo porque esto viaja en CADA turno.
+        ...(clinicHours ? { clinic_hours: clinicHours } : {}),
+        ...(clinicTone ? { clinic_tone: clinicTone } : {}),
+        clinic_timezone: clinicTimezone
       }
     };
   } else {

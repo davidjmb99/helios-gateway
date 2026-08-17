@@ -139,10 +139,48 @@ export function momentoLocal(fecha: Date, zona: string): { dia: number; minuto: 
   return { dia, minuto: hora * 60 + Number(valor('minute')) };
 }
 
+/** ¿Está la clínica atendiendo en este instante? Esto es lo que decide si se puede DAR CITA. */
 export function clinicaAbierta(fecha: Date, zona: string, horario: HorarioClinica): boolean {
   const { dia, minuto } = momentoLocal(fecha, zona);
   if (dia < 0) return false;
   return (horario[dia] ?? []).some(f => minuto >= f.desde && minuto < f.hasta);
+}
+
+/** Horas del día en que es decente escribir. En minutos desde medianoche. */
+export interface VentanaEnvioDiaria {
+  desde: number;
+  hasta: number;
+}
+
+/**
+ * ¿Se le puede ESCRIBIR a alguien en este instante?
+ *
+ * DOS CONDICIONES, y son distintas de «la clínica está abierta»:
+ *
+ *  1. Que la clínica TRABAJE ese día. El domingo no se manda seguimiento, aunque
+ *     las once de la mañana de un domingo sea una hora perfectamente decente.
+ *  2. Que la hora esté dentro de la ventana de envío, que es más ancha que el
+ *     horario de atención: se puede escribir a las 8:00 aunque la puerta abra a
+ *     las 10:00, y hasta las 22:00 aunque cerrara a las 20:00.
+ *
+ * Antes esto usaba el horario de atención para las dos cosas, y el efecto era que
+ * un seguimiento no podía salir después de la hora de cierre. Que es más
+ * conservador de lo acordado, pero también dejaba sin ninguna hora válida a
+ * conversaciones que sí la tenían.
+ *
+ * Lo que NUNCA puede pasar es escribir de madrugada, y de eso se encarga la ventana.
+ */
+export function sePuedeEscribir(
+  fecha: Date,
+  zona: string,
+  horario: HorarioClinica,
+  envio: VentanaEnvioDiaria
+): boolean {
+  const { dia, minuto } = momentoLocal(fecha, zona);
+  if (dia < 0) return false;
+  const esDiaLaborable = (horario[dia] ?? []).length > 0;
+  if (!esDiaLaborable) return false;
+  return minuto >= envio.desde && minuto < envio.hasta;
 }
 
 export interface VentanaSeguimiento {
@@ -154,14 +192,18 @@ export interface VentanaSeguimiento {
    */
   horasMaximas: number;
   zona: string;
+  /** Qué días trabaja la clínica. Solo se usa para saber si el día cuenta. */
   horario: HorarioClinica;
+  /** A qué horas se puede escribir. */
+  envio: VentanaEnvioDiaria;
 }
 
 export const VENTANA_POR_DEFECTO: VentanaSeguimiento = {
   horasMinimas: 12,
   horasMaximas: 23,
   zona: 'Europe/Madrid',
-  horario: HORARIO_COI
+  horario: HORARIO_COI,
+  envio: { desde: 8 * 60, hasta: 22 * 60 }
 };
 
 /**
@@ -187,9 +229,18 @@ export function calcularMomentoDeEnvio(
   const tarde = base + ventana.horasMaximas * 3600_000;
   const PASO = 15 * 60_000;
 
+  // EL SEGUIMIENTO ES SIEMPRE DE OTRO DÍA, y esto no es una preferencia estética:
+  // el mensaje dice literalmente «ayer preguntaste por una cita». Con la ventana de
+  // envío hasta las 22:00, un interés de las 9 de la mañana cumple el mínimo de 12
+  // horas a las 21:00 del MISMO día, y el mensaje le diría «ayer» a algo que pasó
+  // esa misma mañana. Se compara el día local, no el UTC, porque el corte que
+  // importa es la medianoche del paciente.
+  const diaDelInteres = momentoLocal(interesEn, ventana.zona).dia;
+
   for (let t = pronto; t <= tarde; t += PASO) {
     const candidato = new Date(t);
-    if (clinicaAbierta(candidato, ventana.zona, ventana.horario)) return candidato;
+    if (momentoLocal(candidato, ventana.zona).dia === diaDelInteres) continue;
+    if (sePuedeEscribir(candidato, ventana.zona, ventana.horario, ventana.envio)) return candidato;
   }
   return null;
 }

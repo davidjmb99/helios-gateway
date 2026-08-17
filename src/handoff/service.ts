@@ -30,6 +30,7 @@ import { outboxRepository } from '../repositories/durable.js';
 import { createHandoffIdentity, createOutboxIdentity, shortFingerprint } from '../durable/identity.js';
 import { ConversationRecap, buildRecap, renderRecap } from './recap.js';
 import type { TenantContext } from '../tenants/context.js';
+import { obtenerEquipos } from '../tenants/settings.js';
 import {
   HandoffDestination,
   HandoffStage,
@@ -161,12 +162,20 @@ export async function openHandoff(input: OpenHandoffInput): Promise<OpenedHandof
   // arregla errores, no atiende pacientes. Así que la conversación se ASIGNA a
   // recepción, que es quien sigue hablando con el paciente, y a soporte se le
   // MENCIONA para que vea el error y lo arregle.
+  // Los IDs de equipo salen del panel si la clínica los ha puesto, y del JSON de
+  // entorno si no. Se mezcla POR DESTINO, no todo o nada: si en el panel solo hay
+  // recepción, los otros dos siguen viniendo del entorno. Reemplazar el mapa entero
+  // dejaría destinos sin equipo, y un destino sin equipo es una derivación que no se
+  // asigna a nadie.
+  const teams = await obtenerEquipos(tenantContext.tenant_id, routing.teams)
+    .catch(() => routing.teams);
+
   const isTechnical = request.origin === 'technical_failure';
   const requestedTeamId = isTechnical
-    ? (routing.teams.reception ?? null)
-    : (routing.teams[request.destination] ?? null);
-  const destinationTeamId = requestedTeamId ?? routing.teams.reception ?? null;
-  const supportTeamId = isTechnical ? (routing.teams.helios_support ?? null) : null;
+    ? (teams.reception ?? null)
+    : (teams[request.destination] ?? null);
+  const destinationTeamId = requestedTeamId ?? teams.reception ?? null;
+  const supportTeamId = isTechnical ? (teams.helios_support ?? null) : null;
   if (!requestedTeamId && destinationTeamId) {
     console.warn(JSON.stringify({
       event: 'handoff_destination_team_fallback',

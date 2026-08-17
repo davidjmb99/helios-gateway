@@ -36,6 +36,25 @@ import {
   MAXIMO_HORAS_VUELTA,
   normalizarHorasVuelta
 } from '../handoff/stale-policy.js';
+import {
+  HORARIO_POR_DEFECTO,
+  VENTANA_ENVIO_POR_DEFECTO,
+  LIMITES_VENTANA_ENVIO,
+  MODOS_FUNCION,
+  MAX_LARGO_TONO,
+  horaDeMinutos,
+  horarioParaGuardar,
+  normalizarEquipos,
+  normalizarHorario,
+  normalizarModo,
+  normalizarTono,
+  normalizarVentanaEnvio,
+  normalizarZona,
+  type EquiposClinica,
+  type HorarioSemanal,
+  type ModoFuncion,
+  type VentanaEnvio
+} from './settings-schema.js';
 
 /** Lo que ofrece el desplegable del panel, en milisegundos. */
 export const VALORES_BUFFER = [5000, 8000, 10000, 15000] as const;
@@ -51,12 +70,42 @@ const MAXIMO_BUFFER_MS = 30000;
 
 const VIDA_CACHE_MS = 60_000;
 
+type Origen = 'clinica' | 'defecto';
+
 export interface AjustesClinica {
   buffer_ms: number;
-  buffer_origen: 'clinica' | 'defecto';
   handoff_stale_hours: number;
-  handoff_stale_origen: 'clinica' | 'defecto';
+  /** Cuándo se puede DAR CITA. */
+  clinic_hours: HorarioSemanal;
+  /** Cuándo se puede MANDAR un seguimiento. Distinto de lo anterior. */
+  followup_window: VentanaEnvio;
+  csat_mode: ModoFuncion;
+  leads_mode: ModoFuncion;
+  chatwoot_teams: EquiposClinica;
+  clinic_timezone: string;
+  clinic_tone: string | null;
+  /** Qué campos los eligió la clínica y cuáles vienen de lo de siempre. */
+  origen: Record<string, Origen>;
 }
+
+/** Los campos que se pueden guardar, con su validador. Uno por columna. */
+const CAMPOS = {
+  buffer_ms: { normalizar: (v: unknown) => normalizarBufferMs(v), error: 'BUFFER_FUERA_DE_RANGO' },
+  handoff_stale_hours: { normalizar: normalizarHorasVuelta, error: 'HORAS_VUELTA_FUERA_DE_RANGO' },
+  clinic_hours: { normalizar: normalizarHorario, error: 'HORARIO_INVALIDO', guardar: horarioParaGuardar },
+  followup_window: {
+    normalizar: normalizarVentanaEnvio,
+    error: 'VENTANA_ENVIO_INVALIDA',
+    guardar: (v: VentanaEnvio) => ({ desde: horaDeMinutos(v.desde), hasta: horaDeMinutos(v.hasta) })
+  },
+  csat_mode: { normalizar: normalizarModo, error: 'MODO_INVALIDO' },
+  leads_mode: { normalizar: normalizarModo, error: 'MODO_INVALIDO' },
+  chatwoot_teams: { normalizar: normalizarEquipos, error: 'EQUIPOS_INVALIDOS' },
+  clinic_timezone: { normalizar: normalizarZona, error: 'ZONA_INVALIDA' },
+  clinic_tone: { normalizar: normalizarTono, error: 'TONO_INVALIDO' }
+} as const;
+
+type CampoAjuste = keyof typeof CAMPOS;
 
 let cache: { expira: number; porClinica: Map<string, AjustesClinica> } | null = null;
 
@@ -77,23 +126,28 @@ export function normalizarBufferMs(valor: unknown): number | null {
   return entero;
 }
 
+/**
+ * Los valores de siempre: lo que se usaba antes de que esto fuera configurable.
+ *
+ * Los modos se DERIVAN de las variables de entorno viejas para que aplicar la
+ * migración no cambie el comportamiento de nadie. Un flag en false nunca significó
+ * «apagado del todo»: significaba «decide y anota sin tocar a ningún paciente», o
+ * sea observación. Traducirlo a 'off' habría apagado en silencio la recogida de
+ * datos que lleva días acumulándose.
+ */
 function porDefecto(): AjustesClinica {
   return {
     buffer_ms: config.BUFFER_MS,
-    buffer_origen: 'defecto',
     handoff_stale_hours: Math.max(MINIMO_HORAS_VUELTA, config.HELIOS_HANDOFF_STALE_HOURS),
-    handoff_stale_origen: 'defecto'
+    clinic_hours: HORARIO_POR_DEFECTO,
+    followup_window: VENTANA_ENVIO_POR_DEFECTO,
+    csat_mode: config.HELIOS_CSAT_ENABLED ? 'on' : 'observe',
+    leads_mode: config.HELIOS_LEADS_ENABLED ? 'on' : 'observe',
+    chatwoot_teams: {},
+    clinic_timezone: config.CLINIC_TIMEZONE,
+    clinic_tone: null,
+    origen: {}
   };
-}
-
-function avisarValorInvalido(campo: string, tenantId: string, valor: unknown, seUsa: number): void {
-  console.warn(JSON.stringify({
-    event: 'ajuste_invalido_en_base',
-    campo,
-    tenant_id: tenantId,
-    valor,
-    se_usa: seUsa
-  }));
 }
 
 async function cargarTodas(): Promise<Map<string, AjustesClinica>> {
@@ -109,30 +163,38 @@ async function cargarTodas(): Promise<Map<string, AjustesClinica>> {
     settingsMetrics.lecturas_a_base += 1;
     const resultado = await supabase
       .from('helios_tenants')
-      .select('tenant_id, buffer_ms, handoff_stale_hours');
+      .select('tenant_id, ' + Object.keys(CAMPOS).join(', '));
     if (resultado.error) {
       throw Object.assign(new Error('SETTINGS_READ_FAILED'), { cause: resultado.error });
     }
 
     for (const fila of resultado.data || []) {
-      const tenantId = String(fila.tenant_id ?? '').trim();
+      const tenantId = String((fila as any).tenant_id ?? '').trim();
       if (!tenantId) continue;
       const ajustes = porDefecto();
+      ajustes.origen = {};
 
-      const buffer = normalizarBufferMs(fila.buffer_ms);
-      if (buffer !== null) {
-        ajustes.buffer_ms = buffer;
-        ajustes.buffer_origen = 'clinica';
-      } else if (fila.buffer_ms !== null && fila.buffer_ms !== undefined) {
-        avisarValorInvalido('buffer_ms', tenantId, fila.buffer_ms, ajustes.buffer_ms);
-      }
-
-      const horas = normalizarHorasVuelta(fila.handoff_stale_hours);
-      if (horas !== null) {
-        ajustes.handoff_stale_hours = horas;
-        ajustes.handoff_stale_origen = 'clinica';
-      } else if (fila.handoff_stale_hours !== null && fila.handoff_stale_hours !== undefined) {
-        avisarValorInvalido('handoff_stale_hours', tenantId, fila.handoff_stale_hours, ajustes.handoff_stale_hours);
+      // Un bucle y no un if por campo: con nueve columnas, el if por campo es donde
+      // se olvida uno y nadie se entera hasta que un ajuste no hace nada.
+      for (const campo of Object.keys(CAMPOS) as CampoAjuste[]) {
+        const bruto = (fila as any)[campo];
+        const valido = CAMPOS[campo].normalizar(bruto);
+        if (valido !== null) {
+          (ajustes as any)[campo] = valido;
+          ajustes.origen[campo] = 'clinica';
+        } else {
+          ajustes.origen[campo] = 'defecto';
+          if (bruto !== null && bruto !== undefined && bruto !== '') {
+            // Hay algo escrito y no sirve. Se avisa, porque si no el panel mostraría
+            // un valor y el sistema usaría otro sin que nadie se enterara.
+            console.warn(JSON.stringify({
+              event: 'ajuste_invalido_en_base',
+              campo,
+              tenant_id: tenantId,
+              valor: bruto
+            }));
+          }
+        }
       }
 
       porClinica.set(tenantId, ajustes);
@@ -185,29 +247,108 @@ export async function umbralMinimoDeVuelta(): Promise<number> {
   return Math.max(MINIMO_HORAS_VUELTA, minimo);
 }
 
-/** Lo que necesita el panel para pintarse. */
-export async function leerAjustes(tenantId: string): Promise<{
-  buffer_ms: number;
-  buffer_origen: 'clinica' | 'defecto';
-  buffer_opciones: number[];
-  buffer_por_defecto: number;
-  handoff_stale_hours: number;
-  handoff_stale_origen: 'clinica' | 'defecto';
-  handoff_stale_opciones: number[];
-  handoff_stale_por_defecto: number;
-  limites: { buffer_ms: number[]; handoff_stale_hours: number[] };
+/** El modo de la encuesta en esta clínica. */
+export async function obtenerModoCsat(tenantId: string): Promise<ModoFuncion> {
+  return (await ajustesDe(tenantId)).csat_mode;
+}
+
+/** El modo del seguimiento comercial en esta clínica. */
+export async function obtenerModoLeads(tenantId: string): Promise<ModoFuncion> {
+  return (await ajustesDe(tenantId)).leads_mode;
+}
+
+/** El horario y la ventana de envío, para el seguimiento. */
+export async function obtenerHorarioYVentana(tenantId: string): Promise<{
+  horario: HorarioSemanal;
+  envio: VentanaEnvio;
+  zona: string;
 }> {
+  const ajustes = await ajustesDe(tenantId);
+  return {
+    horario: ajustes.clinic_hours,
+    envio: ajustes.followup_window,
+    zona: ajustes.clinic_timezone
+  };
+}
+
+/**
+ * Los equipos de Chatwoot de esta clínica, con los del enrutado como respaldo.
+ *
+ * SE MEZCLA POR DESTINO, no todo o nada: si la clínica solo ha puesto recepción en
+ * el panel, los otros dos siguen saliendo del JSON de entorno. Reemplazar el mapa
+ * entero dejaría sin equipo a los destinos que no se hubieran tocado, y un destino
+ * sin equipo significa una derivación que no se asigna a nadie.
+ */
+export async function obtenerEquipos(
+  tenantId: string,
+  respaldo: EquiposClinica
+): Promise<EquiposClinica> {
+  const ajustes = await ajustesDe(tenantId);
+  return { ...respaldo, ...ajustes.chatwoot_teams };
+}
+
+/** El tono, para mandárselo a Hermes en el contexto. */
+export async function obtenerTono(tenantId: string): Promise<string | null> {
+  return (await ajustesDe(tenantId)).clinic_tone;
+}
+
+/**
+ * El contexto de clínica que viaja a Hermes en cada turno.
+ *
+ * El horario va en horas legibles y NO en minutos: lo va a leer un modelo de
+ * lenguaje, y «10:00» se entiende sin explicación mientras 600 no.
+ */
+export async function leerContextoDeClinica(tenantId: string): Promise<{
+  horario: Record<string, Array<[string, string]>> | null;
+  tono: string | null;
+  zona: string;
+}> {
+  const ajustes = await ajustesDe(tenantId);
+  return {
+    // Solo se manda si la clínica lo configuró: mandar el horario por defecto haría
+    // creer a Hermes que es el de verdad cuando nadie lo ha confirmado.
+    horario: ajustes.origen.clinic_hours === 'clinica'
+      ? horarioParaGuardar(ajustes.clinic_hours) as Record<string, Array<[string, string]>>
+      : null,
+    tono: ajustes.clinic_tone,
+    zona: ajustes.clinic_timezone
+  };
+}
+
+/** Lo que necesita el panel para pintarse. */
+export async function leerAjustes(tenantId: string): Promise<Record<string, unknown>> {
   const ajustes = await ajustesDe(tenantId);
   const defectos = porDefecto();
   return {
     buffer_ms: ajustes.buffer_ms,
-    buffer_origen: ajustes.buffer_origen,
     buffer_opciones: [...VALORES_BUFFER],
     buffer_por_defecto: defectos.buffer_ms,
+
     handoff_stale_hours: ajustes.handoff_stale_hours,
-    handoff_stale_origen: ajustes.handoff_stale_origen,
     handoff_stale_opciones: [...HORAS_VUELTA],
     handoff_stale_por_defecto: defectos.handoff_stale_hours,
+
+    clinic_hours: horarioParaGuardar(ajustes.clinic_hours),
+    clinic_hours_por_defecto: horarioParaGuardar(defectos.clinic_hours),
+
+    followup_window: {
+      desde: horaDeMinutos(ajustes.followup_window.desde),
+      hasta: horaDeMinutos(ajustes.followup_window.hasta)
+    },
+    followup_window_limites: LIMITES_VENTANA_ENVIO,
+
+    csat_mode: ajustes.csat_mode,
+    leads_mode: ajustes.leads_mode,
+    modos: [...MODOS_FUNCION],
+
+    chatwoot_teams: ajustes.chatwoot_teams,
+    clinic_timezone: ajustes.clinic_timezone,
+    clinic_tone: ajustes.clinic_tone,
+    clinic_tone_max: MAX_LARGO_TONO,
+
+    // De dónde sale cada valor. El panel lo necesita para no decir «elegido por la
+    // clínica» cuando en realidad es el de siempre.
+    origen: ajustes.origen,
     limites: {
       buffer_ms: [MINIMO_BUFFER_MS, MAXIMO_BUFFER_MS],
       handoff_stale_hours: [MINIMO_HORAS_VUELTA, MAXIMO_HORAS_VUELTA]
@@ -218,7 +359,9 @@ export async function leerAjustes(tenantId: string): Promise<{
 export interface ResultadoGuardado {
   ok: boolean;
   error?: string;
-  cambios?: Record<string, number>;
+  /** Qué campo lo rechazó. Con nueve campos y códigos compartidos, hace falta. */
+  campo?: string;
+  cambios?: Record<string, unknown>;
 }
 
 /**
@@ -232,18 +375,16 @@ export async function guardarAjustes(
   tenantId: string,
   entrada: Record<string, unknown>
 ): Promise<ResultadoGuardado> {
-  const cambios: Record<string, number> = {};
+  const cambios: Record<string, unknown> = {};
 
-  if ('buffer_ms' in entrada) {
-    const ms = normalizarBufferMs(entrada.buffer_ms);
-    if (ms === null) return { ok: false, error: 'BUFFER_FUERA_DE_RANGO' };
-    cambios.buffer_ms = ms;
-  }
-
-  if ('handoff_stale_hours' in entrada) {
-    const horas = normalizarHorasVuelta(entrada.handoff_stale_hours);
-    if (horas === null) return { ok: false, error: 'HORAS_VUELTA_FUERA_DE_RANGO' };
-    cambios.handoff_stale_hours = horas;
+  for (const campo of Object.keys(CAMPOS) as CampoAjuste[]) {
+    if (!(campo in entrada)) continue;
+    const definicion = CAMPOS[campo] as any;
+    const valido = definicion.normalizar(entrada[campo]);
+    if (valido === null) return { ok: false, error: definicion.error, campo };
+    // Algunos campos se guardan en otra forma de la que se usan: el horario vive en
+    // minutos en memoria y como "HH:MM" en la columna, para poder leerlo a mano.
+    cambios[campo] = definicion.guardar ? definicion.guardar(valido) : valido;
   }
 
   if (Object.keys(cambios).length === 0) return { ok: false, error: 'SIN_CAMBIOS' };

@@ -54,10 +54,10 @@ function fila(db: any, tenantId: string) {
 let db = baseDeDatos();
 let ajuste = await settings.leerAjustes('democoi1');
 assert.equal(ajuste.buffer_ms, 5000, 'sin elegir se usa el valor del entorno');
-assert.equal(ajuste.buffer_origen, 'defecto', 'y el panel dice que no lo eligió la clínica');
+assert.equal(ajuste.origen.buffer_ms, 'defecto', 'y el panel dice que no lo eligió la clínica');
 assert.deepEqual(ajuste.buffer_opciones, [5000, 8000, 10000, 15000]);
 assert.equal(ajuste.handoff_stale_hours, 5, 'y las horas de vuelta, igual');
-assert.equal(ajuste.handoff_stale_origen, 'defecto');
+assert.equal(ajuste.origen.handoff_stale_hours, 'defecto');
 assert.deepEqual(ajuste.handoff_stale_opciones, [1, 2, 3, 5, 8]);
 
 // --- Guardar se nota AL INSTANTE, no cuando caduque la caché -----------------
@@ -76,8 +76,8 @@ assert.equal(fila(db, 'democoi1').buffer_ms, 10000, 'y queda escrito en la base'
 assert.equal(fila(db, 'democoi1').handoff_stale_hours, 2);
 
 ajuste = await settings.leerAjustes('democoi1');
-assert.equal(ajuste.buffer_origen, 'clinica');
-assert.equal(ajuste.handoff_stale_origen, 'clinica');
+assert.equal(ajuste.origen.buffer_ms, 'clinica');
+assert.equal(ajuste.origen.handoff_stale_hours, 'clinica');
 
 // --- LO MÁS IMPORTANTE: no se cruzan las clínicas ----------------------------
 
@@ -166,8 +166,8 @@ for (const basura of [0, 999999, -1, 'diez segundos']) {
   assert.equal(await settings.obtenerBufferMs('democoi1'), 5000, `buffer ${String(basura)} se ignora`);
   assert.equal(await settings.obtenerHorasVuelta('democoi1'), 5, `vuelta ${String(basura)} se ignora`);
   const leido = await settings.leerAjustes('democoi1');
-  assert.equal(leido.buffer_origen, 'defecto');
-  assert.equal(leido.handoff_stale_origen, 'defecto');
+  assert.equal(leido.origen.buffer_ms, 'defecto');
+  assert.equal(leido.origen.handoff_stale_hours, 'defecto');
 }
 
 // --- Con la base caída se sigue trabajando ----------------------------------

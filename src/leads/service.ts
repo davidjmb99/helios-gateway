@@ -27,12 +27,14 @@ import {
   type LeadInterest
 } from './policy.js';
 import { construirMensaje } from './messages.js';
+import { obtenerHorarioYVentana, obtenerModoLeads } from '../tenants/settings.js';
 
 export const leadMetrics = {
   marked_interest: 0,
   blocked: 0,
   sent: 0,
   skipped_no_window: 0,
+  skipped_off: 0,
   last_error_code: null as string | null
 };
 
@@ -179,8 +181,23 @@ async function registrarSeguimiento(input: {
   if (result.error) throw Object.assign(new Error('LEAD_LOG_WRITE_FAILED'), { cause: result.error });
 }
 
+/**
+ * La ventana de ESTA clínica: su horario, su franja de envío y su zona.
+ *
+ * Antes era una constante con el horario de COI escrito en el código. Si la lectura
+ * falla se usa la de siempre, porque un ajuste caído no puede parar el barrido.
+ */
+async function ventanaDe(tenantId: string) {
+  try {
+    const { horario, envio, zona } = await obtenerHorarioYVentana(tenantId);
+    return { ...VENTANA_POR_DEFECTO, horario, envio, zona };
+  } catch {
+    return VENTANA_POR_DEFECTO;
+  }
+}
+
 async function procesarLead(fila: any, ahora: Date): Promise<void> {
-  const decision = decidirSeguimiento(fila, ahora, VENTANA_POR_DEFECTO);
+  const decision = decidirSeguimiento(fila, ahora, await ventanaDe(fila.tenant_id));
   if (decision.action === 'skip') {
     if (decision.reason === 'no_window') {
       leadMetrics.skipped_no_window += 1;
@@ -211,7 +228,11 @@ async function procesarLead(fila: any, ahora: Date): Promise<void> {
   let providerMessageId: string | null = null;
   let estado: 'sent' | 'simulated' = 'simulated';
 
-  if (config.HELIOS_LEADS_ENABLED) {
+  // El modo es POR CLÍNICA: 'on' envía, 'observe' anota sin escribir a nadie.
+  // El barrido ya ha descartado las clínicas en 'off' antes de llegar aquí.
+  const modo = await obtenerModoLeads(fila.tenant_id).catch(() => 'observe' as const);
+
+  if (modo === 'on') {
     const tenantContext = resolveTenantContextByTenantId(fila.tenant_id);
     const respuesta = await chatwootClient.sendMessage(
       tenantContext.account_id,
@@ -274,6 +295,14 @@ export async function runLeadFollowupSweep(): Promise<void> {
 
   for (const fila of candidatos.data || []) {
     try {
+      // 'off' significa que esta función NO EXISTE para esta clínica: ni se decide
+      // ni se anota. Se comprueba antes de cualquier escritura, porque en
+      // 'observe' sí se escribe la marca de enviado y eso ya sería tocar sus datos.
+      const modo = await obtenerModoLeads(fila.tenant_id).catch(() => 'observe' as const);
+      if (modo === 'off') {
+        leadMetrics.skipped_off += 1;
+        continue;
+      }
       await procesarLead(fila, ahora);
     } catch (error: any) {
       leadMetrics.last_error_code = error?.message || 'LEAD_SEND_FAILED';

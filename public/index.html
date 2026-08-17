@@ -2099,6 +2099,10 @@
     let datosTablas = [];
 
     function abrirAjustes() {
+      // Se olvida lo pendiente de la visita anterior: un cambio a medio hacer que
+      // sobreviviera a cerrar la ventana se guardaria sin que nadie lo recordara.
+      ajustesActuales = null;
+      ajustesPendientes = {};
       document.getElementById('ajustes-overlay').classList.remove('hidden');
       setAjustesTab('apariencia');
       pintarBotonesTema();
@@ -2112,7 +2116,7 @@
     }
 
     function setAjustesTab(tab) {
-      const tabs = ['apariencia', 'conversacion', 'datos'];
+      const tabs = ['apariencia', 'conversacion', 'clinica', 'funciones', 'equipos', 'datos'];
       tabs.forEach(t => {
         const boton = document.getElementById('ajustes-tab-' + t);
         const panel = document.getElementById('ajustes-panel-' + t);
@@ -2123,7 +2127,13 @@
           : 'px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200';
       });
       if (tab === 'datos') cargarConteos();
-      if (tab === 'conversacion') cargarConversacion();
+      // Las cuatro pestanas de ajustes se sirven de la MISMA carga: es una sola
+      // peticion y un solo boton de guardar, asi que se pueden cambiar cosas de
+      // varias pestanas y confirmarlas juntas.
+      if (TABS_CON_AJUSTES.indexOf(tab) >= 0 && !ajustesActuales) cargarConversacion();
+      else if (TABS_CON_AJUSTES.indexOf(tab) >= 0) pintarConversacion();
+      document.getElementById('ajustes-guardar')
+        .classList.toggle('hidden', TABS_CON_AJUSTES.indexOf(tab) < 0);
     }
 
     // --- Conversacion ---------------------------------------------------------
@@ -2143,6 +2153,24 @@
     let ajustesActuales = null;
     let ajustesPendientes = {};
 
+    const DIAS_ES = [
+      ['sun', 'Domingo'], ['mon', 'Lunes'], ['tue', 'Martes'], ['wed', 'Miércoles'],
+      ['thu', 'Jueves'], ['fri', 'Viernes'], ['sat', 'Sábado']
+    ];
+
+    const MODOS_ES = {
+      off:     { etiqueta: 'Apagado',     ayuda: 'No se evalúa nada. La función no existe para esta clínica.' },
+      observe: { etiqueta: 'Observación', ayuda: 'Decide y lo anota, pero NO le llega nada a ningún paciente.' },
+      on:      { etiqueta: 'Encendido',   ayuda: 'Decide, lo anota y actúa de verdad.' }
+    };
+
+    function textoHorario(h) {
+      if (!h) return 'sin definir';
+      const abiertos = DIAS_ES.filter(([clave]) => (h[clave] || []).length > 0);
+      if (abiertos.length === 0) return 'todos los días cerrados';
+      return abiertos.length + (abiertos.length === 1 ? ' día abierto' : ' días abiertos');
+    }
+
     const CAMPOS_AJUSTE = {
       buffer_ms: {
         nombre: 'La espera antes de contestar',
@@ -2151,8 +2179,26 @@
       handoff_stale_hours: {
         nombre: 'La vuelta a la IA por inactividad',
         texto: h => h === 1 ? '1 hora' : h + ' horas'
-      }
+      },
+      clinic_hours: { nombre: 'El horario de atención', texto: textoHorario },
+      followup_window: {
+        nombre: 'Las horas en que se puede escribir',
+        texto: v => v ? 'de ' + v.desde + ' a ' + v.hasta : 'sin definir'
+      },
+      csat_mode: { nombre: 'La encuesta de satisfacción', texto: m => MODOS_ES[m] ? MODOS_ES[m].etiqueta : m },
+      leads_mode: { nombre: 'El seguimiento comercial', texto: m => MODOS_ES[m] ? MODOS_ES[m].etiqueta : m },
+      chatwoot_teams: {
+        nombre: 'Los equipos de Chatwoot',
+        texto: t => t && Object.keys(t).length
+          ? Object.entries(t).map(([k, v]) => k + '=' + v).join(', ')
+          : 'ninguno'
+      },
+      clinic_timezone: { nombre: 'La zona horaria', texto: z => z || 'sin definir' },
+      clinic_tone: { nombre: 'El tono', texto: t => t ? '«' + t + '»' : 'sin definir' }
     };
+
+    /** Las pestañas que comparten el botón de guardar. */
+    const TABS_CON_AJUSTES = ['conversacion', 'clinica', 'funciones', 'equipos'];
 
     async function cargarConversacion() {
       const estado = document.getElementById('ajustes-resumen');
@@ -2178,7 +2224,9 @@
             ? 'border-amber-400 bg-amber-500/20 text-amber-200 ring-2 ring-amber-400/40'
             : 'border-amber-500 bg-amber-500/10 text-amber-300')
         : 'border-slate-700 bg-slate-800 text-slate-200 hover:border-amber-500';
-      return '<button onclick="elegirAjuste(\'' + campo + '\', ' + valor + ')"'
+      // Los modos son texto y necesitan comillas; los tiempos son numeros y no.
+      const arg = typeof valor === 'string' ? "'" + valor + "'" : valor;
+      return '<button onclick="elegirYPintar(\'' + campo + '\', ' + arg + ')"'
         + ' class="rounded-xl border px-3 py-3 text-xs font-bold ' + clases + '">'
         + escapeHtml(CAMPOS_AJUSTE[campo].texto(valor))
         + (sinGuardar ? '<span class="block text-[9px] font-normal opacity-80 mt-0.5">sin guardar</span>' : '')
@@ -2195,10 +2243,26 @@
         (a.handoff_stale_opciones || []).map(h => botonDeOpcion('handoff_stale_hours', h, a.handoff_stale_hours)).join('');
 
       document.getElementById('buffer-estado').innerHTML = textoDeOrigen(
-        a.buffer_origen, CAMPOS_AJUSTE.buffer_ms.texto(a.buffer_por_defecto));
+        a.origen.buffer_ms, CAMPOS_AJUSTE.buffer_ms.texto(a.buffer_por_defecto));
       document.getElementById('vuelta-estado').innerHTML = textoDeOrigen(
-        a.handoff_stale_origen, CAMPOS_AJUSTE.handoff_stale_hours.texto(a.handoff_stale_por_defecto));
+        a.origen.handoff_stale_hours, CAMPOS_AJUSTE.handoff_stale_hours.texto(a.handoff_stale_por_defecto));
 
+      pintarClinica();
+      pintarFunciones();
+      pintarEquipos();
+
+      pintarResumen();
+    }
+
+    /**
+     * El resumen de lo que va a cambiar y el estado del boton de guardar.
+     *
+     * Va aparte del repintado completo porque los campos de texto y de hora lo
+     * llaman al teclear: repintar el panel entero moveria el foco del campo que se
+     * esta escribiendo.
+     */
+    function pintarResumen() {
+      if (!ajustesActuales) return;
       const campos = Object.keys(ajustesPendientes);
       const resumen = document.getElementById('ajustes-resumen');
       const boton = document.getElementById('ajustes-btn-guardar');
@@ -2227,16 +2291,177 @@
     }
 
     function elegirAjuste(campo, valor) {
-      // Volver a marcar lo que ya esta guardado no es un cambio: se quita de los
+      // Volver a dejar algo como ya estaba guardado NO es un cambio: se quita de los
       // pendientes en vez de mandar una escritura que no cambia nada.
-      if (ajustesActuales && ajustesActuales[campo] === valor) delete ajustesPendientes[campo];
+      //
+      // Se compara por contenido y no con ===, porque la mitad de los ajustes son
+      // objetos -el horario, la ventana, los equipos- y dos objetos iguales nunca
+      // son === entre si. Sin esto, abrir el horario y dejarlo igual ya contaria
+      // como cambio pendiente.
+      const igual = ajustesActuales &&
+        JSON.stringify(ajustesActuales[campo] ?? null) === JSON.stringify(valor ?? null);
+      if (igual) delete ajustesPendientes[campo];
       else ajustesPendientes[campo] = valor;
+    }
+
+    /** Para los botones de opcion, que si deben repintar al pulsarse. */
+    function elegirYPintar(campo, valor) {
+      elegirAjuste(campo, valor);
       pintarConversacion();
     }
 
     function descartarCambios() {
       ajustesPendientes = {};
       pintarConversacion();
+    }
+
+    // --- Horario, ventana de envio, zona y tono --------------------------------
+    //
+    // DOS RELOJES DISTINTOS, y confundirlos es el fallo que habia en el codigo:
+    //   el HORARIO DE ATENCION dice cuando se puede DAR CITA;
+    //   la VENTANA DE ENVIO dice a que horas es decente ESCRIBIR.
+    // Se puede escribir a las 8 aunque la puerta abra a las 10, y hasta las 22
+    // aunque cerrara a las 20. Lo que no se puede es escribir de madrugada.
+
+    /** Lo que hay que pintar: lo pendiente si se ha tocado, y si no lo guardado. */
+    function valorEnPantalla(campo) {
+      return campo in ajustesPendientes ? ajustesPendientes[campo] : ajustesActuales[campo];
+    }
+
+    function pintarClinica() {
+      const caja = document.getElementById('horario-dias');
+      if (!caja) return;
+      const horario = valorEnPantalla('clinic_hours') || {};
+
+      caja.innerHTML = DIAS_ES.map(([clave, nombre]) => {
+        const tramos = horario[clave] || [];
+        // Mas de dos tramos solo se puede haber puesto a mano en la base. No se
+        // edita aqui para no perder el tercero al guardar: mejor decirlo que
+        // tragarselo en silencio.
+        if (tramos.length > 2) {
+          return '<div class="flex items-center gap-2 py-1.5 text-[11px]">'
+            + '<span class="w-20 text-slate-300">' + nombre + '</span>'
+            + '<span class="text-amber-400/90">' + tramos.length + ' tramos, configurados a mano. '
+            + 'Se conservan, pero para cambiarlos hay que editarlos en la base.</span></div>';
+        }
+        const t1 = tramos[0] || ['', ''];
+        const t2 = tramos[1] || ['', ''];
+        const abierto = tramos.length > 0;
+        return '<div class="flex flex-wrap items-center gap-2 py-1.5 border-b border-slate-800/60">'
+          + '<label class="flex items-center gap-1.5 w-24 shrink-0">'
+          +   '<input type="checkbox" ' + (abierto ? 'checked' : '')
+          +     ' onchange="cambiarDiaAbierto(\'' + clave + '\', this.checked)">'
+          +   '<span class="text-[11px] ' + (abierto ? 'text-slate-200' : 'text-slate-500') + '">' + nombre + '</span>'
+          + '</label>'
+          + (abierto
+              ? campoTramo(clave, 0, t1) + '<span class="text-slate-600 text-[10px]">y</span>' + campoTramo(clave, 1, t2)
+              : '<span class="text-[10px] text-slate-500">cerrado</span>')
+          + '</div>';
+      }).join('');
+
+      const ventana = valorEnPantalla('followup_window') || { desde: '', hasta: '' };
+      document.getElementById('envio-desde').value = ventana.desde || '';
+      document.getElementById('envio-hasta').value = ventana.hasta || '';
+      document.getElementById('clinica-zona').value = valorEnPantalla('clinic_timezone') || '';
+      document.getElementById('clinica-tono').value = valorEnPantalla('clinic_tone') || '';
+
+      document.getElementById('horario-estado').innerHTML = textoDeOrigen(
+        ajustesActuales.origen.clinic_hours,
+        textoHorario(ajustesActuales.clinic_hours_por_defecto));
+      const limites = ajustesActuales.followup_window_limites || {};
+      document.getElementById('envio-limites').textContent =
+        'Solo se admite entre ' + (limites.mas_temprano || '07:00') + ' y ' + (limites.mas_tarde || '23:00') + '.';
+    }
+
+    function campoTramo(clave, indice, tramo) {
+      const attr = 'onchange="cambiarTramo(\'' + clave + '\', ' + indice + ', this)"';
+      const clase = 'bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-[11px] font-mono text-slate-100 w-[5.5rem]';
+      return '<input type="time" class="' + clase + '" data-tramo="' + clave + '-' + indice + '-desde" '
+        + 'value="' + (tramo[0] || '') + '" ' + attr + '>'
+        + '<input type="time" class="' + clase + '" data-tramo="' + clave + '-' + indice + '-hasta" '
+        + 'value="' + (tramo[1] || '') + '" ' + attr + '>';
+    }
+
+    /** Copia el horario para no tocar lo guardado hasta que se confirme. */
+    function horarioEditable() {
+      const base = valorEnPantalla('clinic_hours') || {};
+      const copia = {};
+      DIAS_ES.forEach(([clave]) => { copia[clave] = (base[clave] || []).map(t => [t[0], t[1]]); });
+      return copia;
+    }
+
+    function cambiarDiaAbierto(clave, abierto) {
+      const h = horarioEditable();
+      h[clave] = abierto ? [['10:00', '20:00']] : [];
+      elegirAjuste('clinic_hours', h);
+      pintarClinica();
+      pintarResumen();
+    }
+
+    function cambiarTramo(clave, indice) {
+      const h = horarioEditable();
+      const leer = (cual) => {
+        const el = document.querySelector('[data-tramo="' + clave + '-' + indice + '-' + cual + '"]');
+        return el ? el.value : '';
+      };
+      const desde = leer('desde');
+      const hasta = leer('hasta');
+      const tramos = h[clave] || [];
+      if (!desde && !hasta) tramos.splice(indice, 1);        // vaciar los dos borra el tramo
+      else tramos[indice] = [desde, hasta];
+      h[clave] = tramos.filter(t => t && (t[0] || t[1]));
+      elegirAjuste('clinic_hours', h);
+      // No se repinta: repintar mientras se teclea una hora mueve el foco del campo.
+      pintarResumen();
+    }
+
+    function cambiarVentanaEnvio() {
+      elegirAjuste('followup_window', {
+        desde: document.getElementById('envio-desde').value,
+        hasta: document.getElementById('envio-hasta').value
+      });
+      pintarResumen();
+    }
+
+    function cambiarTexto(campo, valor) {
+      elegirAjuste(campo, valor.trim() === '' ? null : valor);
+      pintarResumen();
+    }
+
+    // --- Interruptores de encuesta y seguimiento -------------------------------
+
+    function pintarFunciones() {
+      [['csat_mode', 'csat'], ['leads_mode', 'leads']].forEach(([campo, id]) => {
+        const caja = document.getElementById(id + '-modos');
+        if (!caja) return;
+        const actual = ajustesActuales[campo];
+        caja.innerHTML = (ajustesActuales.modos || ['off', 'observe', 'on'])
+          .map(m => botonDeOpcion(campo, m, actual)).join('');
+        const elegido = valorEnPantalla(campo);
+        document.getElementById(id + '-ayuda').textContent =
+          MODOS_ES[elegido] ? MODOS_ES[elegido].ayuda : '';
+      });
+    }
+
+    // --- Equipos de Chatwoot ---------------------------------------------------
+
+    function pintarEquipos() {
+      const t = valorEnPantalla('chatwoot_teams') || {};
+      ['reception', 'clinical_lead', 'helios_support'].forEach(destino => {
+        const el = document.getElementById('equipo-' + destino);
+        if (el) el.value = t[destino] || '';
+      });
+    }
+
+    function cambiarEquipo() {
+      const nuevo = {};
+      ['reception', 'clinical_lead', 'helios_support'].forEach(destino => {
+        const el = document.getElementById('equipo-' + destino);
+        const v = el ? el.value.trim() : '';
+        if (v) nuevo[destino] = v;
+      });
+      elegirAjuste('chatwoot_teams', Object.keys(nuevo).length ? nuevo : null);
+      pintarResumen();
     }
 
     async function guardarConversacion() {
@@ -2446,6 +2671,9 @@
       <nav class="flex gap-1 px-3 py-2 border-b border-slate-800 bg-slate-950/30">
         <button id="ajustes-tab-apariencia" onclick="setAjustesTab('apariencia')" class="px-3 py-1.5 text-xs font-bold rounded-lg bg-amber-500 text-slate-950">Apariencia</button>
         <button id="ajustes-tab-conversacion" onclick="setAjustesTab('conversacion')" class="px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200">Conversación</button>
+        <button id="ajustes-tab-clinica" onclick="setAjustesTab('clinica')" class="px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200">Clínica</button>
+        <button id="ajustes-tab-funciones" onclick="setAjustesTab('funciones')" class="px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200">Funciones</button>
+        <button id="ajustes-tab-equipos" onclick="setAjustesTab('equipos')" class="px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200">Equipos</button>
         <button id="ajustes-tab-datos" onclick="setAjustesTab('datos')" class="px-3 py-1.5 text-xs font-bold rounded-lg text-slate-400 hover:text-slate-200">Base de datos</button>
       </nav>
 
@@ -2502,15 +2730,148 @@
           </p>
         </div>
 
-        <div class="border-t border-slate-800 pt-4">
-          <div id="ajustes-resumen" class="text-[11px] text-amber-200 leading-relaxed mb-3"></div>
-          <div class="flex gap-2">
-            <button id="ajustes-btn-descartar" onclick="descartarCambios()" class="hidden flex-1 rounded-lg border border-slate-700 px-4 py-2 text-xs font-bold text-slate-300 hover:bg-slate-800">Descartar</button>
-            <button id="ajustes-btn-guardar" disabled onclick="guardarConversacion()"
-                    class="flex-1 rounded-lg bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-amber-400">
-              Guardar cambios
-            </button>
+      </div>
+
+      <!-- Clínica: horario, ventana de envío, zona y tono -->
+      <div id="ajustes-panel-clinica" class="hidden p-5 space-y-5">
+
+        <div>
+          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Horario de atención</h3>
+          <p class="text-[11px] text-slate-400 leading-relaxed mb-2">
+            Cuándo atiende la clínica. De aquí sale qué días cuentan para el
+            seguimiento, y es el horario que Helios recibe en su contexto.
+            Cada día admite dos tramos, para las jornadas partidas.
+          </p>
+          <div id="horario-dias" class="mb-2"></div>
+          <div id="horario-estado" class="text-[11px]"></div>
+        </div>
+
+        <div class="border-t border-slate-800 pt-5">
+          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Horas en que se puede escribir</h3>
+          <p class="text-[11px] text-slate-400 leading-relaxed mb-3">
+            <b class="text-slate-300">No es el horario de atención.</b> Es a qué horas
+            es decente escribirle a alguien. Se puede escribir a las 8:00 aunque la
+            puerta abra a las 10:00, y hasta las 22:00 aunque cerrara a las 20:00.
+            Lo que nunca se hace es escribir de madrugada, ni en un día que la
+            clínica no trabaja.
+          </p>
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-[11px] text-slate-400">De</span>
+            <input id="envio-desde" type="time" onchange="cambiarVentanaEnvio()"
+                   class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[11px] font-mono text-slate-100">
+            <span class="text-[11px] text-slate-400">a</span>
+            <input id="envio-hasta" type="time" onchange="cambiarVentanaEnvio()"
+                   class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[11px] font-mono text-slate-100">
           </div>
+          <div id="envio-limites" class="text-[10px] text-slate-500 mt-2"></div>
+        </div>
+
+        <div class="border-t border-slate-800 pt-5 space-y-3">
+          <div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Zona horaria</h3>
+            <p class="text-[11px] text-slate-400 mb-2">
+              Todas las horas de arriba son las del reloj del paciente, no las del servidor.
+            </p>
+            <input id="clinica-zona" type="text" spellcheck="false" placeholder="Europe/Madrid"
+                   onchange="cambiarTexto('clinic_timezone', this.value)"
+                   class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-100 focus:border-amber-500 focus:outline-none">
+          </div>
+          <div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Tono</h3>
+            <p class="text-[11px] text-slate-400 mb-2">
+              Cómo quieres que hable Helios. Se le manda en el contexto de cada
+              mensaje. <b class="text-slate-300">Ojo:</b> solo surte efecto si el
+              perfil de Hermes está escrito para leerlo; lo que Helios dice lo
+              decide su SOUL.
+            </p>
+            <textarea id="clinica-tono" rows="2" maxlength="400"
+                      placeholder="Cercano y claro, de tú, sin tecnicismos."
+                      onchange="cambiarTexto('clinic_tone', this.value)"
+                      class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- Funciones: encuesta y seguimiento -->
+      <div id="ajustes-panel-funciones" class="hidden p-5 space-y-5">
+        <div class="rounded-xl border border-slate-700 bg-slate-950/40 p-3">
+          <p class="text-[10px] text-slate-400 leading-relaxed">
+            <b class="text-slate-300">Observación</b> no es lo mismo que apagado: la
+            función decide y lo anota, pero no le llega nada a ningún paciente. Es
+            como se comprueba con datos reales antes de encender.
+          </p>
+        </div>
+
+        <div>
+          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Encuesta de satisfacción</h3>
+          <p class="text-[11px] text-slate-400 leading-relaxed mb-3">
+            Marca la conversación con la etiqueta que dispara la encuesta cuando se
+            resuelve, si el paciente agendó y no hubo motivo para excluirlo.
+          </p>
+          <div id="csat-modos" class="grid grid-cols-3 gap-2"></div>
+          <div id="csat-ayuda" class="text-[11px] text-slate-400 mt-2"></div>
+        </div>
+
+        <div class="border-t border-slate-800 pt-5">
+          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Seguimiento comercial</h3>
+          <p class="text-[11px] text-slate-400 leading-relaxed mb-3">
+            Un único mensaje a quien preguntó por una cita y no la cerró, canceló o
+            dejó a medias una reprogramación. Se manda al día siguiente y dentro de
+            las horas de escritura. Nunca dos veces.
+          </p>
+          <div id="leads-modos" class="grid grid-cols-3 gap-2"></div>
+          <div id="leads-ayuda" class="text-[11px] text-slate-400 mt-2"></div>
+        </div>
+      </div>
+
+      <!-- Equipos de Chatwoot -->
+      <div id="ajustes-panel-equipos" class="hidden p-5 space-y-4">
+        <p class="text-[11px] text-slate-400 leading-relaxed">
+          A qué equipo de Chatwoot va cada tipo de derivación. Son los
+          <b class="text-slate-300">números de ID</b>, no los nombres. Un destino que
+          dejes vacío usa lo que haya en la configuración del servidor, y si tampoco
+          hay nada, cae a recepción.
+        </p>
+        <div class="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+          <p class="text-[11px] text-amber-200 leading-relaxed">
+            Chatwoot <b>reutiliza los IDs</b> cuando reorganizas equipos. Ya pasó el
+            13 de agosto: las derivaciones acabaron yendo al equipo técnico.
+            Compruébalos en Chatwoot antes de guardar.
+          </p>
+        </div>
+        <div class="space-y-3">
+          <div>
+            <label class="block text-[11px] text-slate-300 mb-1">Derivación a persona y urgencias</label>
+            <input id="equipo-reception" type="text" inputmode="numeric" placeholder="sin definir"
+                   oninput="cambiarEquipo()"
+                   class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-100 focus:border-amber-500 focus:outline-none">
+          </div>
+          <div>
+            <label class="block text-[11px] text-slate-300 mb-1">Responsable clínico
+              <span class="text-slate-500">(si no existe, va a recepción)</span></label>
+            <input id="equipo-clinical_lead" type="text" inputmode="numeric" placeholder="sin definir"
+                   oninput="cambiarEquipo()"
+                   class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-100 focus:border-amber-500 focus:outline-none">
+          </div>
+          <div>
+            <label class="block text-[11px] text-slate-300 mb-1">Soporte técnico
+              <span class="text-slate-500">(se le avisa, no atiende al paciente)</span></label>
+            <input id="equipo-helios_support" type="text" inputmode="numeric" placeholder="sin definir"
+                   oninput="cambiarEquipo()"
+                   class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-100 focus:border-amber-500 focus:outline-none">
+          </div>
+        </div>
+      </div>
+
+      <!-- Guardar: compartido por las pestañas de ajustes -->
+      <div id="ajustes-guardar" class="hidden px-5 py-4 border-t border-slate-800 bg-slate-950/40">
+        <div id="ajustes-resumen" class="text-[11px] text-amber-200 leading-relaxed mb-3"></div>
+        <div class="flex gap-2">
+          <button id="ajustes-btn-descartar" onclick="descartarCambios()" class="hidden flex-1 rounded-lg border border-slate-700 px-4 py-2 text-xs font-bold text-slate-300 hover:bg-slate-800">Descartar</button>
+          <button id="ajustes-btn-guardar" disabled onclick="guardarConversacion()"
+                  class="flex-1 rounded-lg bg-amber-500 px-4 py-2 text-xs font-bold text-slate-950 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-amber-400">
+            Guardar cambios
+          </button>
         </div>
       </div>
 

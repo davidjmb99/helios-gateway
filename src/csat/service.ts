@@ -17,6 +17,7 @@
  */
 
 import { config } from '../config.js';
+import { obtenerModoCsat } from '../tenants/settings.js';
 import { supabase } from '../supabase/client.js';
 import { logsRepository } from '../repositories/database.js';
 import { chatwootClient } from '../chatwoot/client.js';
@@ -162,15 +163,22 @@ export async function applyCsatOnResolution(input: {
       return;
     }
 
+    // El modo es POR CLÍNICA, y son tres estados y no dos:
+    //   off ....... no se evalúa nada. Se sale antes de escribir.
+    //   observe ... se decide y se anota, pero NO se toca Chatwoot. Sirve para ver
+    //               a quién se le habría mandado la encuesta, con datos reales.
+    //   on ........ se aplica la etiqueta y la encuesta sale.
+    const modo = await obtenerModoCsat(input.tenantId).catch(() => 'observe' as const);
+    if (modo === 'off') return;
+
     const routing = resolveHandoffRouting(input.tenantId);
     const label = outcome.action === 'send'
       ? routing.csat_labels.send
       : routing.csat_labels.exclude;
 
-    // Con el flag apagado la decisión queda registrada pero NO se toca Chatwoot.
-    // Es el modo de observación: sirve para comprobar a quién se le habría
-    // mandado la encuesta, con datos reales, sin arriesgar ni una.
-    if (config.HELIOS_CSAT_ENABLED && label) {
+    const aplicar = modo === 'on';
+
+    if (aplicar && label) {
       await chatwootClient.addLabelsPreserving(input.accountId, input.conversationId, [label]);
       await patchCsat(input.tenantId, input.conversationId, {
         csat_label_applied_at: new Date().toISOString()
@@ -189,8 +197,8 @@ export async function applyCsatOnResolution(input: {
       metadata: {
         reason: outcome.reason,
         label,
-        applied_to_chatwoot: config.HELIOS_CSAT_ENABLED,
-        observe_only: !config.HELIOS_CSAT_ENABLED
+        applied_to_chatwoot: aplicar,
+        mode: modo
       }
     }).catch(() => undefined);
 
@@ -199,7 +207,8 @@ export async function applyCsatOnResolution(input: {
       conversation_id: input.conversationId,
       action: outcome.action,
       reason: outcome.reason,
-      applied: config.HELIOS_CSAT_ENABLED
+      applied: aplicar,
+      mode: modo
     }));
   } catch (error: any) {
     csatMetrics.last_error_code = error?.message || 'CSAT_APPLY_FAILED';
