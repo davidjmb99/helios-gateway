@@ -1,5 +1,8 @@
 import { randomUUID } from 'crypto';
 import { config } from '../config.js';
+import { decidirAccion, MAXIMO_INTENTOS } from './recovery-policy.js';
+import { obtenerIntentosRecovery, maximoIntentosDeRecovery } from '../tenants/settings.js';
+import { rescatarLote } from './batch-rescue.js';
 import { processBufferEvent } from '../orchestrator.js';
 import { supabase } from '../supabase/client.js';
 import { assertSupabaseSuccess } from '../supabase/assert-success.js';
@@ -44,21 +47,47 @@ async function observeRecoverableWork() {
 
 async function recoverAi() {
   const staleAt = new Date(Date.now() - config.HELIOS_BATCH_LEASE_MS).toISOString();
+  // EL LIMITE YA NO ESTA ESCRITO AQUI. Antes era `.lt('attempt_count', 5)`, y esa
+  // linea es la que abandonaba pacientes: al llegar a 5 el lote desaparecia de la
+  // consulta y nadie volvia a mirarlo. Ahora se piden TODOS los lotes parados sin
+  // rescatar -con el techo mas alto de todas las clinicas- y es decidirAccion()
+  // quien dice, fila a fila, si se reintenta o si se llama a una persona.
+  const techo = await maximoIntentosDeRecovery().catch(() => MAXIMO_INTENTOS);
   const result = await supabase
     .from('helios_processing_batches')
-    .select('tenant_id, conversation_id, attempt_count, adapter_request_key')
+    .select('batch_key, tenant_id, conversation_id, contact_id, attempt_count, adapter_request_key, last_error_code, rescatado_at')
     .or(`ai_status.eq.pending,and(ai_status.eq.processing,lease_expires_at.lte.${staleAt})`)
-    .lt('attempt_count', 5)
+    .is('rescatado_at', null)
+    .lte('attempt_count', techo)
     .order('created_at', { ascending: true })
     .limit(10);
   assertSupabaseSuccess(result, 'recovery.list_ai_batches');
 
   for (const batch of result.data || []) {
-    if (batch.attempt_count >= 4) {
+    // El limite es el de SU clinica, no uno global. Si no se puede leer, el de
+    // siempre: 5. Nunca se deja de decidir por no poder leer un ajuste.
+    const limite = await obtenerIntentosRecovery(batch.tenant_id).catch(() => 5);
+    const accion = decidirAccion({
+      intentos: batch.attempt_count,
+      limite,
+      yaRescatado: batch.rescatado_at
+    });
+
+    if (accion === 'ignorar') continue;
+
+    if (accion === 'rescatar') {
+      // Se acabaron los intentos. La unica salida honesta: una persona sigue con
+      // el paciente y al paciente se le dice. Callarse era lo que se hacia antes.
+      await rescatarLote(batch);
+      continue;
+    }
+
+    if (batch.attempt_count >= limite - 1) {
       recoveryMetrics.loop_detected += 1;
       console.warn(JSON.stringify({
         event: 'RECOVERY_LOOP_DETECTED',
-        attempt_count: batch.attempt_count
+        attempt_count: batch.attempt_count,
+        limite
       }));
     }
     if (batch.adapter_request_key) {
@@ -79,10 +108,15 @@ async function recoverAi() {
         continue;
       }
       if (execution.data?.status === 'failed_final') {
+        // Fallo definitivo del Adapter: reintentar no va a cambiar nada, asi que
+        // se rescata YA sin esperar a agotar los intentos. Antes esto hacia
+        // `continue` y el paciente se quedaba esperando igual que en el caso de
+        // los intentos agotados.
         console.warn(JSON.stringify({
           event: 'recovery_adapter_execution_final',
           attempt_count: batch.attempt_count
         }));
+        await rescatarLote(batch);
         continue;
       }
     }

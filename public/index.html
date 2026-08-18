@@ -2180,6 +2180,10 @@
         nombre: 'La vuelta a la IA por inactividad',
         texto: h => h === 1 ? '1 hora' : h + ' horas'
       },
+      recovery_intentos: {
+        nombre: 'Los reintentos antes de llamar a una persona',
+        texto: n => n === 1 ? '1 intento' : n + ' intentos'
+      },
       clinic_hours: { nombre: 'El horario de atención', texto: textoHorario },
       followup_window: {
         nombre: 'Las horas en que se puede escribir',
@@ -2244,8 +2248,13 @@
 
       document.getElementById('buffer-estado').innerHTML = textoDeOrigen(
         a.origen.buffer_ms, CAMPOS_AJUSTE.buffer_ms.texto(a.buffer_por_defecto));
+      document.getElementById('reintentos-opciones').innerHTML =
+        (a.recovery_opciones || []).map(n => botonDeOpcion('recovery_intentos', n, a.recovery_intentos)).join('');
+
       document.getElementById('vuelta-estado').innerHTML = textoDeOrigen(
         a.origen.handoff_stale_hours, CAMPOS_AJUSTE.handoff_stale_hours.texto(a.handoff_stale_por_defecto));
+      document.getElementById('reintentos-estado').innerHTML = textoDeOrigen(
+        a.origen.recovery_intentos, CAMPOS_AJUSTE.recovery_intentos.texto(a.recovery_por_defecto));
 
       pintarClinica();
       pintarFunciones();
@@ -2735,6 +2744,26 @@
             se le ocurre cerrar la derivación, el paciente espera más.
             No se puede desactivar: sin esta red, un olvido deja una conversación
             muda para siempre.
+          </p>
+        </div>
+
+        <div class="border-t border-slate-800 pt-5">
+          <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Reintentos antes de llamar a una persona</h3>
+          <p class="text-[11px] text-slate-400 leading-relaxed mb-3">
+            Si un mensaje falla, Helios lo vuelve a intentar solo. Agotados estos
+            intentos deja de insistir, <b class="text-slate-300">deriva la conversación
+            al equipo y le dice al paciente que sigue una persona</b>.
+          </p>
+          <div id="reintentos-opciones" class="grid grid-cols-4 gap-2"></div>
+          <div id="reintentos-estado" class="text-[11px] mt-2"></div>
+          <p class="text-[10px] text-slate-500 leading-relaxed mt-2">
+            <b class="text-slate-400">Menos intentos</b> lleva antes al paciente con una
+            persona, a costa de derivar por fallos que se habrían arreglado solos.
+            <b class="text-slate-400">Más intentos</b> deja que Helios se recupere sin
+            molestar a nadie, pero cada intento es un turno de IA que se paga y el
+            paciente espera más.
+            No hay opción de «no derivar nunca»: quedarse callado es lo que dejó a
+            siete pacientes sin respuesta el 17 de agosto.
           </p>
         </div>
 

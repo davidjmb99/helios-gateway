@@ -30,6 +30,7 @@
 
 import { config } from '../config.js';
 import { supabase } from '../supabase/client.js';
+import { normalizarIntentos, MINIMO_INTENTOS, MAXIMO_INTENTOS, INTENTOS_RECOVERY } from '../services/recovery-policy.js';
 import {
   HORAS_VUELTA,
   MINIMO_HORAS_VUELTA,
@@ -82,6 +83,7 @@ export interface AjustesClinica {
   csat_mode: ModoFuncion;
   leads_mode: ModoFuncion;
   chatwoot_teams: EquiposClinica;
+  recovery_intentos: number;
   clinic_timezone: string;
   clinic_tone: string | null;
   /** Qué campos los eligió la clínica y cuáles vienen de lo de siempre. */
@@ -92,6 +94,7 @@ export interface AjustesClinica {
 const CAMPOS = {
   buffer_ms: { normalizar: (v: unknown) => normalizarBufferMs(v), error: 'BUFFER_FUERA_DE_RANGO' },
   handoff_stale_hours: { normalizar: normalizarHorasVuelta, error: 'HORAS_VUELTA_FUERA_DE_RANGO' },
+  recovery_intentos: { normalizar: normalizarIntentos, error: 'INTENTOS_FUERA_DE_RANGO' },
   clinic_hours: { normalizar: normalizarHorario, error: 'HORARIO_INVALIDO', guardar: horarioParaGuardar },
   followup_window: {
     normalizar: normalizarVentanaEnvio,
@@ -139,6 +142,8 @@ function porDefecto(): AjustesClinica {
   return {
     buffer_ms: config.BUFFER_MS,
     handoff_stale_hours: Math.max(MINIMO_HORAS_VUELTA, config.HELIOS_HANDOFF_STALE_HOURS),
+    // Los 5 de siempre, los que estaban escritos a mano en el worker.
+    recovery_intentos: 5,
     clinic_hours: HORARIO_POR_DEFECTO,
     followup_window: VENTANA_ENVIO_POR_DEFECTO,
     csat_mode: config.HELIOS_CSAT_ENABLED ? 'on' : 'observe',
@@ -247,6 +252,28 @@ export async function umbralMinimoDeVuelta(): Promise<number> {
   return Math.max(MINIMO_HORAS_VUELTA, minimo);
 }
 
+/** Cuántos reintentos hace el recovery antes de llamar a una persona, en esta clínica. */
+export async function obtenerIntentosRecovery(tenantId: string): Promise<number> {
+  return (await ajustesDe(tenantId)).recovery_intentos;
+}
+
+/**
+ * El límite MÁS ALTO de todas las clínicas.
+ *
+ * Al revés que el umbral de vuelta: aquí el barrido tiene que ver TODO lo que
+ * cualquier clínica podría seguir reintentando, así que pide con el máximo y luego
+ * cada fila se compara con el límite de SU clínica. Pedir con el mínimo dejaría
+ * fuera lotes que una clínica generosa todavía quiere reintentar.
+ */
+export async function maximoIntentosDeRecovery(): Promise<number> {
+  const porClinica = await cargarTodas();
+  let maximo = porDefecto().recovery_intentos;
+  for (const ajustes of porClinica.values()) {
+    if (ajustes.recovery_intentos > maximo) maximo = ajustes.recovery_intentos;
+  }
+  return Math.min(MAXIMO_INTENTOS, maximo);
+}
+
 /** El modo de la encuesta en esta clínica. */
 export async function obtenerModoCsat(tenantId: string): Promise<ModoFuncion> {
   return (await ajustesDe(tenantId)).csat_mode;
@@ -328,6 +355,10 @@ export async function leerAjustes(tenantId: string): Promise<Record<string, unkn
     handoff_stale_opciones: [...HORAS_VUELTA],
     handoff_stale_por_defecto: defectos.handoff_stale_hours,
 
+    recovery_intentos: ajustes.recovery_intentos,
+    recovery_opciones: [...INTENTOS_RECOVERY],
+    recovery_por_defecto: defectos.recovery_intentos,
+
     clinic_hours: horarioParaGuardar(ajustes.clinic_hours),
     clinic_hours_por_defecto: horarioParaGuardar(defectos.clinic_hours),
 
@@ -351,7 +382,8 @@ export async function leerAjustes(tenantId: string): Promise<Record<string, unkn
     origen: ajustes.origen,
     limites: {
       buffer_ms: [MINIMO_BUFFER_MS, MAXIMO_BUFFER_MS],
-      handoff_stale_hours: [MINIMO_HORAS_VUELTA, MAXIMO_HORAS_VUELTA]
+      handoff_stale_hours: [MINIMO_HORAS_VUELTA, MAXIMO_HORAS_VUELTA],
+      recovery_intentos: [MINIMO_INTENTOS, MAXIMO_INTENTOS]
     }
   };
 }
