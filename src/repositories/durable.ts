@@ -170,6 +170,12 @@ export interface OutboxInput {
   adapter_request_key: string;
   content: string;
   content_hash: string;
+  /**
+   * ¿Hay que resolver la conversación en Chatwoot cuando ESTE mensaje se entregue?
+   * Viaja con la fila y no en el turno: resolver antes del envío dejaría al
+   * paciente con la conversación cerrada y la despedida sin leer.
+   */
+  cerrar_conversacion?: boolean;
 }
 
 export const outboxRepository = {

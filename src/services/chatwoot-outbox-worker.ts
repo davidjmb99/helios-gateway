@@ -13,6 +13,8 @@ export const outboxMetrics = {
   delivery_unknown: 0,
   deduplicated: 0,
   failed: 0,
+  conversaciones_cerradas: 0,
+  cierres_fallidos: 0,
   last_send_at: null as string | null,
   last_error_code: null as string | null
 };
@@ -27,9 +29,48 @@ async function reconcile(row: any): Promise<void> {
     await outboxRepository.markReconciledSent(row, String(existing.id));
     await processingBatchRepository.markDelivered(row.batch_key, row.tenant_id, row.outbox_key);
     outboxMetrics.deduplicated += 1;
+    // El mensaje SÍ se publicó -se acaba de encontrar en Chatwoot-, así que el
+    // cierre sigue tocando. Sin esto, un envío que se dio por incierto y luego se
+    // reconcilió dejaría la conversación abierta para siempre.
+    await cerrarConversacionSiToca(row);
     return;
   }
   await outboxRepository.markPendingAfterReconcile(row);
+}
+
+/**
+ * Resolver la conversación cuando Helios ha declarado que terminó.
+ *
+ * Va DESPUÉS de markSent y no en el turno: resolver antes de que la despedida
+ * esté publicada deja al paciente con la conversación cerrada sin haberla leído,
+ * y en algunas configuraciones de Chatwoot el mensaje posterior la reabre, con lo
+ * que la encuesta saldría en medio de una conversación viva.
+ *
+ * NO LANZA. El mensaje ya está entregado y el outbox ya está marcado: si el cierre
+ * falla, lo peor que pasa es que la conversación se quede abierta y alguien le dé
+ * a Resolver a mano —exactamente lo de antes—. Convertir eso en una excepción
+ * haría que el worker reintentara un envío que ya se hizo.
+ */
+async function cerrarConversacionSiToca(row: any): Promise<void> {
+  if (row?.cerrar_conversacion !== true) return;
+  try {
+    await chatwootClient.setStatus(row.account_id, row.conversation_id, 'resolved');
+    outboxMetrics.conversaciones_cerradas += 1;
+    console.log(JSON.stringify({
+      event: 'cierre_automatico_aplicado',
+      tenant_id: row.tenant_id,
+      conversation_id: row.conversation_id,
+      outbox_fingerprint: shortFingerprint(row.outbox_key)
+    }));
+  } catch (error: any) {
+    outboxMetrics.cierres_fallidos += 1;
+    console.warn(JSON.stringify({
+      event: 'cierre_automatico_fallido',
+      tenant_id: row.tenant_id,
+      conversation_id: row.conversation_id,
+      error_code: error?.code || error?.response?.status || 'CIERRE_FALLIDO'
+    }));
+  }
 }
 
 async function deliver(row: any): Promise<void> {
@@ -69,6 +110,7 @@ async function deliver(row: any): Promise<void> {
     outboxMetrics.last_send_at = new Date().toISOString();
     outboxMetrics.last_error_code = null;
     recordComponentSuccess('chatwoot');
+    await cerrarConversacionSiToca(row);
     console.log(JSON.stringify({
       event: 'chatwoot_outbox_sent',
       outbox_fingerprint: shortFingerprint(row.outbox_key),

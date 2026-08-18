@@ -23,6 +23,7 @@ import { maskPhoneForLog } from './utils/sanitizeForLog.js';
 import { createBatchIdentity, createOutboxIdentity } from './durable/identity.js';
 import { detectSignals } from './chatwoot/normalizer.js';
 import { markEligibleIfAppointment, markExcluded } from './csat/service.js';
+import { decidirCierre } from './csat/cierre.js';
 import { blockLead, markLeadInterest } from './leads/service.js';
 import { pideQueNoLeEscriban } from './leads/messages.js';
 import {
@@ -758,6 +759,31 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         content: replyText
       });
       const adapterRequestKey = (hermesResponse as any).request_key || durableBatchKey;
+
+      // ¿Se acabó la conversación? Lo declara Hermes; el Gateway no lo deduce del
+      // texto. La intención viaja EN LA FILA del outbox porque quien resuelve la
+      // conversación es el worker, después de confirmar que la despedida llegó.
+      const decisionDeCierre = decidirCierre({
+        operation: hermesResponse.operation,
+        statePatch: hermesResponse.state_patch || (hermesResponse as any).state_update,
+        // En el Gateway el campo se llama handoff_required: el Adapter ya traduce
+        // el requires_handoff del contrato. Se mira también la decisión, porque
+        // needs_handoff puede llegar sin el booleano.
+        requiresHandoff: hermesResponse.handoff_required === true
+          || hermesResponse.decision === 'needs_handoff',
+        humanoAlMando: isHumanOwnedStage(stage) || openedHandoff !== null,
+        hayRespuesta: true
+      });
+      if (decisionDeCierre.cerrar) {
+        console.log(JSON.stringify({
+          event: 'cierre_automatico_programado',
+          trace_id: traceId,
+          tenant_id: tenantId,
+          conversation_id: conversationId,
+          motivo: decisionDeCierre.motivo
+        }));
+      }
+
       await outboxRepository.create({
         ...outboxIdentity,
         batch_key: durableBatchKey,
@@ -767,7 +793,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         contact_id,
         source_message_ids_hash: batchIdentity.source_message_ids_hash,
         adapter_request_key: adapterRequestKey,
-        content: replyText
+        content: replyText,
+        cerrar_conversacion: decisionDeCierre.cerrar
       }, traceId);
       outboxCreated = true;
       transitionOutboxKey = outboxIdentity.outbox_key;
