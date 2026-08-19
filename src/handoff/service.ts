@@ -22,6 +22,8 @@
 
 import { config } from '../config.js';
 import { markExcluded } from '../csat/service.js';
+import { fraseDeDisponibilidad } from './disponibilidad.js';
+import { obtenerHorarioYVentana } from '../tenants/settings.js';
 import { blockLead } from '../leads/service.js';
 import { chatwootClient } from '../chatwoot/client.js';
 import { logsRepository, stateRepository, bufferRepository } from '../repositories/database.js';
@@ -835,7 +837,27 @@ export async function loadHandoffContext(
  */
 const MENSAJE_FALLO_TECNICO =
   'Disculpe, he tenido un problema técnico y no he podido completar su solicitud. '
-  + 'Ya he avisado al equipo de la clínica: una persona continuará con usted por aquí mismo.';
+  + 'Ya he avisado al equipo de la clínica.';
+
+/**
+ * El aviso al paciente, con la disponibilidad real del equipo pegada detrás.
+ *
+ * Antes decía «una persona continuará con usted por aquí mismo» a cualquier hora.
+ * A las once de la noche eso es una promesa que nadie va a cumplir: el paciente se
+ * queda esperando y la clínica queda mal por algo que en realidad nunca prometió.
+ *
+ * NO LANZA. Si no se puede leer el horario, se manda el aviso sin la coletilla: un
+ * paciente sin respuesta es peor que un paciente sin saber a qué hora le contestan.
+ */
+async function mensajeDeFalloTecnico(tenantId: string): Promise<string> {
+  try {
+    const { horario, zona } = await obtenerHorarioYVentana(tenantId);
+    const frase = fraseDeDisponibilidad({ ahora: new Date(), zona, horario });
+    return frase ? `${MENSAJE_FALLO_TECNICO} ${frase}` : MENSAJE_FALLO_TECNICO;
+  } catch {
+    return MENSAJE_FALLO_TECNICO;
+  }
+}
 
 export async function escalateTechnicalFailure(input: {
   tenantContext: TenantContext;
@@ -902,13 +924,17 @@ export async function escalateTechnicalFailure(input: {
     let transitionOutboxKey: string | null = null;
     if (input.batch_key) {
       try {
+        // El texto PRIMERO: la clave del outbox se deriva del contenido, así que
+        // calcularla antes de tener el texto final la dejaría sin corresponder con
+        // el mensaje y se perdería la protección contra envíos duplicados.
+        const textoDelAviso = await mensajeDeFalloTecnico(input.tenantContext.tenant_id);
         const identity = createOutboxIdentity({
           tenant_id: input.tenantContext.tenant_id,
           account_id: input.tenantContext.account_id,
           conversation_id: input.conversation_id,
           contact_id: input.contact_id,
           source_message_ids_hash: `technical:${input.error_code}`,
-          content: MENSAJE_FALLO_TECNICO
+          content: textoDelAviso
         });
         await outboxRepository.create({
           outbox_key: identity.outbox_key,
@@ -919,7 +945,7 @@ export async function escalateTechnicalFailure(input: {
           contact_id: input.contact_id,
           source_message_ids_hash: `technical:${input.error_code}`,
           adapter_request_key: `technical:${input.trigger_key}`,
-          content: MENSAJE_FALLO_TECNICO,
+          content: textoDelAviso,
           content_hash: identity.content_hash
         }, input.trace_id);
         transitionOutboxKey = identity.outbox_key;

@@ -24,6 +24,8 @@ import { createBatchIdentity, createOutboxIdentity } from './durable/identity.js
 import { detectSignals } from './chatwoot/normalizer.js';
 import { markEligibleIfAppointment, markExcluded } from './csat/service.js';
 import { decidirCierre } from './csat/cierre.js';
+import { fraseDeDisponibilidad } from './handoff/disponibilidad.js';
+import { obtenerHorarioYVentana } from './tenants/settings.js';
 import { blockLead, markLeadInterest } from './leads/service.js';
 import { pideQueNoLeEscriban } from './leads/messages.js';
 import {
@@ -602,7 +604,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       hermesResponse.message_for_client || '',
       profileStatus.identityComplete ? profileStatus.firstName : null
     );
-    const replyText = estiloNombre.texto;
+    let replyText = estiloNombre.texto;
     if (estiloNombre.quitados > 0) {
       // Se registra el número para poder RESPONDER si esto sirve. El intento
       // anterior fue una regla en el prompt y, según el operador, «nunca funcionó»;
@@ -747,6 +749,29 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     }
 
     let transitionOutboxKey: string | null = null;
+
+    // DERIVACION ABIERTA EN ESTE TURNO: al texto que escribio Hermes se le pega la
+    // disponibilidad real del equipo. Hermes dice «te paso con una persona» pero no
+    // sabe si la clinica esta abierta, asi que a las once de la noche prometia una
+    // atencion que no iba a llegar.
+    //
+    // VA AQUI Y NO DESPUES a proposito: la clave del outbox se deriva del
+    // contenido (regla 59). Tocar el texto despues de calcularla dejaria la clave
+    // sin corresponder con el mensaje y se perderia la proteccion contra enviar
+    // dos veces lo mismo.
+    if (replyText && safeToSend && openedHandoff) {
+      try {
+        const { horario, zona } = await obtenerHorarioYVentana(tenantId);
+        const frase = fraseDeDisponibilidad({ ahora: new Date(), zona, horario });
+        // Solo si Hermes no lo ha dicho ya por su cuenta: dos frases seguidas
+        // diciendo lo mismo se leen como un error.
+        if (frase && !/fuera del horario|horario de atenci/i.test(replyText)) {
+          replyText = `${replyText} ${frase}`;
+        }
+      } catch {
+        /* sin horario legible se manda el texto de Hermes tal cual */
+      }
+    }
 
     if (replyText && safeToSend) {
       processingStage = 'chatwoot_outbox.create';

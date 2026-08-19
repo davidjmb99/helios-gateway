@@ -87,7 +87,7 @@ export const DEFAULT_HANDOFF_ATTRIBUTE_KEYS: HandoffAttributeKeys = Object.freez
 });
 
 export const DEFAULT_TRANSITION_MESSAGE =
-  'Voy a pasar tu caso a una persona del equipo de la clínica. Te responderán por aquí mismo lo antes posible.';
+  'Voy a pasar tu caso a una persona del equipo de la clínica.';
 
 let cachedRaw: string | null = null;
 let cachedByTenant = new Map<string, HandoffRouting>();

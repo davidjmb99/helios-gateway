@@ -449,7 +449,20 @@ assert.equal(handoffRows[0].status, 'pending');
 
 const outboxC = db.table('helios_chatwoot_outbox');
 assert.equal(outboxC.length, 1, 'C5: un ÚNICO mensaje de transición');
-assert.equal(outboxC[0].content, 'Te paso con el equipo.');
+const textoDelModeloC = 'Te paso con el equipo.';
+assert.ok(
+  outboxC[0].content.startsWith(textoDelModeloC),
+  'C5a: el texto que escribio el modelo se conserva intacto y al principio'
+);
+const coletillaC = outboxC[0].content.slice(textoDelModeloC.length);
+assert.ok(
+  /^ (El equipo está atendiendo ahora|Ahora mismo estamos fuera del horario|El equipo le responderá por aquí dentro del horario)/.test(coletillaC),
+  `C5b: lo unico añadido es la disponibilidad del equipo, y salio: "${coletillaC}"`
+);
+assert.ok(
+  !/lo antes posible.*fuera del horario/.test(outboxC[0].content),
+  'C5c: el mensaje no puede prometer inmediatez y decir que esta cerrado a la vez'
+);
 
 const notificationsC = db.table('helios_notification_outbox');
 assert.equal(notificationsC.length, 1, 'C6: una única alerta al equipo');
@@ -800,8 +813,13 @@ assert.match(
 );
 assert.match(
   outboxG[0].content,
-  /una persona continuará con usted/,
-  'G7c: y que sigue una persona, que es lo que necesita saber'
+  /El equipo (está atendiendo|le responderá)/,
+  'G7c: y que le va a responder el equipo, que es lo que necesita saber'
+);
+assert.ok(
+  /atendiendo ahora|a partir de las|dentro del horario de atención/.test(outboxG[0].content),
+  'G7d: el aviso dice CUANDO responde el equipo. Sin esto, a las once de la noche '
+  + 'se le promete al paciente una atencion que nadie va a cumplir'
 );
 
 const estadoG = db.table('helios_conversation_state')[0];
