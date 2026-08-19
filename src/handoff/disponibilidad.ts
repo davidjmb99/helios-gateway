@@ -92,16 +92,26 @@ export function fraseDeDisponibilidad(entrada: {
 
   const apertura = proximaApertura(ahora, zona, horario);
   if (!apertura) {
-    return 'El equipo le responderá por aquí dentro del horario de atención de la clínica.';
+    return 'Le responderán por aquí dentro del horario de atención de la clínica.';
   }
 
   const hoy = momentoLocal(ahora, zona).dia;
   const cuando = apertura.dia === hoy
     ? 'hoy'
     // «mañana» solo si es el día siguiente de verdad. Con dos días o más se dice
-    // el nombre del día, que es lo que entiende cualquiera.
+    // el nombre del día, que es lo que entiende cualquiera. Y el día sale de la
+    // próxima apertura REAL: un sábado por la noche con el domingo cerrado dice
+    // «el lunes», nunca «mañana».
     : (apertura.dia === (hoy + 1) % 7 ? 'mañana' : `el ${NOMBRES_DIA[apertura.dia]}`);
 
-  return 'Ahora mismo estamos fuera del horario de atención. '
-    + `El equipo le responderá por aquí ${cuando} a partir de las ${horaTexto(apertura.minuto)}.`;
+  // SE DICE EL HORARIO, NO SE PROMETE UNA RESPUESTA A ESA HORA.
+  //
+  // La diferencia importa. «El equipo le responderá el lunes a las 10:00» es un
+  // compromiso que el sistema no puede sostener: el horario configurado en el
+  // panel no sabe de festivos ni de vacaciones, así que en un puente nombraría un
+  // día en el que no hay nadie. «Dentro del horario de atención, que se reanuda el
+  // lunes a las 10:00» dice lo mismo de útil y no promete nada que no sea el
+  // horario, que es un hecho de la clínica y no una expectativa del paciente.
+  return 'Le responderán dentro del horario de atención, que se reanuda '
+    + `${cuando} a las ${horaTexto(apertura.minuto)}.`;
 }

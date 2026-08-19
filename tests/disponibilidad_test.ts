@@ -53,7 +53,7 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
   // Martes 18 de agosto de 2026, 12:00 en Madrid.
   const frase = fraseDeDisponibilidad({ ahora: madrid('2026-08-18T12:00:00'), zona: ZONA, horario: HORARIO });
   assert.ok(/atendiendo ahora/.test(frase), frase);
-  assert.ok(!/a partir de las/.test(frase), 'abierta no debe dar una hora futura');
+  assert.ok(!/se reanuda/.test(frase), 'abierta no debe dar una hora futura');
 }
 
 // --- Fuera de horario: se dice cuándo ---------------------------------------
@@ -61,27 +61,29 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
 {
   // Martes 23:00 -> abre mañana miércoles a las 10:00.
   const frase = fraseDeDisponibilidad({ ahora: madrid('2026-08-18T23:00:00'), zona: ZONA, horario: HORARIO });
-  assert.ok(/fuera del horario/.test(frase), frase);
-  assert.ok(/mañana a partir de las 10:00/.test(frase), frase);
+  assert.ok(/dentro del horario de atención/.test(frase), frase);
+  assert.ok(/se reanuda mañana a las 10:00/.test(frase), frase);
+  // No puede prometer una respuesta A esa hora: solo decir cuando abre.
+  assert.ok(!/le responderá.*a partir de las/.test(frase), 'el horario no es una promesa de respuesta');
 }
 
 {
   // Martes 08:00, antes de abrir -> HOY a las 10:00. No «mañana».
   const frase = fraseDeDisponibilidad({ ahora: madrid('2026-08-18T08:00:00'), zona: ZONA, horario: HORARIO });
-  assert.ok(/hoy a partir de las 10:00/.test(frase), frase);
+  assert.ok(/se reanuda hoy a las 10:00/.test(frase), frase);
 }
 
 {
   // Sábado 16:00, ya cerrado, y el domingo cierra -> el LUNES. Ni hoy ni mañana.
   const frase = fraseDeDisponibilidad({ ahora: madrid('2026-08-22T16:00:00'), zona: ZONA, horario: HORARIO });
-  assert.ok(/el lunes a partir de las 10:00/.test(frase), frase);
+  assert.ok(/se reanuda el lunes a las 10:00/.test(frase), frase);
   assert.ok(!/mañana/.test(frase), 'el domingo está cerrado: decir «mañana» sería mentir');
 }
 
 {
   // Domingo por la mañana -> mañana lunes.
   const frase = fraseDeDisponibilidad({ ahora: madrid('2026-08-23T09:00:00'), zona: ZONA, horario: HORARIO });
-  assert.ok(/mañana a partir de las 10:00/.test(frase), frase);
+  assert.ok(/se reanuda mañana a las 10:00/.test(frase), frase);
 }
 
 // --- El hueco de la comida ---------------------------------------------------
@@ -89,7 +91,7 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
 {
   // Martes 15:00, entre los dos tramos -> reabre HOY a las 16:00.
   const frase = fraseDeDisponibilidad({ ahora: madrid('2026-08-18T15:00:00'), zona: ZONA, horario: CON_COMIDA });
-  assert.ok(/hoy a partir de las 16:00/.test(frase), frase);
+  assert.ok(/se reanuda hoy a las 16:00/.test(frase), frase);
 }
 
 // --- Horarios imposibles: no se inventa nada --------------------------------
@@ -99,7 +101,7 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
   assert.equal(proximaApertura(madrid('2026-08-18T12:00:00'), ZONA, cerrada), null);
   const frase = fraseDeDisponibilidad({ ahora: madrid('2026-08-18T12:00:00'), zona: ZONA, horario: cerrada });
   assert.ok(/dentro del horario de atención/.test(frase), frase);
-  assert.ok(!/a partir de las/.test(frase), 'sin apertura no se puede dar una hora');
+  assert.ok(!/se reanuda/.test(frase), 'sin apertura no se puede dar una hora');
 }
 
 // --- La frase nunca sale vacía ----------------------------------------------
@@ -126,7 +128,7 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
       zona: ZONA,
       horario: HORARIO
     });
-    assert.ok(/a partir de las 10:00/.test(frase), `09:${minuto} -> "${frase}"`);
+    assert.ok(/se reanuda hoy a las 10:00/.test(frase), `09:${minuto} -> "${frase}"`);
   }
 }
 
@@ -139,7 +141,50 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
       zona: ZONA,
       horario: CON_COMIDA
     });
-    assert.ok(/a partir de las 16:00/.test(frase), `${hora} -> "${frase}"`);
+    assert.ok(/se reanuda hoy a las 16:00/.test(frase), `${hora} -> "${frase}"`);
+  }
+}
+
+// --- El caso que planteo David: nunca nombrar un dia cerrado ---------------
+
+{
+  // «Que tal que este escribiendo un sabado ya fuera de horario, esta diciendo que
+  // el equipo atendera el domingo y es falso». Con el domingo cerrado, ninguna hora
+  // del sabado puede producir «mañana». Se barre el sabado entero tras el cierre.
+  for (const hora of ['15:00', '15:01', '16:30', '19:00', '21:30', '23:59']) {
+    const frase = fraseDeDisponibilidad({
+      ahora: madrid(`2026-08-22T${hora}:00`),
+      zona: ZONA,
+      horario: HORARIO
+    });
+    assert.ok(/se reanuda el lunes/.test(frase), `sabado ${hora} -> "${frase}"`);
+    assert.ok(!/mañana/.test(frase), `sabado ${hora} NO puede decir mañana -> "${frase}"`);
+    assert.ok(!/domingo/.test(frase), `sabado ${hora} NO puede nombrar el domingo -> "${frase}"`);
+  }
+}
+
+{
+  // La propiedad de fondo, para cualquier horario y cualquier instante: el dia que
+  // se nombra tiene que ser un dia con franjas. Si algun dia el calculo se rompiera
+  // y nombrara un dia cerrado, esto lo caza sin depender de un caso concreto.
+  const DIAS_ES = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  for (const horario of [HORARIO, CON_COMIDA]) {
+    for (let dia = 22; dia <= 28; dia += 1) {
+      for (const hora of ['00:30', '07:00', '09:00', '13:00', '15:30', '18:00', '21:00', '23:30']) {
+        const frase = fraseDeDisponibilidad({
+          ahora: madrid(`2026-08-${dia}T${hora}:00`),
+          zona: ZONA,
+          horario
+        });
+        const nombrado = DIAS_ES.findIndex(d => frase.includes(`se reanuda el ${d}`));
+        if (nombrado >= 0) {
+          assert.ok(
+            (horario[nombrado] || []).length > 0,
+            `2026-08-${dia} ${hora}: nombra "${DIAS_ES[nombrado]}", que esta cerrado -> "${frase}"`
+          );
+        }
+      }
+    }
   }
 }
 

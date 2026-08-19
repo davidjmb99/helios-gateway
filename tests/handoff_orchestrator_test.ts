@@ -456,7 +456,7 @@ assert.ok(
 );
 const coletillaC = outboxC[0].content.slice(textoDelModeloC.length);
 assert.ok(
-  /^ (El equipo está atendiendo ahora|Ahora mismo estamos fuera del horario|El equipo le responderá por aquí dentro del horario)/.test(coletillaC),
+  /^ (El equipo está atendiendo ahora|Le responderán dentro del horario)/.test(coletillaC),
   `C5b: lo unico añadido es la disponibilidad del equipo, y salio: "${coletillaC}"`
 );
 assert.ok(
@@ -813,11 +813,11 @@ assert.match(
 );
 assert.match(
   outboxG[0].content,
-  /El equipo (está atendiendo|le responderá)/,
+  /(El equipo está atendiendo|Le responderán dentro del horario)/,
   'G7c: y que le va a responder el equipo, que es lo que necesita saber'
 );
 assert.ok(
-  /atendiendo ahora|a partir de las|dentro del horario de atención/.test(outboxG[0].content),
+  /atendiendo ahora|se reanuda|dentro del horario de atención/.test(outboxG[0].content),
   'G7d: el aviso dice CUANDO responde el equipo. Sin esto, a las once de la noche '
   + 'se le promete al paciente una atencion que nadie va a cumplir'
 );
