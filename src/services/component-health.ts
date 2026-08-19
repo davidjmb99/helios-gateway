@@ -27,7 +27,12 @@ export const componentHealth = {
   hermes: initial(),
   adapter: initial(),
   supabase: initial(),
-  chatwoot: initial()
+  chatwoot: initial(),
+  // El CRM es un componente propio porque su fallo es INVISIBLE por naturaleza: el
+  // paciente recibe su respuesta igual y la conversación parece perfecta, solo que
+  // la ficha no se guardó en HubSpot. Sin un sitio donde mirar, eso se descubre
+  // semanas después buscando un contacto que no está.
+  crm: initial()
 };
 
 export function recordComponentSuccess(

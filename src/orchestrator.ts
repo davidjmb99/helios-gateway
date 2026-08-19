@@ -25,6 +25,7 @@ import { detectSignals } from './chatwoot/normalizer.js';
 import { markEligibleIfAppointment, markExcluded } from './csat/service.js';
 import { decidirCierre } from './csat/cierre.js';
 import { fraseDeDisponibilidad } from './handoff/disponibilidad.js';
+import { registrarTurnoDeCrm } from './services/crm-watch.js';
 import { obtenerHorarioYVentana } from './tenants/settings.js';
 import { blockLead, markLeadInterest } from './leads/service.js';
 import { pideQueNoLeEscriban } from './leads/messages.js';
@@ -898,6 +899,20 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     const incomingPatch = hermesResponse.profile_patch || hermesResponse.patient_profile_update;
     if (incomingPatch) {
       const normalized = normalizeProfilePatch(patientProfile, incomingPatch, resolvedPhone);
+
+      // ¿Este paciente llegó de verdad al CRM? Se mira el RESULTADO, no lo que
+      // diga el modelo: si la identidad está completa y no hay identificador de
+      // HubSpot, ese paciente no tiene ficha, se cuente lo que se cuente. Nada
+      // vigilaba esto, y el acceso a HubSpot se renueva por OAuth: el día que la
+      // renovación falle, Helios seguirá contestando con normalidad y la clínica se
+      // quedará sin fichas sin que nadie se entere.
+      registrarTurnoDeCrm(tenantId, {
+        identidadCompleta: Boolean(
+          normalized.first_name && normalized.last_name && normalized.email
+        ),
+        crmContactId: normalized.crm_contact_id,
+        tipoDeOperacion: hermesResponse.operation?.type
+      });
 
       if (normalized.has_changes) {
         const upsertOk = await patientRepository.upsert({

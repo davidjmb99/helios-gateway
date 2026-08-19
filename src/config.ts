@@ -34,10 +34,48 @@ export function parseRecoveryMode(value: unknown): RecoveryMode {
   return 'observe';
 }
 
-// Configuración de Hermes parseada de forma segura
-const hermesEnabled = envBool(process.env.HERMES_ENABLED, true);
-const hermesMock = envBool(process.env.HERMES_MOCK, false);
-const hermesTimeoutMs = envNumber(process.env.HERMES_TIMEOUT_MS, 30000);
+/**
+ * LAS VARIABLES HERMES_* DE ESTE SERVICIO NO APUNTAN A HERMES. APUNTAN AL ADAPTER.
+ *
+ * Es el nombre mas peligroso de toda la instalacion, y salio en la auditoria de
+ * variables del 18 de agosto de 2026. El Gateway NUNCA habla con Hermes: habla con
+ * el helios-hermes-adapter, y es el Adapter quien habla con Hermes. Pero las
+ * variables se llaman HERMES_BASE_URL, HERMES_API_KEY, HERMES_ENDPOINT...
+ *
+ * El accidente que esto provoca es concreto: alguien lee «HERMES_BASE_URL», piensa
+ * «esto es Hermes», le pone la URL real de Hermes -el puerto 8643- y el Gateway
+ * empieza a hablar con Hermes directamente. Se salta el Adapter, y con el se salta
+ * la idempotencia, el contrato, la caja negra y el registro de tokens. Todo
+ * seguiria pareciendo que funciona hasta que algo fallara sin dejar rastro.
+ *
+ * Se aceptan los dos juegos de nombres: ADAPTER_* es el correcto y tiene
+ * prioridad; HERMES_* sigue funcionando para no romper el despliegue actual, pero
+ * avisa en el log al arrancar. Las claves internas del objeto config se dejan como
+ * estan a proposito: renombrar 33 usos es mucho ruido para un problema que esta en
+ * lo que LEE una persona, no en lo que compila el codigo.
+ */
+function leerVariableDelAdapter(sufijo: string): string | undefined {
+  const nombreBueno = `ADAPTER_${sufijo}`;
+  const nombreViejo = `HERMES_${sufijo}`;
+  const valorBueno = process.env[nombreBueno];
+  if (valorBueno !== undefined && String(valorBueno).trim() !== '') return valorBueno;
+
+  const valorViejo = process.env[nombreViejo];
+  if (valorViejo !== undefined && String(valorViejo).trim() !== '') {
+    nombresViejosEnUso.push(`${nombreViejo} -> ${nombreBueno}`);
+    return valorViejo;
+  }
+  return undefined;
+}
+
+const nombresViejosEnUso: string[] = [];
+
+// Configuración del ADAPTER parseada de forma segura. Se llama hermes* por
+// compatibilidad con los 33 usos que ya existen; lo que hay al otro lado es el
+// Adapter.
+const hermesEnabled = envBool(leerVariableDelAdapter('ENABLED'), true);
+const hermesMock = envBool(leerVariableDelAdapter('MOCK'), false);
+const hermesTimeoutMs = envNumber(leerVariableDelAdapter('TIMEOUT_MS'), 30000);
 
 // Esquema Zod más relajado para variables básicas esenciales (Supabase y Chatwoot)
 const envSchema = z.object({
@@ -79,13 +117,13 @@ export const config = {
   // Variables de Hermes Seguras
   HERMES_ENABLED: hermesEnabled,
   HERMES_MOCK: hermesMock,
-  HERMES_BASE_URL: (process.env.HERMES_BASE_URL ?? '').trim(),
-  HERMES_ENDPOINT: (process.env.HERMES_ENDPOINT ?? '/v1/chat/completions').trim(),
-  HERMES_API_KEY: (process.env.HERMES_API_KEY ?? '').trim(),
-  HERMES_MODEL: (process.env.HERMES_MODEL ?? 'default').trim(),
+  HERMES_BASE_URL: (leerVariableDelAdapter('BASE_URL') ?? '').trim(),
+  HERMES_ENDPOINT: (leerVariableDelAdapter('ENDPOINT') ?? '/v1/chat/completions').trim(),
+  HERMES_API_KEY: (leerVariableDelAdapter('API_KEY') ?? '').trim(),
+  HERMES_MODEL: (leerVariableDelAdapter('MODEL') ?? 'default').trim(),
   HERMES_PROFILE: (process.env.HERMES_PROFILE ?? 'helios').trim(),
-  HERMES_CWD: (process.env.HERMES_CWD ?? '').trim(),
-  HERMES_SOUL_PATH: (process.env.HERMES_SOUL_PATH ?? '').trim(),
+  HERMES_CWD: (leerVariableDelAdapter('CWD') ?? '').trim(),
+  HERMES_SOUL_PATH: (leerVariableDelAdapter('SOUL_PATH') ?? '').trim(),
   HERMES_TIMEOUT_MS: hermesTimeoutMs,
   HELIOS_RECOVERY_MODE: parseRecoveryMode(process.env.HELIOS_RECOVERY_MODE),
   HELIOS_ADMIN_SHOW_PII: envBool(process.env.HELIOS_ADMIN_SHOW_PII, false),
@@ -148,5 +186,50 @@ export const config = {
   CLINIC_TIMEZONE: parsed.data?.CLINIC_TIMEZONE ?? 'Europe/Madrid',
   CLINIC_TONE: parsed.data?.CLINIC_TONE ?? 'es-ES'
 };
+
+/**
+ * Avisos de arranque sobre la configuracion del Adapter.
+ *
+ * AVISA, NO ABORTA. Aqui no se puede negar el arranque: la instalacion actual usa
+ * los nombres viejos y tumbarla al desplegar seria peor que el problema que se
+ * quiere evitar. El Adapter SI aborta con su transporte porque ahi no hay ninguna
+ * eleccion valida ambigua; aqui las dos son validas y una solo esta mal nombrada.
+ */
+function avisarSobreLaConfiguracionDelAdapter(): void {
+  if (nombresViejosEnUso.length > 0) {
+    console.warn(JSON.stringify({
+      event: 'nombres_de_variable_obsoletos',
+      // Sin valores: solo los nombres. Algunos de estos son claves de API.
+      renombrar: nombresViejosEnUso,
+      por_que: 'Estas variables apuntan al ADAPTER, no a Hermes. El nombre HERMES_* '
+        + 'invita a ponerles la URL de Hermes y saltarse el Adapter entero.',
+      accion: 'Duplicarlas con el prefijo ADAPTER_ en Coolify y borrar las viejas. '
+        + 'Las dos formas funcionan mientras se hace el cambio.'
+    }));
+  }
+
+  // EL ACCIDENTE QUE SE VIGILA: que la URL sea la de Hermes y no la del Adapter.
+  // Hermes Agent vive en el puerto 8643 y su ruta es /v1/responses. Si aparece
+  // cualquiera de las dos cosas aqui, el Gateway estaria hablando con Hermes
+  // directamente: sin idempotencia, sin contrato, sin caja negra y sin registro de
+  // tokens. Todo pareceria normal hasta que algo fallara sin dejar rastro.
+  const url = config.HERMES_BASE_URL;
+  const sospechas: string[] = [];
+  if (/:8643(\/|$)/.test(url)) sospechas.push('el puerto 8643 es el de Hermes Agent');
+  if (config.HERMES_ENDPOINT.includes('/v1/responses')) {
+    sospechas.push('/v1/responses es la ruta de Hermes Agent, no la del Adapter');
+  }
+  if (sospechas.length > 0) {
+    console.error(JSON.stringify({
+      event: 'la_url_del_adapter_parece_ser_hermes',
+      sospechas,
+      consecuencia: 'El Gateway se saltaria el Adapter: sin idempotencia, sin '
+        + 'validacion de contrato, sin contract_debug y sin coste por mensaje.',
+      accion: 'Comprobar que ADAPTER_BASE_URL apunta al helios-hermes-adapter.'
+    }));
+  }
+}
+
+avisarSobreLaConfiguracionDelAdapter();
 
 export type Config = typeof config;
