@@ -5,8 +5,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
 import { applyCsatOnResolution, csatMetrics } from './csat/service.js';
+import { describirModo, accionPara } from './handoff/modo.js';
 import { normalizeChatwootPayload } from './chatwoot/normalizer.js';
-import { resolveTenantContext, TenantContextError, validateWebhookTenantRoute } from './tenants/context.js';
+import { resolveTenantContext, TenantContextError, validateWebhookTenantRoute, resolveTenantContextByTenantId } from './tenants/context.js';
 import {
   bufferRepository,
   idempotencyRepository,
@@ -1145,47 +1146,95 @@ server.post('/test/chatwoot-message', async (request, reply) => {
   };
 });
 
-// 4. POST /admin/reactivate-ai
-server.post('/admin/reactivate-ai', async (request, reply) => {
-  // SIN AUTENTICACION hasta el 15-08-2026: cualquiera que diera con la URL podia
-  // cambiar el estado de la IA en produccion. Nada lo llamaba automaticamente,
-  // asi que exigir sesion no rompe ningun flujo.
+// 4. GET /admin/conversation-mode  -  quien atiende esta conversacion AHORA
+//
+// El panel necesita saberlo sin interpretar booleanos: son TRES estados y no dos.
+// La frase que se muestra la escribe describirModo(), no el navegador, para que
+// panel y backend no puedan discrepar.
+server.get('/admin/conversation-mode', async (request, reply) => {
   await checkAuth(request, reply);
-  const { tenant_id, conversation_id } = request.body as any;
+  const { tenant_id, conversation_id, contact_id } = request.query as any;
   if (!tenant_id || !conversation_id) {
     return reply.status(400).send({ error: 'tenant_id y conversation_id son obligatorios.' });
   }
-
-  await stateRepository.upsert({
-    tenant_id,
-    conversation_id,
-    contact_id: 'unknown',
-    inbox_id: 'unknown',
-    ai_enabled: true,
-    human_handoff_active: false
-  });
-
-  return { ok: true, ai_enabled: true, message: 'IA reactivada correctamente para la conversación.' };
+  const fila = contact_id
+    ? await stateRepository.getRefined(tenant_id, conversation_id, contact_id)
+    : await stateRepository.get(tenant_id, conversation_id);
+  return { ok: true, existe: Boolean(fila), ...describirModo(fila) };
 });
 
-// 5. POST /admin/disable-ai
-server.post('/admin/disable-ai', async (request, reply) => {
-  // SIN AUTENTICACION hasta el 15-08-2026: cualquiera podia APAGAR Helios entero.
+// 5. POST /admin/conversation-mode  -  cambiarlo, de verdad
+//
+// LO QUE HABIA ANTES ESTABA ROTO DE DOS FORMAS, y las dos se arreglan aqui:
+//
+//  1. Escribia contact_id: 'unknown' e inbox_id: 'unknown' ENCIMA de los reales,
+//     porque el upsert persiste todos los campos que recibe. Corrompia la fila.
+//     La prueba de que ya paso: getRefined() lleva un fallback escrito
+//     explicitamente «para saltar filas unknown corruptas».
+//  2. Movia human_handoff_active, que es un booleano DERIVADO, y no tocaba stage,
+//     que es la fuente de verdad. Respondia ok y Helios seguia sin contestar.
+//
+// Ahora se lee la fila real primero, y devolver una conversacion derivada usa el
+// camino canonico -returnConversationToBot- que limpia el handoff y avisa en
+// Chatwoot, en vez de un UPDATE a mano.
+server.post('/admin/conversation-mode', async (request, reply) => {
   await checkAuth(request, reply);
-  const { tenant_id, conversation_id } = request.body as any;
+  const { tenant_id, conversation_id, modo } = request.body as any;
   if (!tenant_id || !conversation_id) {
     return reply.status(400).send({ error: 'tenant_id y conversation_id son obligatorios.' });
   }
+  if (modo !== 'helios' && modo !== 'pausada') {
+    return reply.status(400).send({ error: "modo tiene que ser 'helios' o 'pausada'." });
+  }
 
-  await stateRepository.upsert({
+  const fila = await stateRepository.get(tenant_id, conversation_id);
+  if (!fila) {
+    return reply.status(404).send({ error: 'Esa conversación no tiene estado guardado.' });
+  }
+  const antes = describirModo(fila);
+  const accion = accionPara(antes.modo, modo);
+
+  if (accion === 'nada') {
+    return { ok: true, cambiado: false, accion, antes, despues: antes };
+  }
+
+  // Los identificadores salen de la FILA, nunca del cuerpo de la peticion ni de
+  // un literal. Es lo que impide volver a escribir 'unknown'.
+  const contactId = String(fila.contact_id ?? '');
+  const inboxId = String(fila.inbox_id ?? '');
+  const phone = String(fila.phone ?? '');
+
+  if (accion === 'devolver_a_helios') {
+    await returnConversationToBot({
+      tenantContext: resolveTenantContextByTenantId(tenant_id),
+      conversation_id: String(conversation_id),
+      contact_id: contactId,
+      inbox_id: inboxId,
+      phone,
+      trace_id: `panel-modo-${conversation_id}`,
+      handoff_id: fila.handoff_id ?? null
+    });
+  } else {
+    await stateRepository.upsert({
+      tenant_id,
+      conversation_id: String(conversation_id),
+      contact_id: contactId,
+      inbox_id: inboxId,
+      ai_enabled: accion === 'encender_ia'
+    });
+  }
+
+  const filaDespues = await stateRepository.get(tenant_id, conversation_id);
+  const despues = describirModo(filaDespues);
+  console.log(JSON.stringify({
+    event: 'modo_conversacion_cambiado_desde_panel',
     tenant_id,
     conversation_id,
-    contact_id: 'unknown',
-    inbox_id: 'unknown',
-    ai_enabled: false
-  });
-
-  return { ok: true, ai_enabled: false, message: 'IA desactivada / pausada para la conversación.' };
+    accion,
+    de: antes.modo,
+    a: despues.modo
+  }));
+  return { ok: true, cambiado: despues.modo !== antes.modo, accion, antes, despues };
 });
 
 // Endpoint de Healthcheck alternativo
