@@ -37,8 +37,16 @@ function saludo(nombre?: string | null): string {
 /**
  * El texto, según cómo quedó la conversación.
  *
- * El tono lo dan tres detalles pequeños: «sin prisa» y «por si te viene bien»
- * quitan presión, y la pregunta final deja la puerta abierta sin empujar.
+ * El tono lo dan tres detalles pequeños: «sin apuro» y «sin compromiso» quitan
+ * presión, y la pregunta final deja la puerta abierta sin empujar.
+ *
+ * VAN DE USTED, Y NO ES UNA ELECCION DE ESTILO. Estos mensajes los manda un worker
+ * que NO ve la conversación, así que no puede saber si el paciente tutea. El usted
+ * es el registro por defecto del sistema y el que nunca queda mal: a nadie le
+ * molesta que le traten de usted, y al revés sí.
+ *
+ * Y no dicen «hueco». Es la palabra más peninsular del vocabulario de una agenda,
+ * y en Venezuela se dice fecha, cita o cupo.
  */
 export function construirMensaje(interest: LeadInterest, datos: DatosSeguimiento = {}): string {
   const hola = saludo(datos.nombre);
@@ -47,21 +55,22 @@ export function construirMensaje(interest: LeadInterest, datos: DatosSeguimiento
 
   switch (interest) {
     case 'appointment':
-      return `${hola}ayer preguntaste por una cita y no llegamos a concretarla. `
-        + 'Sigo teniendo huecos por si te viene bien. ¿Te sigue interesando?';
+      return `${hola}ayer preguntó por una cita y no llegamos a concretarla. `
+        + 'Todavía tenemos agenda disponible. ¿Le sigue interesando?';
 
     case 'cancelled':
-      return `${hola}vi que al final cancelaste tu cita${cuando ? ` ${cuando}` : ''}. `
-        + 'Si quieres te busco otro hueco cuando te venga mejor, sin prisa. ¿Miramos la agenda?';
+      return `${hola}vi que al final canceló su cita${cuando ? ` ${cuando}` : ''}. `
+        + 'Si quiere, le busco otra fecha cuando le quede mejor, sin apuro. '
+        + '¿Revisamos la agenda?';
 
     case 'reschedule_pending':
-      return `${hola}quedamos en cambiarte la cita y no llegamos a fijar la nueva. `
-        + '¿Quieres que te busque un hueco?';
+      return `${hola}quedamos en cambiarle la cita y no llegamos a fijar la nueva. `
+        + '¿Quiere que le busque una fecha?';
 
     case 'treatment':
-      return `${hola}el otro día preguntaste por ${tema || 'uno de nuestros tratamientos'}. `
-        + 'Si te quedó alguna duda, dímelo sin problema. '
-        + '¿Quieres que te busque hueco para una valoración?';
+      return `${hola}el otro día preguntó por ${tema || 'uno de nuestros tratamientos'}. `
+        + 'Si le quedó alguna duda, me dice sin compromiso. '
+        + '¿Quiere que le agende una valoración?';
   }
 }
 

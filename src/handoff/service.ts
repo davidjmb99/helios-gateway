@@ -836,8 +836,8 @@ export async function loadHandoffContext(
  * chat sin saber si le han leído.
  */
 const MENSAJE_FALLO_TECNICO =
-  'Disculpe, he tenido un problema técnico y no he podido completar su solicitud. '
-  + 'Ya he avisado al equipo de la clínica.';
+  'Disculpe, tuve un problema técnico y no pude completar su solicitud. '
+  + 'Ya avisé al equipo de la clínica.';
 
 /**
  * El aviso al paciente, con la disponibilidad real del equipo pegada detrás.
