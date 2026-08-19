@@ -2903,9 +2903,46 @@
             <p class="text-[11px] text-slate-400 mb-2">
               Todas las horas de arriba son las del reloj del paciente, no las del servidor.
             </p>
-            <input id="clinica-zona" type="text" spellcheck="false" placeholder="Europe/Madrid"
-                   onchange="cambiarTexto('clinic_timezone', this.value)"
-                   class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-100 focus:border-amber-500 focus:outline-none">
+            <select id="clinica-zona"
+                    onchange="cambiarTexto('clinic_timezone', this.value)"
+                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-100 focus:border-amber-500 focus:outline-none">
+              <option value="">Sin definir — se usa la del servidor</option>
+              <optgroup label="América">
+                <option value="America/Caracas">America/Caracas — Venezuela</option>
+                <option value="America/Bogota">America/Bogota — Colombia, Ecuador, Perú</option>
+                <option value="America/Santo_Domingo">America/Santo_Domingo — República Dominicana</option>
+                <option value="America/Panama">America/Panama — Panamá</option>
+                <option value="America/Mexico_City">America/Mexico_City — México</option>
+                <option value="America/Santiago">America/Santiago — Chile</option>
+                <option value="America/Argentina/Buenos_Aires">America/Argentina/Buenos_Aires — Argentina</option>
+                <option value="America/Montevideo">America/Montevideo — Uruguay</option>
+                <option value="America/Asuncion">America/Asuncion — Paraguay</option>
+                <option value="America/La_Paz">America/La_Paz — Bolivia</option>
+                <option value="America/Sao_Paulo">America/Sao_Paulo — Brasil</option>
+                <option value="America/Guatemala">America/Guatemala — Guatemala, Costa Rica, El Salvador</option>
+                <option value="America/Tegucigalpa">America/Tegucigalpa — Honduras, Nicaragua</option>
+                <option value="America/Havana">America/Havana — Cuba</option>
+                <option value="America/Puerto_Rico">America/Puerto_Rico — Puerto Rico</option>
+                <option value="America/New_York">America/New_York — EE. UU. este</option>
+                <option value="America/Los_Angeles">America/Los_Angeles — EE. UU. oeste</option>
+              </optgroup>
+              <optgroup label="Europa">
+                <option value="Europe/Madrid">Europe/Madrid — España peninsular</option>
+                <option value="Atlantic/Canary">Atlantic/Canary — Canarias</option>
+                <option value="Europe/Lisbon">Europe/Lisbon — Portugal</option>
+                <option value="Europe/London">Europe/London — Reino Unido</option>
+                <option value="Europe/Paris">Europe/Paris — Francia</option>
+                <option value="Europe/Rome">Europe/Rome — Italia</option>
+              </optgroup>
+            </select>
+            <p class="text-[10px] text-slate-500 leading-relaxed mt-2">
+              Es una lista y no un campo libre a propósito. Una zona mal escrita no se
+              guarda, y una bien escrita pero equivocada desplaza <b class="text-slate-400">todas</b>
+              las horas que Helios dice: con la clínica en Venezuela y la zona en Madrid,
+              se le ofrece al paciente las 4 de la tarde cuando en su reloj son las 10 de
+              la mañana. <b class="text-slate-400">Tiene que ser la misma que tengas en Cal.com</b>,
+              o la agenda y lo que dice Helios no coincidirán.
+            </p>
           </div>
           <div>
             <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Tono</h3>

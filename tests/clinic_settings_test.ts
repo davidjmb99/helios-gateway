@@ -381,5 +381,41 @@ assert.equal(contexto.tono, 'Cercano, de tú, sin tecnicismos.');
   );
 }
 
+// --- La zona horaria se elige de una lista, no se escribe -------------------
+//
+// Con el cambio a Venezuela esto deja de ser comodidad y pasa a ser correccion. Una
+// zona mal escrita no la acepta normalizarZona y el ajuste no se guarda; una bien
+// escrita pero equivocada -Europe/Madrid con la clinica en Caracas- desplaza SEIS
+// HORAS todo lo que Helios dice de horarios, y ademas descuadra con Cal.com.
+
+{
+  const panel = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+
+  assert.ok(
+    !/<input[^>]*id="clinica-zona"/.test(panel),
+    'la zona horaria no puede ser un campo de texto libre: se escribe mal y no se guarda'
+  );
+  assert.ok(
+    /<select[^>]*id="clinica-zona"/.test(panel),
+    'la zona horaria tiene que elegirse de una lista'
+  );
+  for (const zona of ['America/Caracas', 'Europe/Madrid', 'America/Bogota']) {
+    assert.ok(
+      panel.includes('value="' + zona + '"'),
+      'falta ' + zona + ' en la lista de zonas horarias'
+    );
+  }
+  // Y todas las de la lista tienen que ser zonas IANA de verdad: si una no lo es,
+  // normalizarZona la rechaza y el ajuste se pierde sin decir por que.
+  const zonas = [...panel.matchAll(/<option value="([A-Za-z]+\/[A-Za-z_\/]+)"/g)].map(m => m[1]);
+  assert.ok(zonas.length >= 20, 'la lista de zonas parece truncada: ' + zonas.length);
+  for (const zona of zonas) {
+    assert.doesNotThrow(
+      () => new Intl.DateTimeFormat('en-US', { timeZone: zona }),
+      'la lista ofrece una zona que no existe: ' + zona
+    );
+  }
+}
+
 console.log('clinic_settings_test: PASS');
 console.log('  minutos de la semana en que se puede escribir: ' + permitidos + ' de ' + 7 * 24 * 60);
