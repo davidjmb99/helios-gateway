@@ -91,10 +91,7 @@ const envSchema = z.object({
   CHATWOOT_HUMAN_TEAM_ID: z.string().optional().or(z.literal('')),
   CHATWOOT_HUMAN_ASSIGNEE_ID: z.string().optional().or(z.literal('')),
 
-  CALCOM_API_KEY: z.string().optional().or(z.literal('')),
-  CALCOM_BASE_URL: z.string().url().default('https://api.cal.com'),
 
-  HUBSPOT_ACCESS_TOKEN: z.string().optional().or(z.literal('')),
 
   CLINIC_ID: z.string().default('coi_demo'),
   CLINIC_TIMEZONE: z.string().default('Europe/Madrid'),
@@ -118,7 +115,7 @@ export const config = {
   HERMES_ENABLED: hermesEnabled,
   HERMES_MOCK: hermesMock,
   HERMES_BASE_URL: (leerVariableDelAdapter('BASE_URL') ?? '').trim(),
-  HERMES_ENDPOINT: (leerVariableDelAdapter('ENDPOINT') ?? '/v1/chat/completions').trim(),
+  HERMES_ENDPOINT: (leerVariableDelAdapter('ENDPOINT') ?? '/helios/message').trim(),
   HERMES_API_KEY: (leerVariableDelAdapter('API_KEY') ?? '').trim(),
   HERMES_MODEL: (leerVariableDelAdapter('MODEL') ?? 'default').trim(),
   HERMES_PROFILE: (process.env.HERMES_PROFILE ?? 'helios').trim(),
@@ -177,11 +174,12 @@ export const config = {
   CHATWOOT_HUMAN_TEAM_ID: parsed.data?.CHATWOOT_HUMAN_TEAM_ID ?? '',
   CHATWOOT_HUMAN_ASSIGNEE_ID: parsed.data?.CHATWOOT_HUMAN_ASSIGNEE_ID ?? '',
 
-  CALCOM_API_KEY: parsed.data?.CALCOM_API_KEY ?? '',
-  CALCOM_BASE_URL: parsed.data?.CALCOM_BASE_URL ?? 'https://api.cal.com',
 
-  HUBSPOT_ACCESS_TOKEN: parsed.data?.HUBSPOT_ACCESS_TOKEN ?? '',
 
+  // CALCOM_API_KEY, CALCOM_BASE_URL y HUBSPOT_ACCESS_TOKEN se quitaron el
+  // 19-ago-2026: el Gateway NO llama a Cal.com ni a HubSpot. Lo hacen los MCP de
+  // Hermes, con sus propias credenciales. Tres secretos declarados y sin usar son
+  // superficie de fuga a cambio de nada. Se pueden borrar tambien de Coolify.
   CLINIC_ID: parsed.data?.CLINIC_ID ?? 'coi_demo',
   CLINIC_TIMEZONE: parsed.data?.CLINIC_TIMEZONE ?? 'Europe/Madrid',
   CLINIC_TONE: parsed.data?.CLINIC_TONE ?? 'es-ES'

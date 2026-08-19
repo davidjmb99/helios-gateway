@@ -26,7 +26,7 @@ import { markEligibleIfAppointment, markExcluded } from './csat/service.js';
 import { decidirCierre } from './csat/cierre.js';
 import { fraseDeDisponibilidad } from './handoff/disponibilidad.js';
 import { registrarTurnoDeCrm } from './services/crm-watch.js';
-import { obtenerHorarioYVentana } from './tenants/settings.js';
+import { obtenerHorarioYVentana, leerContextoDeClinica } from './tenants/settings.js';
 import { blockLead, markLeadInterest } from './leads/service.js';
 import { pideQueNoLeEscriban } from './leads/messages.js';
 import {
@@ -470,6 +470,15 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     // (requisito D del bloque de handoff).
     const handoffContext = await loadHandoffContext(tenantId, conversationId, rawState);
 
+    // El horario, el tono y la zona de ESTA clinica. Si no se pueden leer se sigue
+    // con los del entorno: un ajuste que no se puede consultar no puede dejar a un
+    // paciente sin respuesta.
+    const contextoDeClinica = await leerContextoDeClinica(tenantId).catch(() => ({
+      horario: null,
+      tono: null,
+      zona: config.CLINIC_TIMEZONE || 'Europe/Madrid'
+    }));
+
     // 6. Preparar el payload limpio para Hermes con identidad real desde Supabase
     const payload = {
       event: "patient_message_ready",
@@ -519,9 +528,25 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         message_count: rawMessages.length,
         messages: rawMessages.map(m => ({ id: m.message_id, body: m.body, created_at: m.created_at }))
       },
+      // EL CONTEXTO DE ESTA CLINICA, NO EL DEL ENTORNO.
+      //
+      // Aqui habia un fallo silencioso de los que peor sientan: el panel guardaba el
+      // horario y el tono, decia «guardado», y a Hermes le seguian llegando los
+      // valores de las variables de entorno. El horario semanal no se mandaba
+      // siquiera. O sea que la pantalla de Ajustes era decorativa para estos dos
+      // campos: se podia cambiar el horario y Helios seguia diciendo el de antes,
+      // porque lo sabe por su SOUL.
+      //
+      // Y en multiclinica era peor que inutil: TODAS las clinicas habrian recibido
+      // el horario y el tono de COI, que es lo que hay en el entorno.
+      //
+      // El horario solo viaja si la clinica lo ha configurado de verdad. Mandar el
+      // horario por defecto haria creer a Hermes que es el real cuando nadie lo ha
+      // confirmado, y de ahi a decirle a un paciente una hora inventada hay un paso.
       clinic_context: {
-        timezone: config.CLINIC_TIMEZONE || "Europe/Madrid",
-        tone: config.CLINIC_TONE || "es-ES",
+        timezone: contextoDeClinica.zona,
+        tone: contextoDeClinica.tono || config.CLINIC_TONE || "es-ES",
+        ...(contextoDeClinica.horario ? { clinic_hours: contextoDeClinica.horario } : {}),
         first_visit_free: true,
         no_diagnosis: true,
         no_medication: true,

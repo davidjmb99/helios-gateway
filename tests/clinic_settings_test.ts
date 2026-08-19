@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 /**
  * Horario de la clínica, ventana de envío, modos, equipos, zona y tono.
  *
@@ -331,6 +332,54 @@ contexto = await settings.leerContextoDeClinica('democoi1');
 assert.deepEqual(contexto.horario!.mon, [['10:00', '20:00']], 'el horario va en horas legibles, no en minutos');
 assert.deepEqual(contexto.horario!.sun, [], 'y los días cerrados se dicen explícitamente');
 assert.equal(contexto.tono, 'Cercano, de tú, sin tecnicismos.');
+
+// --- Que el orquestador LO USE, no solo que exista -------------------------
+//
+// EL FALLO QUE ESTO CUBRE, encontrado el 19-ago-2026: leerContextoDeClinica estaba
+// escrita y probada, pero el orquestador construia clinic_context con
+// config.CLINIC_TIMEZONE y config.CLINIC_TONE -las variables de ENTORNO- y el
+// horario semanal no se mandaba en absoluto. O sea que la pantalla de Ajustes
+// guardaba el horario, decia «guardado», y a Hermes le seguia llegando otra cosa.
+// En multiclinica era peor: todas habrian recibido el horario y el tono de COI.
+//
+// Una funcion pura probada no demuestra nada si nadie la llama. Esto comprueba el
+// cableado leyendo la fuente, que es la unica forma de verlo sin levantar medio
+// sistema. Es tosco a proposito: prefiero una guarda fea que un fallo invisible.
+
+{
+  const fuente = readFileSync(
+    new URL('../src/orchestrator.ts', import.meta.url),
+    'utf8'
+  );
+
+  const bloqueContexto = fuente.slice(
+    fuente.indexOf('clinic_context: {'),
+    fuente.indexOf('signals: {', fuente.indexOf('clinic_context: {'))
+  );
+  assert.ok(bloqueContexto.length > 0, 'no se encuentra el bloque clinic_context del payload');
+
+  assert.ok(
+    !/timezone:\s*config\.CLINIC_TIMEZONE/.test(bloqueContexto),
+    'la zona horaria de clinic_context NO puede salir de la variable de entorno: '
+    + 'cada clinica tiene la suya y el panel la guarda'
+  );
+  assert.ok(
+    !/tone:\s*config\.CLINIC_TONE\s*\|\|\s*"es-ES"\s*,/.test(bloqueContexto),
+    'el tono de clinic_context NO puede salir solo de la variable de entorno'
+  );
+  assert.ok(
+    /contextoDeClinica/.test(bloqueContexto),
+    'clinic_context tiene que construirse con los ajustes de la clinica'
+  );
+  assert.ok(
+    /clinic_hours/.test(bloqueContexto),
+    'el horario semanal tiene que viajar a Hermes; si no, el panel es decorativo'
+  );
+  assert.ok(
+    /leerContextoDeClinica\(tenantId\)/.test(fuente),
+    'el orquestador tiene que LLAMAR a leerContextoDeClinica, no solo importarla'
+  );
+}
 
 console.log('clinic_settings_test: PASS');
 console.log('  minutos de la semana en que se puede escribir: ' + permitidos + ' de ' + 7 * 24 * 60);

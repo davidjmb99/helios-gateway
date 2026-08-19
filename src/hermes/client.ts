@@ -93,51 +93,27 @@ export async function callHermes(payload: any, traceId: string): Promise<HermesR
   const isNew = payload.patient?.is_new || false;
   const missing = isNew ? ["first_name", "last_name", "email"] : [];
 
-  // 4. Preparación del cuerpo OpenAI-Compatible
-  let requestBody: any;
-  if (config.HERMES_ENDPOINT.includes('/v1/chat/completions')) {
-    requestBody = {
-      model: config.HERMES_MODEL,
-      messages: [
-        {
-          role: "system",
-          content: `Eres Hermes, el asistente de Inteligencia Artificial para el Centro Odontológico Integral (Helios). 
-Tu misión en este momento es gestionar la conversación. 
-Regla de oro: Si el paciente es nuevo (is_new: true) o faltan sus datos básicos de identidad, debes solicitar amablemente su Nombre, Apellido y Correo electrónico. NO debes solicitar el teléfono ya que disponemos de él. NO intentes agendar citas ni utilices herramientas de agenda hasta que el perfil de identidad esté completo.`
-        },
-        {
-          role: "user",
-          content: `Mensaje del paciente: ${consolidatedText}\n\nContexto: Paciente Nuevo: ${isNew}. Faltan campos: ${JSON.stringify(missing)}. Teléfono: ${phone}.`
-        }
-      ],
-      metadata: {
-        trace_id: traceId,
-        account_id: accountId,
-        tenant_id: tenantId,
-        clinic_id: clinicId,
-        hermes_profile: hermesProfile,
-        conversation_id: conversationId,
-        contact_id: contactId,
-        phone: phone,
-        patient_is_new: isNew,
-        missing_fields: missing,
-        // CONTEXTO DE LA CLÍNICA, para que no haya que editar el perfil de Hermes
-        // por cada cliente nuevo. Van solo si la clínica los ha configurado, y hay
-        // que ser honesto con su alcance: el Gateway los MANDA, pero lo que Helios
-        // dice lo decide su SOUL. Sirven cuando el SOUL está escrito para leerlos.
-        // El tono está limitado en largo porque esto viaja en CADA turno.
-        ...(clinicHours ? { clinic_hours: clinicHours } : {}),
-        ...(clinicTone ? { clinic_tone: clinicTone } : {}),
-        clinic_timezone: clinicTimezone
-      }
-    };
-  } else {
-    // Si no es endpoint compatible con OpenAI, mandamos el payload nativo limpio
-    requestBody = {
-      ...payload,
-      model: config.HERMES_MODEL
-    };
-  }
+  // 4. El cuerpo que se manda al Adapter.
+  //
+  // AQUI HABIA UNA RAMA MUERTA Y PELIGROSA. Si el endpoint contenia
+  // «/v1/chat/completions», se construia un cuerpo estilo OpenAI con un prompt de
+  // sistema escrito a mano —con «Centro Odontologico Integral» dentro, o sea el
+  // nombre de UNA clinica en un producto multiclinica—. El Adapter no expone esa
+  // ruta: solo tiene /helios/message. Asi que esa rama no podia funcionar con
+  // nadie, y ademas era el VALOR POR DEFECTO de ADAPTER_ENDPOINT: bastaba con no
+  // definir la variable para que el Gateway mandara un cuerpo que el Adapter no
+  // entiende.
+  //
+  // Y se llevaba otra cosa por delante: el contexto de la clinica -horario y tono-
+  // solo se añadia en esa rama. En produccion nunca viajaba, asi que la pantalla de
+  // Ajustes guardaba un horario que no llegaba a ningun sitio. Ahora va dentro de
+  // clinic_context, que lo construye el orquestador con los ajustes de la clinica.
+  //
+  // Se manda el payload nativo y ya. Una sola forma, la que funciona.
+  const requestBody = {
+    ...payload,
+    model: config.HERMES_MODEL
+  };
 
   // Headers recomendados
   const headers: Record<string, string> = {
