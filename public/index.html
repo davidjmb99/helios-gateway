@@ -118,8 +118,8 @@
           <p class="text-[10px] text-slate-500">Contadores únicos de las tablas durables.</p>
         </div>
         <select id="time-range" onchange="changeTimeRange(this.value)" class="bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-amber-500">
-          <option value="today" selected>Hoy</option>
-          <option value="24h">Últimas 24 horas</option>
+          <option value="24h" selected>Últimas 24 horas</option>
+          <option value="today">Hoy (desde medianoche)</option>
           <option value="7d">7 días</option>
           <option value="all">Histórico</option>
         </select>
@@ -269,7 +269,7 @@
     let leftTab = 'conversations'; 
     let expandedConversationId = null; 
     let operationalConversations = [];
-    let selectedTimeRange = 'today';
+    let selectedTimeRange = '24h';
     let activeOperationalConversationKey = null;
     let operationalDetailTab = 'summary';
     let lastChatConversationKey = null;
@@ -462,7 +462,7 @@
     }
 
     async function changeTimeRange(range) {
-      selectedTimeRange = range || 'today';
+      selectedTimeRange = range || '24h';
       expandedConversationId = null;
       await fetchStats();
     }
