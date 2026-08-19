@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 /**
  * Quién atiende una conversación, y qué hace el botón del panel.
  *
@@ -101,6 +102,35 @@ import { describirModo, accionPara } from '../src/handoff/modo.js';
   // Pausar una conversación que ya lleva una persona NO se acepta: Helios ya no
   // la atiende, y apagar la bandera daría la falsa sensación de haber hecho algo.
   assert.equal(accionPara('persona', 'pausada'), 'nada');
+}
+
+// --- Que el panel LLAME al endpoint como es debido -------------------------
+//
+// EL FALLO, del 19-ago-2026: el semaforo no aparecio en NINGUNA conversacion. Las
+// dos peticiones del panel a /admin/conversation-mode no mandaban el token de
+// sesion, y todas las demas del panel si. checkAuth las rechazaba con 401 y solo
+// salia «No se pudo consultar quien atiende», que es la rama de error.
+//
+// Es la segunda vez que una pieza de interfaz sale rota por no abrirla en un
+// navegador. Un test que lea la fuente no sustituye a mirarla, pero al menos
+// impide que se despliegue sin token.
+
+{
+  const panel = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+
+  const llamadas = [...panel.matchAll(/fetch\(\s*(?:url|'\/admin\/conversation-mode')[\s\S]{0,320}?\)/g)]
+    .map(m => m[0]);
+  assert.ok(
+    llamadas.length >= 2,
+    'no se encuentran las dos llamadas del panel a /admin/conversation-mode'
+  );
+  for (const llamada of llamadas) {
+    assert.ok(
+      /Authorization/.test(llamada) && /getSessionToken\(\)/.test(llamada),
+      'una llamada a /admin/conversation-mode va sin el token de sesion, y checkAuth '
+      + 'la rechazara con 401: ' + llamada.slice(0, 120)
+    );
+  }
 }
 
 console.log('modo_conversacion_test: OK');
