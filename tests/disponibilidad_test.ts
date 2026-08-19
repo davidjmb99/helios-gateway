@@ -188,4 +188,58 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
   }
 }
 
+// --- La hora como se habla, no como se escribe en un formulario -------------
+//
+// Se añadio despues de comprobar que el test NO cazaba el mediodia: se podia romper
+// esa rama y la suite seguia en verde. Los cortes son los del habla, y cada uno
+// tiene su frontera propia.
+
+{
+  const CERRADA_SALVO: HorarioClinica = { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [] };
+  const conApertura = (minuto: number): HorarioClinica => ({
+    ...CERRADA_SALVO,
+    3: [{ desde: minuto, hasta: Math.min(minuto + 60, 1439) }]
+  });
+
+  // Se pregunta el martes, la clinica solo abre el miercoles a la hora indicada.
+  const frasePara = (minuto: number) => fraseDeDisponibilidad({
+    ahora: madrid('2026-08-18T12:00:00'),
+    zona: ZONA,
+    horario: conApertura(minuto)
+  });
+
+  const casos: Array<[number, string]> = [
+    [600, '10:00 de la mañana'],
+    [660, '11:00 de la mañana'],
+    [719, '11:59 de la mañana'],
+    [720, '12:00 del mediodía'],
+    [780, '1:00 de la tarde'],
+    [840, '2:00 de la tarde'],
+    [1140, '7:00 de la tarde'],
+    [1200, '8:00 de la noche'],
+    [1290, '9:30 de la noche'],
+    [30, '12:30 de la mañana']
+  ];
+  for (const [minuto, esperado] of casos) {
+    const frase = frasePara(minuto);
+    assert.ok(
+      frase.includes(esperado),
+      `minuto ${minuto} deberia decirse «${esperado}» y salio: "${frase}"`
+    );
+  }
+}
+
+{
+  // Y NUNCA el reloj de 24 horas suelto: «a las 14:00» es lo que se venia diciendo.
+  const frase = fraseDeDisponibilidad({
+    ahora: madrid('2026-08-18T23:00:00'),
+    zona: ZONA,
+    horario: HORARIO
+  });
+  assert.ok(
+    !/a las (1[3-9]|2[0-3]):\d\d(?! de| del)/.test(frase),
+    `no puede quedar una hora en formato de 24: "${frase}"`
+  );
+}
+
 console.log('disponibilidad_test: OK');
