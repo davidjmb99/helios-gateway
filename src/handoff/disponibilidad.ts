@@ -35,8 +35,9 @@ const HORIZONTE_MINUTOS = 8 * 24 * 60;
  * puede pasar es que Helios diga «8:00am» y esta coletilla diga «8:00 de la mañana»
  * en el mismo mensaje, asi que las dos partes usan la misma forma.
  *
- * Las 12 en punto se dicen «12:00m» -mediodía- y no 12:00pm, que es de donde vienen
- * la mitad de las confusiones con esa hora.
+ * Las 12 del día son «12:00pm» y las 12 de la noche «12:00am», que es lo correcto y
+ * lo que se entiende sin pensar. Aquí llegué a poner «12:00m» por mi cuenta y David
+ * lo corrigió: era una forma inventada que nadie usa.
  */
 function horaTexto(minutos: number): string {
   const h24 = Math.floor(minutos / 60);
@@ -44,7 +45,6 @@ function horaTexto(minutos: number): string {
   const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
   const reloj = m === 0 ? `${h12}:00` : `${h12}:${String(m).padStart(2, '0')}`;
 
-  if (h24 === 12) return `${reloj}m`;
   return h24 < 12 ? `${reloj}am` : `${reloj}pm`;
 }
 

@@ -212,7 +212,7 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
     [600, '10:00am'],
     [660, '11:00am'],
     [719, '11:59am'],
-    [720, '12:00m'],
+    [720, '12:00pm'],
     [780, '1:00pm'],
     [840, '2:00pm'],
     [1140, '7:00pm'],
@@ -237,7 +237,7 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
     horario: HORARIO
   });
   assert.ok(
-    !/a las (1[3-9]|2[0-3]):\d\d(?!am|pm|m)/.test(frase),
+    !/a las (1[3-9]|2[0-3]):\d\d(?!am|pm)/.test(frase),
     `no puede quedar una hora en formato de 24: "${frase}"`
   );
 }
