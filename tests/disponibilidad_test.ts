@@ -62,7 +62,7 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
   // Martes 23:00 -> abre mañana miércoles a las 10:00.
   const frase = fraseDeDisponibilidad({ ahora: madrid('2026-08-18T23:00:00'), zona: ZONA, horario: HORARIO });
   assert.ok(/dentro del horario de atención/.test(frase), frase);
-  assert.ok(/se reanuda mañana a las 10:00 de la mañana/.test(frase), frase);
+  assert.ok(/se reanuda mañana a las 10:00am/.test(frase), frase);
   // No puede prometer una respuesta A esa hora: solo decir cuando abre.
   assert.ok(!/le responderá.*a partir de las/.test(frase), 'el horario no es una promesa de respuesta');
 }
@@ -70,20 +70,20 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
 {
   // Martes 08:00, antes de abrir -> HOY a las 10:00. No «mañana».
   const frase = fraseDeDisponibilidad({ ahora: madrid('2026-08-18T08:00:00'), zona: ZONA, horario: HORARIO });
-  assert.ok(/se reanuda hoy a las 10:00 de la mañana/.test(frase), frase);
+  assert.ok(/se reanuda hoy a las 10:00am/.test(frase), frase);
 }
 
 {
   // Sábado 16:00, ya cerrado, y el domingo cierra -> el LUNES. Ni hoy ni mañana.
   const frase = fraseDeDisponibilidad({ ahora: madrid('2026-08-22T16:00:00'), zona: ZONA, horario: HORARIO });
-  assert.ok(/se reanuda el lunes a las 10:00 de la mañana/.test(frase), frase);
+  assert.ok(/se reanuda el lunes a las 10:00am/.test(frase), frase);
   assert.ok(!/reanuda mañana/.test(frase), 'el domingo está cerrado: decir que se reanuda «mañana» sería mentir');
 }
 
 {
   // Domingo por la mañana -> mañana lunes.
   const frase = fraseDeDisponibilidad({ ahora: madrid('2026-08-23T09:00:00'), zona: ZONA, horario: HORARIO });
-  assert.ok(/se reanuda mañana a las 10:00 de la mañana/.test(frase), frase);
+  assert.ok(/se reanuda mañana a las 10:00am/.test(frase), frase);
 }
 
 // --- El hueco de la comida ---------------------------------------------------
@@ -91,7 +91,7 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
 {
   // Martes 15:00, entre los dos tramos -> reabre HOY a las 16:00.
   const frase = fraseDeDisponibilidad({ ahora: madrid('2026-08-18T15:00:00'), zona: ZONA, horario: CON_COMIDA });
-  assert.ok(/se reanuda hoy a las 4:00 de la tarde/.test(frase), frase);
+  assert.ok(/se reanuda hoy a las 4:00pm/.test(frase), frase);
 }
 
 // --- Horarios imposibles: no se inventa nada --------------------------------
@@ -128,7 +128,7 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
       zona: ZONA,
       horario: HORARIO
     });
-    assert.ok(/se reanuda hoy a las 10:00 de la mañana/.test(frase), `09:${minuto} -> "${frase}"`);
+    assert.ok(/se reanuda hoy a las 10:00am/.test(frase), `09:${minuto} -> "${frase}"`);
   }
 }
 
@@ -141,7 +141,7 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
       zona: ZONA,
       horario: CON_COMIDA
     });
-    assert.ok(/se reanuda hoy a las 4:00 de la tarde/.test(frase), `${hora} -> "${frase}"`);
+    assert.ok(/se reanuda hoy a las 4:00pm/.test(frase), `${hora} -> "${frase}"`);
   }
 }
 
@@ -209,16 +209,16 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
   });
 
   const casos: Array<[number, string]> = [
-    [600, '10:00 de la mañana'],
-    [660, '11:00 de la mañana'],
-    [719, '11:59 de la mañana'],
-    [720, '12:00 del mediodía'],
-    [780, '1:00 de la tarde'],
-    [840, '2:00 de la tarde'],
-    [1140, '7:00 de la tarde'],
-    [1200, '8:00 de la noche'],
-    [1290, '9:30 de la noche'],
-    [30, '12:30 de la mañana']
+    [600, '10:00am'],
+    [660, '11:00am'],
+    [719, '11:59am'],
+    [720, '12:00m'],
+    [780, '1:00pm'],
+    [840, '2:00pm'],
+    [1140, '7:00pm'],
+    [1200, '8:00pm'],
+    [1290, '9:30pm'],
+    [30, '12:30am']
   ];
   for (const [minuto, esperado] of casos) {
     const frase = frasePara(minuto);
@@ -237,7 +237,7 @@ const madrid = (iso: string) => new Date(`${iso}+02:00`);
     horario: HORARIO
   });
   assert.ok(
-    !/a las (1[3-9]|2[0-3]):\d\d(?! de| del)/.test(frase),
+    !/a las (1[3-9]|2[0-3]):\d\d(?!am|pm|m)/.test(frase),
     `no puede quedar una hora en formato de 24: "${frase}"`
   );
 }

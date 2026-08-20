@@ -25,16 +25,18 @@ const PASO_MINUTOS = 15;
 const HORIZONTE_MINUTOS = 8 * 24 * 60;
 
 /**
- * La hora como la dice una persona, no como la escribe un formulario.
+ * La hora en formato de doce, que es como se lee un horario en Venezuela.
  *
- * «14:00» se lee como un campo de base de datos. En Venezuela —y en general al
- * hablar— se dice «a las 2:00 de la tarde», y esa forma no se malinterpreta nunca:
- * el reloj de 24 horas obliga al paciente a traducir, y traducir es donde se
- * equivoca uno y se presenta a la hora que no era.
+ * «14:00» se lee como un campo de base de datos y obliga al paciente a traducir;
+ * traducir es donde uno se equivoca y se presenta a la hora que no era.
  *
- * Los cortes son los del habla, no los astronómicos: hasta las 12 es mañana, de 12
- * a 19 tarde, y a partir de las 20 noche. Las 12 en punto es «del mediodía» porque
- * «12:00 de la tarde» suena raro y «de la mañana» ya no es.
+ * Se escribe pegado -«8:00am»- y no «8:00 de la mañana», por decisión de David y
+ * porque en un mensaje de WhatsApp la forma corta se lee de un vistazo. Lo que NO
+ * puede pasar es que Helios diga «8:00am» y esta coletilla diga «8:00 de la mañana»
+ * en el mismo mensaje, asi que las dos partes usan la misma forma.
+ *
+ * Las 12 en punto se dicen «12:00m» -mediodía- y no 12:00pm, que es de donde vienen
+ * la mitad de las confusiones con esa hora.
  */
 function horaTexto(minutos: number): string {
   const h24 = Math.floor(minutos / 60);
@@ -42,10 +44,8 @@ function horaTexto(minutos: number): string {
   const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
   const reloj = m === 0 ? `${h12}:00` : `${h12}:${String(m).padStart(2, '0')}`;
 
-  if (h24 === 12) return `${reloj} del mediodía`;
-  if (h24 < 12) return `${reloj} de la mañana`;
-  if (h24 < 20) return `${reloj} de la tarde`;
-  return `${reloj} de la noche`;
+  if (h24 === 12) return `${reloj}m`;
+  return h24 < 12 ? `${reloj}am` : `${reloj}pm`;
 }
 
 /**
