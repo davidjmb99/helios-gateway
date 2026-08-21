@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { config } from './config.js';
 import { applyCsatOnResolution, csatMetrics } from './csat/service.js';
 import { describirModo, accionPara } from './handoff/modo.js';
+import { pedirEmpezarDeCero } from './conversaciones/empezar-de-cero.js';
 import { normalizeChatwootPayload } from './chatwoot/normalizer.js';
 import { resolveTenantContext, TenantContextError, validateWebhookTenantRoute, resolveTenantContextByTenantId } from './tenants/context.js';
 import {
@@ -1235,6 +1236,45 @@ server.post('/admin/conversation-mode', async (request, reply) => {
     a: despues.modo
   }));
   return { ok: true, cambiado: despues.modo !== antes.modo, accion, antes, despues };
+});
+
+// 6. POST /admin/conversation-reset  -  «empezar esta conversacion de cero»
+//
+// EL PROBLEMA QUE RESUELVE: casi todas las pruebas de esta semana salieron
+// contaminadas por el historial. Helios tuteaba en una conversacion vieja y trataba
+// de usted en una nueva, con el mismo prompt y en el mismo minuto. Repetia una
+// direccion de Madrid leyendola de sus propios mensajes de hacia un mes. Se negaba a
+// dar la direccion porque en cuatro turnos anteriores se habia negado.
+//
+// Hasta ahora esto eran tres comandos dentro del contenedor del Adapter y un
+// reinicio. Y ni funcionaba: el proceso tenia el mapa de sesiones en memoria.
+//
+// NO PROMETE EFECTO INMEDIATO. Surte efecto en el siguiente mensaje del paciente, y
+// el mensaje que devuelve lo dice. El panel ya nos hizo una vez la de responder
+// «hecho» sin haber hecho nada.
+server.post('/admin/conversation-reset', async (request, reply) => {
+  await checkAuth(request, reply);
+  const { tenant_id, conversation_id } = request.body as any;
+  if (!tenant_id || !conversation_id) {
+    return reply.status(400).send({ error: 'tenant_id y conversation_id son obligatorios.' });
+  }
+
+  const resultado = await pedirEmpezarDeCero({
+    tenantId: String(tenant_id),
+    conversationId: String(conversation_id),
+    pedidoPor: 'panel'
+  });
+
+  console.log(JSON.stringify({
+    event: 'conversacion_empieza_de_cero_pedido',
+    tenant_id,
+    conversation_id,
+    habia_sesion: resultado.habia_sesion,
+    turnos_descartados: resultado.turnos_descartados,
+    tokens_del_ultimo_turno: resultado.tokens_del_ultimo_turno
+  }));
+
+  return resultado;
 });
 
 // Endpoint de Healthcheck alternativo

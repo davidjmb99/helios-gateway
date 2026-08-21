@@ -1306,12 +1306,23 @@
           + escapeHtml(m.etiqueta) + '</span>' + acciones + '</div>'
           + '<p class="mt-1.5 leading-relaxed">' + escapeHtml(m.consecuencia) + '</p>'
           + '<p class="mt-1 font-mono text-[9px] text-slate-600">stage: ' + escapeHtml(m.stage)
-          + ' · ia: ' + (m.ai_enabled ? 'on' : 'off') + '</p>';
+          + ' · ia: ' + (m.ai_enabled ? 'on' : 'off') + '</p>'
+          // EMPEZAR DE CERO VA SIEMPRE, exista fila de estado o no: una conversacion
+          // puede tener sesion con Hermes sin haber pasado por el gate.
+          + '<button type="button" id="boton-empezar-de-cero" '
+          + 'class="mt-2 text-[9px] font-bold text-slate-400 hover:text-slate-200 underline decoration-dotted">'
+          + 'Empezar esta conversación de cero</button>'
+          + '<p id="resultado-empezar-de-cero" class="mt-1 leading-relaxed text-slate-500"></p>';
 
         caja.querySelectorAll('.boton-modo').forEach(b => {
           b.addEventListener('click', () => cambiarModoDeConversacion(
             conversation.tenant_id, conversation.conversation_id, b.dataset.modo));
         });
+        const botonCero = document.getElementById('boton-empezar-de-cero');
+        if (botonCero) {
+          botonCero.addEventListener('click', () => empezarConversacionDeCero(
+            conversation.tenant_id, conversation.conversation_id));
+        }
       } catch (error) {
         // No poder leer el modo NO puede tapar el historial: el chat ya esta pintado.
         caja.innerHTML = '<span class="text-slate-600">No se pudo consultar quién atiende.</span>';
@@ -1352,6 +1363,66 @@
           + escapeHtml(String(error.message || error)) + '</span>';
       } finally {
         modoEnCurso = false;
+      }
+    }
+
+    let empezarDeCeroEnCurso = false;
+
+    /**
+     * Le pide al Adapter que la proxima vez abra una conversacion nueva con Hermes.
+     *
+     * POR QUE ESTE BOTON EXISTE: el historial contamina. Helios tuteaba en una
+     * conversacion vieja y trataba de usted en una nueva, con el mismo prompt y en el
+     * mismo minuto. Repetia una direccion de Madrid leyendola de sus propios mensajes
+     * de hacia un mes. Se negaba a dar la direccion porque en cuatro turnos anteriores
+     * se habia negado. Contra cuarenta mil tokens de ejemplos no gana ningun prompt.
+     *
+     * EL MENSAJE LO ESCRIBE EL BACKEND, no este navegador, para que no puedan
+     * discrepar. Y dice que surte efecto EN EL PROXIMO MENSAJE, porque es la verdad:
+     * un boton que dijera «hecho» dejando una peticion pendiente seria la misma
+     * mentira que el viejo «IA reactivada correctamente».
+     */
+    async function empezarConversacionDeCero(tenantId, conversationId) {
+      if (empezarDeCeroEnCurso) return;
+      if (!confirm(
+        'Helios va a olvidar el hilo de esta conversacion: empezara de cero en el '
+        + 'proximo mensaje del paciente.
+
+NO olvida su nombre, su correo ni su cita, '
+        + 'que viven en la base de datos. Solo pierde el historial de la charla.
+
+'
+        + 'Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?')) return;
+
+      empezarDeCeroEnCurso = true;
+      const salida = document.getElementById('resultado-empezar-de-cero');
+      if (salida) {
+        salida.className = 'mt-1 leading-relaxed text-slate-400';
+        salida.textContent = 'Pidiendolo…';
+      }
+      try {
+        const res = await fetch('/admin/conversation-reset', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + getSessionToken()
+          },
+          credentials: 'same-origin',
+          body: JSON.stringify({ tenant_id: tenantId, conversation_id: conversationId })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || ('HTTP ' + res.status));
+        if (salida) {
+          salida.className = 'mt-1 leading-relaxed text-emerald-400';
+          salida.textContent = data.mensaje || 'Pedido.';
+        }
+      } catch (error) {
+        if (salida) {
+          salida.className = 'mt-1 leading-relaxed text-red-400';
+          salida.textContent = 'No se pudo: ' + String(error.message || error);
+        }
+      } finally {
+        empezarDeCeroEnCurso = false;
       }
     }
 

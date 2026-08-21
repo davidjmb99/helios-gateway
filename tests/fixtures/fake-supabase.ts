@@ -393,5 +393,6 @@ export const HELIOS_PRIMARY_KEYS: Record<string, string[]> = {
   helios_chatwoot_outbox: ['outbox_key'],
   helios_handoff_events: ['handoff_id'],
   helios_notification_outbox: ['notification_key'],
-  helios_message_idempotency: ['tenant_id', 'provider', 'message_id']
+  helios_message_idempotency: ['tenant_id', 'provider', 'message_id'],
+  helios_hermes_sessions: ['session_key']
 };
