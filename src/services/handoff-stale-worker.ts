@@ -20,7 +20,8 @@ import { resolveTenantContextByTenantId } from '../tenants/context.js';
 import { returnConversationToBot } from '../handoff/service.js';
 import { HANDOFF_STAGES, isHumanOwnedStage } from '../handoff/stage.js';
 import { decidirVuelta } from '../handoff/stale-policy.js';
-import { obtenerHorasVuelta, umbralMinimoDeVuelta } from '../tenants/settings.js';
+import type { HorarioClinica } from '../leads/policy.js';
+import { obtenerHorasVuelta, umbralMinimoDeVuelta, obtenerHorarioYVentana } from '../tenants/settings.js';
 
 let running = false;
 let interval: NodeJS.Timeout | null = null;
@@ -93,7 +94,28 @@ export async function runStaleHandoffSweep(): Promise<void> {
         const reference = lastMessage || row.handoff_requested_at;
 
         const umbralDeEstaClinica = await obtenerHorasVuelta(row.tenant_id);
-        const decision = decidirVuelta({ referencia: reference, umbralHoras: umbralDeEstaClinica, ahora });
+
+        // EL UMBRAL SE MIDE EN HORAS DE ATENCION, no de reloj. Una derivacion a las
+        // 20:03 con la clinica cerrada no puede consumir su plazo de madrugada: a
+        // las 23:03 volveria a la IA y por la mañana no habria ninguna peticion
+        // esperando. El reloj arranca cuando abre la clinica.
+        //
+        // Si el horario no se puede leer se sigue sin el, y decidirVuelta cuenta por
+        // reloj de pared igual que antes. Una clinica mal configurada pierde la
+        // mejora, no la red de seguridad.
+        let zona: string | null = null;
+        let horario: HorarioClinica | null = null;
+        try {
+          const ajustes = await obtenerHorarioYVentana(row.tenant_id);
+          zona = ajustes.zona;
+          horario = ajustes.horario;
+        } catch {
+          /* sin horario legible, reloj de pared */
+        }
+
+        const decision = decidirVuelta({
+          referencia: reference, umbralHoras: umbralDeEstaClinica, ahora, zona, horario
+        });
         if (!decision.volver) continue;
 
         const staleHours = decision.umbral_horas;
@@ -120,7 +142,9 @@ export async function runStaleHandoffSweep(): Promise<void> {
             handoff_id: row.handoff_id,
             from_stage: row.stage,
             idle_hours: idleHours,
+            open_hours: decision.horas_de_atencion,
             threshold_hours: staleHours,
+            return_reason: decision.motivo,
             last_activity_at: reference
           }
         });
@@ -130,7 +154,9 @@ export async function runStaleHandoffSweep(): Promise<void> {
           event: 'handoff_returned_by_inactivity',
           conversation_id: row.conversation_id,
           from_stage: row.stage,
-          idle_hours: idleHours
+          idle_hours: idleHours,
+          open_hours: decision.horas_de_atencion,
+          reason: decision.motivo
         }));
       } catch (error: any) {
         staleHandoffMetrics.failed += 1;

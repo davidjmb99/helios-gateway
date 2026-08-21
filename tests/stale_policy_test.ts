@@ -112,3 +112,154 @@ for (const intento of [Infinity, -Infinity, 'nunca', 'never', 0]) {
 }
 
 console.log('stale_policy_test: PASS');
+
+// --- EL RELOJ SE PARA CUANDO LA CLINICA CIERRA ------------------------------
+//
+// EL CASO QUE PLANTEO DAVID el 20-ago-2026, y que hasta hoy perdia la derivacion:
+//
+//   «Imaginate que yo pida hablar con un humano ahorita [20:03, cierra a las 20:00].
+//   Obviamente me va a tomar la conversacion a las 10am. Y con lo de inactividad, en
+//   3 horas lo devuelve a modo IA. Entonces ese caso no lo va a tomar nadie.»
+//
+// Con el reloj de pared, esa derivacion volvia a la IA a las 23:03 de la noche y por
+// la mañana no habia ninguna peticion esperando: el paciente pidio hablar con una
+// persona y nadie llego a enterarse. El umbral significa «cuanto tiempo le doy al
+// equipo para responder», y ese tiempo solo existe cuando hay alguien.
+
+{
+  const ZONA = 'America/Caracas';
+  // Lunes a viernes 10:00-20:00, sabado 10:00-15:00, domingo cerrado.
+  const HORARIO: Record<number, Array<{ desde: number; hasta: number }>> = {
+    0: [],
+    1: [{ desde: 600, hasta: 1200 }],
+    2: [{ desde: 600, hasta: 1200 }],
+    3: [{ desde: 600, hasta: 1200 }],
+    4: [{ desde: 600, hasta: 1200 }],
+    5: [{ desde: 600, hasta: 1200 }],
+    6: [{ desde: 600, hasta: 900 }]
+  };
+  // Venezuela no tiene horario de verano: UTC-4 todo el año.
+  const ccs = (iso: string) => new Date(`${iso}-04:00`);
+
+  const decidir = (referencia: string, ahora: string, umbralHoras = 3) =>
+    decidirVuelta({
+      referencia: ccs(referencia).toISOString(),
+      umbralHoras,
+      ahora: ccs(ahora),
+      zona: ZONA,
+      horario: HORARIO
+    });
+
+  // 1. EL CASO DE DAVID. Derivacion el jueves a las 20:03, ya cerrado.
+  {
+    // Tres horas de reloj despues: la clinica lleva cerrada las tres. NO vuelve.
+    const d = decidir('2026-08-20T20:03:00', '2026-08-20T23:03:00');
+    assert.equal(d.volver, false, 'a las 23:03 no habia nadie: devolverla borra la peticion');
+    assert.equal(d.motivo, 'esperando_horario');
+    assert.equal(d.horas_de_atencion, 0, 'el reloj no puede haber arrancado con la clinica cerrada');
+  }
+  {
+    // A las 09:59 del viernes sigue sin arrancar.
+    const d = decidir('2026-08-20T20:03:00', '2026-08-21T09:59:00');
+    assert.equal(d.volver, false, 'trece horas de reloj, cero de atencion');
+    assert.equal(d.horas_de_atencion, 0);
+  }
+  {
+    // A las 12:59 del viernes lleva 2h59 de atencion: todavia no.
+    const d = decidir('2026-08-20T20:03:00', '2026-08-21T12:59:00');
+    assert.equal(d.volver, false);
+    assert.equal(d.motivo, 'todavia_activa', 'el reloj ya corre, solo que aun no llega');
+    assert.ok(d.horas_de_atencion !== null && d.horas_de_atencion > 2.9 && d.horas_de_atencion < 3,
+      `esperaba algo menos de 3h de atencion y salio ${d.horas_de_atencion}`);
+  }
+  {
+    // A las 13:00 del viernes son 3 horas de atencion exactas. AHORA si.
+    const d = decidir('2026-08-20T20:03:00', '2026-08-21T13:00:00');
+    assert.equal(d.volver, true, 'el equipo ha tenido tres horas reales de trabajo para verla');
+    assert.equal(d.motivo, 'inactividad');
+    assert.equal(d.horas_de_atencion, 3);
+  }
+
+  // 2. DENTRO DE HORARIO NO CAMBIA NADA. Lo de siempre tiene que seguir igual.
+  {
+    const d = decidir('2026-08-20T11:00:00', '2026-08-20T14:00:00');
+    assert.equal(d.volver, true, 'tres horas dentro de horario son tres horas y punto');
+    assert.equal(d.horas_de_atencion, 3);
+  }
+  {
+    const d = decidir('2026-08-20T11:00:00', '2026-08-20T13:30:00');
+    assert.equal(d.volver, false, 'dos horas y media no llegan al umbral');
+  }
+
+  // 3. EL HUECO DEL FIN DE SEMANA. Sabado por la noche -> el reloj espera al lunes.
+  {
+    // Sabado 22-ago 16:00 (cerro a las 15:00). El domingo cierra entero.
+    const d = decidir('2026-08-22T16:00:00', '2026-08-24T09:00:00');
+    assert.equal(d.volver, false, 'el domingo no cuenta: no hay nadie a quien darle horas');
+    assert.equal(d.horas_de_atencion, 0);
+  }
+  {
+    const d = decidir('2026-08-22T16:00:00', '2026-08-24T13:00:00');
+    assert.equal(d.volver, true, 'el lunes a las 13:00 el equipo ya ha tenido sus tres horas');
+  }
+
+  // 4. UN UMBRAL MAS LARGO CRUZA VARIOS DIAS SIN PERDERSE.
+  {
+    // 8 horas de atencion desde el viernes a las 18:00: quedan 2h el viernes, el
+    // sabado da 5h (10:00-15:00), y la octava cae el lunes a las 11:00.
+    const d = decidir('2026-08-21T18:00:00', '2026-08-24T10:59:00', 8);
+    assert.equal(d.volver, false, `a las 10:59 del lunes van 7h59 -> ${d.horas_de_atencion}`);
+    const e = decidir('2026-08-21T18:00:00', '2026-08-24T11:00:00', 8);
+    assert.equal(e.volver, true, `a las 11:00 del lunes son 8h exactas -> ${e.horas_de_atencion}`);
+  }
+
+  // 5. EL TOPE DE SIETE DIAS. Sin el, unas vacaciones dejarian la conversacion en
+  //    manos humanas para siempre, que es EL FALLO que hizo construir este barrido.
+  {
+    const cerrada: Record<number, Array<{ desde: number; hasta: number }>> =
+      { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [{ desde: 600, hasta: 1200 }], 6: [] };
+    // Solo abre los viernes. Derivacion un viernes a las 20:30, ya cerrado, y a
+    // partir de ahi el horario se queda sin viernes utiles porque miramos antes.
+    const conTope = (ahora: string) => decidirVuelta({
+      referencia: ccs('2026-08-21T20:30:00').toISOString(),
+      umbralHoras: 48,
+      ahora: ccs(ahora),
+      zona: ZONA,
+      horario: cerrada
+    });
+    assert.equal(conTope('2026-08-27T20:00:00').volver, false, 'a los seis dias todavia no');
+    const saltado = conTope('2026-08-28T21:00:00');
+    assert.equal(saltado.volver, true, 'a los siete dias vuelve pase lo que pase');
+    assert.equal(saltado.motivo, 'techo_de_reloj', 'y se distingue de una vuelta normal');
+  }
+
+  // 6. UN HORARIO ROTO NO PUEDE DEJAR A NADIE EN EL LIMBO. Sin una sola franja, el
+  //    reloj de atencion no avanzaria nunca: se vuelve al reloj de pared.
+  {
+    const vacio: Record<number, Array<{ desde: number; hasta: number }>> =
+      { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [] };
+    const d = decidirVuelta({
+      referencia: ccs('2026-08-20T20:03:00').toISOString(),
+      umbralHoras: 3,
+      ahora: ccs('2026-08-20T23:03:00'),
+      zona: ZONA,
+      horario: vacio
+    });
+    assert.equal(d.volver, true, 'un horario sin franjas es un horario roto, no una clinica que nunca abre');
+    assert.equal(d.horas_de_atencion, null, 'y se dice que se conto por reloj de pared');
+  }
+
+  // 7. SIN HORARIO NI ZONA, EL COMPORTAMIENTO DE SIEMPRE. Las clinicas que no lo
+  //    tengan configurado no pueden quedarse sin red.
+  {
+    const d = decidirVuelta({
+      referencia: ccs('2026-08-20T20:03:00').toISOString(),
+      umbralHoras: 3,
+      ahora: ccs('2026-08-20T23:03:00')
+    });
+    assert.equal(d.volver, true);
+    assert.equal(d.horas_de_atencion, null);
+  }
+}
+
+console.log('stale_policy_test: reloj de atencion OK');

@@ -38,6 +38,32 @@ const { runStaleHandoffSweep, staleHandoffMetrics } = await import('../src/servi
 const hace = (horas: number) => new Date(Date.now() - horas * 3600_000).toISOString();
 
 /**
+ * HORARIOS PARA QUE ESTA PRUEBA NO DEPENDA DE LA HORA A LA QUE SE EJECUTE.
+ *
+ * Desde que el umbral se mide en HORAS DE ATENCION y no de reloj, una clinica sin
+ * horario explicito hereda el de por defecto -de 10 a 20- y entonces el resultado
+ * cambiaria segun la hora del dia en que se lance la suite: verde por la tarde,
+ * roja por la noche. Una prueba que depende del reloj de quien la corre no protege
+ * de nada.
+ *
+ * ABIERTA es practicamente 24/7, asi que las horas de atencion coinciden con las de
+ * reloj y esta prueba sigue midiendo lo suyo: el umbral por clinica.
+ * CASI_CERRADA abre un minuto al dia, asi que en tres horas de reloj hay como mucho
+ * un minuto de atencion se lance cuando se lance.
+ */
+const ABIERTA = {
+  sun: [['00:00', '23:59']], mon: [['00:00', '23:59']], tue: [['00:00', '23:59']],
+  wed: [['00:00', '23:59']], thu: [['00:00', '23:59']], fri: [['00:00', '23:59']],
+  sat: [['00:00', '23:59']]
+};
+const CASI_CERRADA = {
+  sun: [['03:00', '03:01']], mon: [['03:00', '03:01']], tue: [['03:00', '03:01']],
+  wed: [['03:00', '03:01']], thu: [['03:00', '03:01']], fri: [['03:00', '03:01']],
+  sat: [['03:00', '03:01']]
+};
+const ZONA = 'America/Caracas';
+
+/**
  * Dos clínicas, una conversación cada una, las dos derivadas a una persona y las
  * dos con la MISMA inactividad: tres horas.
  */
@@ -93,7 +119,10 @@ async function conversacionesIntentadas(db: any): Promise<string[]> {
 
 // --- Las dos con el valor de siempre: a las 3 horas NO vuelve ninguna --------
 
-let db = montarEscenario([{ tenant_id: 'democoi1' }, { tenant_id: 'fisio7' }]);
+let db = montarEscenario([
+  { tenant_id: 'democoi1', clinic_hours: ABIERTA, clinic_timezone: ZONA },
+  { tenant_id: 'fisio7', clinic_hours: ABIERTA, clinic_timezone: ZONA }
+]);
 assert.deepEqual(
   await conversacionesIntentadas(db),
   [],
@@ -105,8 +134,8 @@ assert.deepEqual(
 // horas de inactividad sino a las 2 horas o 1".
 
 db = montarEscenario([
-  { tenant_id: 'democoi1', handoff_stale_hours: 2 },
-  { tenant_id: 'fisio7' }
+  { tenant_id: 'democoi1', handoff_stale_hours: 2, clinic_hours: ABIERTA, clinic_timezone: ZONA },
+  { tenant_id: 'fisio7', clinic_hours: ABIERTA, clinic_timezone: ZONA }
 ]);
 assert.deepEqual(
   await conversacionesIntentadas(db),
@@ -122,16 +151,16 @@ assert.equal(await settings.umbralMinimoDeVuelta(), 2);
 // --- Una hora: sigue siendo solo la de esa clínica --------------------------
 
 db = montarEscenario([
-  { tenant_id: 'democoi1', handoff_stale_hours: 1 },
-  { tenant_id: 'fisio7' }
+  { tenant_id: 'democoi1', handoff_stale_hours: 1, clinic_hours: ABIERTA, clinic_timezone: ZONA },
+  { tenant_id: 'fisio7', clinic_hours: ABIERTA, clinic_timezone: ZONA }
 ]);
 assert.deepEqual(await conversacionesIntentadas(db), ['100'], 'con 1 hora, igual de aislado');
 
 // --- Las dos bajan: vuelven las dos ----------------------------------------
 
 db = montarEscenario([
-  { tenant_id: 'democoi1', handoff_stale_hours: 2 },
-  { tenant_id: 'fisio7', handoff_stale_hours: 1 }
+  { tenant_id: 'democoi1', handoff_stale_hours: 2, clinic_hours: ABIERTA, clinic_timezone: ZONA },
+  { tenant_id: 'fisio7', handoff_stale_hours: 1, clinic_hours: ABIERTA, clinic_timezone: ZONA }
 ]);
 assert.deepEqual(await conversacionesIntentadas(db), ['100', '200'], 'las dos por debajo: vuelven las dos');
 
@@ -140,13 +169,39 @@ assert.deepEqual(await conversacionesIntentadas(db), ['100', '200'], 'las dos po
 // con el valor por defecto sí tendría.
 
 db = montarEscenario([
-  { tenant_id: 'democoi1', handoff_stale_hours: 8 },
-  { tenant_id: 'fisio7', handoff_stale_hours: 1 }
+  { tenant_id: 'democoi1', handoff_stale_hours: 8, clinic_hours: ABIERTA, clinic_timezone: ZONA },
+  { tenant_id: 'fisio7', handoff_stale_hours: 1, clinic_hours: ABIERTA, clinic_timezone: ZONA }
 ]);
 assert.deepEqual(
   await conversacionesIntentadas(db),
   ['200'],
   'COI en 8 horas no vuelve a las 3; la otra en 1 hora sí'
+);
+
+// --- CON LA CLINICA CERRADA, EL RELOJ NO CORRE -----------------------------
+//
+// EL CASO DE DAVID, 20-ago-2026: «imaginate que yo pida hablar con un humano ahorita
+// [20:03, la clinica cierra a las 20:00]. Obviamente me va a tomar la conversacion a
+// las 10am. Y con lo de inactividad, en 3 horas lo devuelve a modo IA. Entonces ese
+// caso no lo va a tomar nadie.»
+//
+// Devolverla de madrugada no es un detalle de contabilidad: BORRA LA PETICION. Por la
+// mañana no hay ninguna derivacion esperando y el paciente que pidio hablar con una
+// persona nunca llega a nadie.
+//
+// Los datos son EXACTAMENTE los mismos que en el escenario que si devuelve la 100
+// -tres horas de inactividad, umbral de dos-. Lo unico que cambia es el horario. Si
+// el barrido no mirara el horario, aqui volveria a devolverla.
+
+db = montarEscenario([
+  { tenant_id: 'democoi1', handoff_stale_hours: 2, clinic_hours: CASI_CERRADA, clinic_timezone: ZONA },
+  { tenant_id: 'fisio7', handoff_stale_hours: 2, clinic_hours: ABIERTA, clinic_timezone: ZONA }
+]);
+assert.deepEqual(
+  await conversacionesIntentadas(db),
+  ['200'],
+  'la 100 esta con la clinica cerrada y su plazo no ha empezado; la 200, con la clinica '
+  + 'abierta y los mismos datos, si vuelve. Si vuelven las dos, el barrido no mira el horario'
 );
 
 // --- Con el handoff apagado no se toca nada --------------------------------
