@@ -13,6 +13,7 @@ import { runTools } from './tools/tool-runner.js';
 import { debugTracker } from './debug/debug-tracker.js';
 import {
   deriveMissingIdentityFields,
+  deriveMissingBookingFields,
   evaluatePersistedProfile,
   normalizeProfilePatch,
   resolveChatwootAlias,
@@ -428,6 +429,7 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       profileStatus,
       state.missing_fields
     );
+    const missingBookingFields = deriveMissingBookingFields(profileStatus);
 
     // Resolver alias provisional de Chatwoot con función unificada
     const chatwootDisplayName = resolveChatwootAlias(firstMsg.raw_payload, patientProfile, state);
@@ -496,7 +498,16 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       },
       patient: {
         profile_exists: profileStatus.profileExists,
+        // IDENTIFICADO Y RESERVABLE SON DOS COSAS DISTINTAS desde el 21-ago-2026.
+        // identity_complete = se sabe QUIEN es -nombre, apellido, telefono usable-, y
+        // con eso ya se crea el contacto en el CRM. booking_ready = ademas hay correo
+        // valido, que es lo que hace falta para que Cal.com mande la confirmacion.
+        //
+        // Asi Helios pide nombre y apellido cuando alguien nuevo escribe, y el correo
+        // solo cuando va a agendar: pedirlo todo de golpe en el primer mensaje suena a
+        // interrogatorio y en Venezuela chirria.
         identity_complete: profileStatus.identityComplete,
+        booking_ready: profileStatus.bookingReady,
         crm_synced: profileStatus.crmSynced,
         profile_complete: isProfileComplete,
         first_name: profileStatus.identityComplete ? profileStatus.firstName : null,
@@ -504,7 +515,10 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         name: profileStatus.identityComplete
           ? [profileStatus.firstName, profileStatus.lastName].filter(Boolean).join(' ')
           : null,
-        email: profileStatus.identityComplete ? profileStatus.email : null,
+        // El correo se manda SI LO HAY. Antes se condicionaba a identity_complete, que
+        // exigia el correo, asi que la condicion era redundante; ahora la identidad no
+        // lo incluye y esa condicion lo habria escondido justo cuando existe.
+        email: profileStatus.email || null,
         phone: resolvedPhone,
         chatwoot_display_name: chatwootDisplayName,
         display_name_source: isProfileComplete ? "verified_profile" : "chatwoot"
@@ -516,6 +530,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         pending_question: state.pending_question || null,
         pending_intent: state.pending_intent || null,
         missing_fields: missingIdentityFields,
+        // Lo que falta para RESERVAR, aparte de lo que falta para identificar. Sin
+        // esto Helios no tendria forma de saber que solo le falta el correo.
+        missing_booking_fields: missingBookingFields,
         // Derivado de stage, no leído en crudo: aquí siempre es false porque el
         // gate de modo humano ya devolvió antes de llegar a este punto.
         human_handoff_active: humanHandoffActiveFor(stage),

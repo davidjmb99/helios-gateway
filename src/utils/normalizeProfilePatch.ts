@@ -122,22 +122,55 @@ export function evaluatePersistedProfile(
   const firstName = profileExists ? cleanStr(patientProfile.first_name) : null;
   const lastName = profileExists ? cleanStr(patientProfile.last_name) : null;
   const email = profileExists ? cleanStr(patientProfile.email)?.toLowerCase() || null : null;
+  // SABER QUIÉN ES ALGUIEN Y PODER RESERVARLE UNA CITA SON DOS COSAS DISTINTAS, y
+  // hasta el 21 de agosto de 2026 eran la misma.
+  //
+  // LO PIDIO DAVID: «para España sí era necesario pedir todos los datos al principio,
+  // pero en Venezuela eso es raro. Cuando alguien nuevo escriba, solo debe pedir nombre
+  // y apellido; el email que lo pida solo cuando vaya a agendar una cita, ya que es
+  // necesario para enviar la confirmación de la reserva».
+  //
+  // Y NO SE PODIA HACER SOLO EN EL PROMPT. identityComplete exigía el correo, así que
+  // Helios habría pedido nombre y apellido, los habría guardado, y el Gateway habría
+  // seguido diciéndole `identity_complete: false` con `missing: ['email']` en cada
+  // turno. Habría vuelto a pedirlo: un bucle.
+  //
+  // Así que son dos banderas:
+  //
+  //   identityComplete .. sé QUIÉN es. Nombre, apellido y un teléfono usable. Con esto
+  //                       ya se puede crear el contacto en el CRM, que es para lo que
+  //                       hace falta la identidad.
+  //   bookingReady ...... puedo RESERVARLE. Lo anterior más un correo válido, porque la
+  //                       confirmación de Cal.com se manda por correo y sin él la cita
+  //                       existe pero el paciente no recibe nada.
+  //
+  // Y PENSANDO EN INSTAGRAM, que es lo siguiente: por ahí no llega teléfono. Con esta
+  // división, alguien de Instagram puede quedar identificado con nombre y apellido y
+  // el teléfono se le pide cuando vaya a reservar, junto al correo. Hoy el teléfono
+  // sigue siendo parte de identityComplete porque en WhatsApp llega solo; cuando entre
+  // otro canal habrá que moverlo a bookingReady.
   const identityComplete = Boolean(
     firstName
     && lastName
+    && isValidOperationalPhone(resolvedPhone)
+  );
+  const bookingReady = Boolean(
+    identityComplete
     && email
     && isValidEmail(email)
-    && isValidOperationalPhone(resolvedPhone)
   );
   const crmSynced = profileExists && Boolean(cleanStr(patientProfile.crm_contact_id));
   const profileComplete = profileExists
     && patientProfile.profile_complete === true
-    && identityComplete
+    // profile_complete sigue exigiendo TODO, correo incluido: es la bandera que dice
+    // «este paciente está listo del todo», y se usa para no volver a preguntarle nada.
+    && bookingReady
     && crmSynced;
 
   return {
     profileExists,
     identityComplete,
+    bookingReady,
     crmSynced,
     profileComplete,
     firstName,
@@ -146,6 +179,18 @@ export function evaluatePersistedProfile(
   };
 }
 
+/**
+ * Qué falta para saber QUIÉN es este paciente.
+ *
+ * EL CORREO YA NO SALE DE AQUÍ, y ese es el cambio. Antes se devolvía junto al nombre
+ * y el apellido, y Helios lo pedía todo de golpe en el primer mensaje: en España es lo
+ * normal, en Venezuela suena a interrogatorio.
+ *
+ * El correo hace falta para RESERVAR, no para identificar, y por eso ahora sale de
+ * `deriveMissingBookingFields`. Helios pide nombre y apellido cuando alguien nuevo
+ * escribe, y el correo justo cuando va a agendar, que es cuando el paciente entiende
+ * para qué se le pide: para recibir la confirmación.
+ */
 export function deriveMissingIdentityFields(
   profileStatus: {
     identityComplete: boolean;
@@ -160,15 +205,37 @@ export function deriveMissingIdentityFields(
   const missing: string[] = [];
   if (!cleanStr(profileStatus.firstName)) missing.push('first_name');
   if (!cleanStr(profileStatus.lastName)) missing.push('last_name');
-  if (!profileStatus.email || !isValidEmail(profileStatus.email)) missing.push('email');
 
   if (missing.length > 0) return missing;
 
   return Array.isArray(existingMissingFields)
     ? existingMissingFields.filter((field): field is string =>
-        ['first_name', 'last_name', 'email'].includes(String(field))
+        ['first_name', 'last_name'].includes(String(field))
       )
     : [];
+}
+
+/**
+ * Qué falta para poder RESERVARLE una cita.
+ *
+ * Es lo de la identidad más el correo. Se calcula aparte para que Helios sepa pedir
+ * cada cosa en su momento: el nombre cuando alguien se presenta, el correo cuando pide
+ * hora. Sin el correo la reserva se crea en Cal.com pero el paciente no recibe la
+ * confirmación, así que ahí sí es obligatorio.
+ */
+export function deriveMissingBookingFields(profileStatus: {
+  bookingReady?: boolean;
+  firstName: string | null;
+  lastName: string | null;
+  email: string | null;
+}): string[] {
+  if (profileStatus.bookingReady) return [];
+
+  const missing: string[] = [];
+  if (!cleanStr(profileStatus.firstName)) missing.push('first_name');
+  if (!cleanStr(profileStatus.lastName)) missing.push('last_name');
+  if (!profileStatus.email || !isValidEmail(profileStatus.email)) missing.push('email');
+  return missing;
 }
 
 export function normalizeProfilePatch(
