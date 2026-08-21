@@ -49,6 +49,48 @@ export function isLeadInterest(value: unknown): value is LeadInterest {
   return typeof value === 'string' && (LEAD_INTERESTS as readonly string[]).includes(value);
 }
 
+/**
+ * Bloqueos que un INTERÉS NUEVO levanta, y los que no.
+ *
+ * LA PREGUNTA QUE LO ORIGINA, de David: «tampoco puede ser nunca, porque ¿qué tal si a
+ * la semana vuelve a escribir y deja algo a medias? ¿No se le hace el seguimiento?».
+ *
+ * Tenía razón, y era peor de lo que parecía. El 19 de agosto SIETE conversaciones
+ * -71, 72, 74, 76, 77, 78 y 80- quedaron con lead_blocked_reason = 'booked', y el
+ * barrido filtra por lead_blocked_reason IS NULL. Reservaron una cita en agosto y con
+ * eso quedaban excluidas de cualquier seguimiento PARA SIEMPRE. En septiembre
+ * preguntan por un tratamiento, lo dejan a medias, y no pasa nada.
+ *
+ * LA DISTINCIÓN NO ES ARBITRARIA: unos bloqueos describen una SITUACIÓN y otros la
+ * VOLUNTAD de la persona.
+ *
+ *   SE LEVANTAN, porque la situación ya pasó:
+ *     booked ............ reservó ENTONCES. Ahora pregunta por otra cosa y no la cerró.
+ *     human_handoff ..... ese handoff terminó hace días.
+ *     technical_failure . fue un turno malo, no una decisión de nadie.
+ *
+ *   NO SE LEVANTAN NUNCA, porque son de la persona y no del momento:
+ *     opted_out ......... pidió que no se le escriba. Esto no se toca ni con una orden
+ *                         judicial: es lo único aquí que además es un asunto legal.
+ *     not_interested .... dijo que no. Una pregunta nueva no borra un no.
+ *     complaint ......... acabó enfadado. Venderle es exactamente lo que no toca, y
+ *                         ante la duda se prefiere no insistir.
+ *
+ * Los dos últimos son discutibles con el tiempo suficiente -alguien que se quejó en
+ * agosto puede estar encantado en diciembre- pero equivocarse hacia «no le escribo» es
+ * recuperable y equivocarse hacia «le escribo» no.
+ */
+export const BLOQUEOS_QUE_LEVANTA_UN_INTERES_NUEVO: readonly LeadBlockReason[] = [
+  'booked',
+  'human_handoff',
+  'technical_failure'
+] as const;
+
+export function unInteresNuevoLevanta(reason: unknown): boolean {
+  return isLeadBlockReason(reason)
+    && (BLOQUEOS_QUE_LEVANTA_UN_INTERES_NUEVO as readonly string[]).includes(reason);
+}
+
 export function isLeadBlockReason(value: unknown): value is LeadBlockReason {
   return typeof value === 'string' && (LEAD_BLOCK_REASONS as readonly string[]).includes(value);
 }

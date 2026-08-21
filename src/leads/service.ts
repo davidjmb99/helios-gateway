@@ -22,6 +22,7 @@ import { resolveTenantContextByTenantId } from '../tenants/context.js';
 import {
   decidirSeguimiento,
   detectLeadInterest,
+  BLOQUEOS_QUE_LEVANTA_UN_INTERES_NUEVO,
   VENTANA_POR_DEFECTO,
   type LeadBlockReason,
   type LeadInterest
@@ -71,8 +72,39 @@ export async function markLeadInterest(input: {
       lead_interest_at: new Date().toISOString(),
       // Un interés nuevo reabre la puerta: si antes se le escribió, puede volver
       // a recibir seguimiento por ESTA consulta nueva.
-      lead_followup_at: null
+      lead_followup_at: null,
+      // Y lo mismo con la observación: si se simuló por la consulta ANTERIOR, esta es
+      // otra y merece su propia decisión. Sin esto, una conversación observada una vez
+      // no volvería a registrar nada nunca.
+      lead_simulado_at: null
     });
+
+    // Y SE LEVANTAN LOS BLOQUEOS SITUACIONALES.
+    //
+    // Lo pregunto David: «¿qué tal si a la semana vuelve a escribir y deja algo a
+    // medias? ¿No se le hace el seguimiento?». No se le hacía. El 19 de agosto siete
+    // conversaciones quedaron con lead_blocked_reason = 'booked' y el barrido filtra
+    // por ese campo en null: reservaron una vez y quedaban excluidas de por vida.
+    //
+    // El filtro `.in(...)` hace la condición EN EL SERVIDOR, así que no hace falta leer
+    // antes y no hay carrera: si el motivo guardado es uno de los que la voluntad del
+    // paciente no sostiene -booked, human_handoff, technical_failure- se limpia; si es
+    // opted_out, not_interested o complaint, la fila no se toca.
+    const desbloqueo = await supabase
+      .from('helios_conversation_state')
+      .update({ lead_blocked_reason: null })
+      .eq('tenant_id', input.tenantId)
+      .eq('conversation_id', input.conversationId)
+      .in('lead_blocked_reason', BLOQUEOS_QUE_LEVANTA_UN_INTERES_NUEVO as unknown as string[]);
+    if (desbloqueo.error) {
+      // No es motivo para tirar el turno: el interés ya está anotado y lo peor que
+      // pasa es que este lead siga bloqueado. Se registra y se sigue.
+      leadMetrics.last_error_code = 'LEAD_DESBLOQUEO_FALLIDO';
+      console.warn(JSON.stringify({
+        event: 'lead_desbloqueo_fallido',
+        conversation_id: input.conversationId
+      }));
+    }
     leadMetrics.marked_interest += 1;
     await logsRepository.save({
       trace_id: input.traceId,
