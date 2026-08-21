@@ -35,6 +35,7 @@ export const leadMetrics = {
   sent: 0,
   skipped_no_window: 0,
   skipped_off: 0,
+  skipped_ya_observado: 0,
   last_error_code: null as string | null
 };
 
@@ -196,7 +197,18 @@ async function ventanaDe(tenantId: string) {
   }
 }
 
-async function procesarLead(fila: any, ahora: Date): Promise<void> {
+/**
+ * SE EXPORTA PARA PODER PROBARLA CON UN RELOJ FIJO, y merece la explicacion.
+ *
+ * La ventana de seguimiento cruza el horario de la clinica, la franja en que es
+ * decente escribir y el plazo de WhatsApp, asi que si la prueba entrara por
+ * runLeadFollowupSweep -que usa new Date()- pasaria o fallaria segun la hora a la que
+ * se lance la suite. Una prueba intermitente sobre el paso que decide si se le escribe
+ * a un paciente es peor que no tenerla.
+ *
+ * Aqui `ahora` ya era un parametro: solo hacia falta poder llamarla.
+ */
+export async function procesarLead(fila: any, ahora: Date): Promise<void> {
   const decision = decidirSeguimiento(fila, ahora, await ventanaDe(fila.tenant_id));
   if (decision.action === 'skip') {
     if (decision.reason === 'no_window') {
@@ -219,6 +231,52 @@ async function procesarLead(fila: any, ahora: Date): Promise<void> {
   const nombre = await nombreVerificado(fila.tenant_id, fila.contact_id).catch(() => null);
   const mensaje = construirMensaje(decision.interest as LeadInterest, { nombre });
 
+  // EL MODO SE COMPRUEBA ANTES DE MARCAR NADA, y ese orden es el arreglo.
+  //
+  // EL FALLO QUE HABIA AQUI: lead_followup_at se escribia arriba, sin condicion, y
+  // solo despues se miraba el modo. En observacion eso marcaba la conversacion como
+  // «seguimiento hecho» sin haber escrito a nadie, y como el barrido filtra por
+  // lead_followup_at IS NULL, esa conversacion NO SE VOLVIA A MIRAR NUNCA. El modo
+  // observacion no observaba: consumia el lead y no lo entregaba.
+  //
+  // Paso de verdad. El 20 de agosto de 2026 a las 12:09:03 el barrido marco tres
+  // conversaciones con el mismo timestamp al centisegundo. David habia activado el
+  // seguimiento, espero el mensaje, y nunca llego; y al encenderlo de verdad esos
+  // leads ya estaban quemados.
+  const modo = await obtenerModoLeads(fila.tenant_id).catch(() => 'observe' as const);
+
+  if (modo !== 'on') {
+    // OBSERVACION: se anota la decision y NO se toca lead_followup_at, para que el
+    // dia que se enciendan estos leads sigan vivos.
+    //
+    // Se usa una columna propia para no repetir la simulacion en cada barrido: sin
+    // ella, la misma conversacion generaria una fila de log cada diez minutos
+    // durante dias, y un log lleno de ruido es un log que nadie lee.
+    if (fila.lead_simulado_at) {
+      leadMetrics.skipped_ya_observado += 1;
+      return;
+    }
+    await patch(fila.tenant_id, fila.conversation_id, { lead_simulado_at: ahora.toISOString() });
+    await registrarSeguimiento({
+      fila, interest: decision.interest, mensaje, estado: 'simulated', providerMessageId: null
+    }).catch(() => undefined);
+    await logsRepository.save({
+      trace_id: `lead-${fila.conversation_id}`,
+      tenant_id: fila.tenant_id,
+      conversation_id: fila.conversation_id,
+      contact_id: fila.contact_id || 'unknown',
+      event_type: 'LEAD_FOLLOWUP_SIMULATED',
+      metadata: {
+        interest: decision.interest,
+        message: mensaje,
+        observe_only: true,
+        // Que quede escrito en el log: el lead SIGUE VIVO, no se ha gastado.
+        lead_sigue_disponible: true
+      }
+    }).catch(() => undefined);
+    return;
+  }
+
   // SE MARCA ANTES DE ENVIAR, a propósito. Si se marcara después y el envío
   // saliera bien pero fallara la escritura, el paciente recibiría el mismo
   // mensaje otra vez en el siguiente barrido. Entre perder un seguimiento y
@@ -226,13 +284,9 @@ async function procesarLead(fila: any, ahora: Date): Promise<void> {
   await patch(fila.tenant_id, fila.conversation_id, { lead_followup_at: ahora.toISOString() });
 
   let providerMessageId: string | null = null;
-  let estado: 'sent' | 'simulated' = 'simulated';
+  const estado: 'sent' = 'sent';
 
-  // El modo es POR CLÍNICA: 'on' envía, 'observe' anota sin escribir a nadie.
-  // El barrido ya ha descartado las clínicas en 'off' antes de llegar aquí.
-  const modo = await obtenerModoLeads(fila.tenant_id).catch(() => 'observe' as const);
-
-  if (modo === 'on') {
+  {
     const tenantContext = resolveTenantContextByTenantId(fila.tenant_id);
     const respuesta = await chatwootClient.sendMessage(
       tenantContext.account_id,
@@ -245,7 +299,6 @@ async function procesarLead(fila: any, ahora: Date): Promise<void> {
       { helios_lead_followup: decision.interest }
     );
     providerMessageId = respuesta?.data?.id ? String(respuesta.data.id) : null;
-    estado = 'sent';
     leadMetrics.sent += 1;
   }
 
@@ -259,13 +312,15 @@ async function procesarLead(fila: any, ahora: Date): Promise<void> {
     providerMessageId
   }).catch(() => undefined);
 
+  // Aqui solo se llega habiendo enviado de verdad: la rama de observacion vuelve
+  // antes. Por eso el evento es fijo y no un ternario sobre `estado`.
   await logsRepository.save({
     trace_id: `lead-${fila.conversation_id}`,
     tenant_id: fila.tenant_id,
     conversation_id: fila.conversation_id,
     contact_id: fila.contact_id || 'unknown',
-    event_type: estado === 'sent' ? 'LEAD_FOLLOWUP_SENT' : 'LEAD_FOLLOWUP_SIMULATED',
-    metadata: { interest: decision.interest, message: mensaje, observe_only: estado === 'simulated' }
+    event_type: 'LEAD_FOLLOWUP_SENT',
+    metadata: { interest: decision.interest, message: mensaje, observe_only: false }
   }).catch(() => undefined);
 }
 
@@ -282,7 +337,7 @@ export async function runLeadFollowupSweep(): Promise<void> {
 
   const candidatos = await supabase
     .from('helios_conversation_state')
-    .select('tenant_id, conversation_id, contact_id, lead_interest, lead_interest_at, lead_followup_at, lead_blocked_reason, stage')
+    .select('tenant_id, conversation_id, contact_id, lead_interest, lead_interest_at, lead_followup_at, lead_simulado_at, lead_blocked_reason, stage')
     .not('lead_interest', 'is', null)
     .is('lead_followup_at', null)
     .is('lead_blocked_reason', null)
