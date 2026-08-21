@@ -400,6 +400,28 @@ export async function completeHandoff(input: CompleteHandoffInput): Promise<Comp
     });
   }
 
+  // 7c. EL DETALLE TÉCNICO, en su propia nota y mencionando SOLO a soporte.
+  //
+  //     Antes iba dentro del aviso de recepción, así que quien tenía que seguir
+  //     hablando con el paciente leía «Qué falló: OUTPUT_CONTRACT_VIOLATION en
+  //     hermes_response». No le sirve de nada y le tapa lo que sí necesita.
+  //
+  //     VA EN ÚLTIMO LUGAR a propósito: si esta falla, recepción ya tiene su aviso y
+  //     su resumen, y el paciente ya está atendido. Es lo menos urgente de las tres.
+  //     Y el error no se pierde aunque esto falle: sigue en el log del Gateway y en
+  //     contract_debug.
+  const supportNote = buildSupportNote(opened);
+  if (supportNote) {
+    await runStep('private_note_support', async () => {
+      const noteId = await chatwootClient.createHandoffPrivateNote(
+        accountId,
+        conversationId,
+        supportNote
+      );
+      return { chatwoot_message_id: noteId };
+    });
+  }
+
   // 8. El mensaje de transición es único: lo encola el llamador en el outbox de
   //    Chatwoot, que ya garantiza entrega exactamente una vez.
   if (transition_outbox_key) {
@@ -528,21 +550,36 @@ export function buildPrivateNote(
   // esperaría una respuesta de alguien que arregla programas, no que atiende
   // pacientes.
   if (request.origin === 'technical_failure') {
+    // ESTA NOTA ES PARA RECEPCIÓN Y NO LLEVA UNA SOLA LÍNEA TÉCNICA.
+    //
+    // Antes era UNA nota que mencionaba a los dos equipos y dentro decía «Qué falló:
+    // OUTPUT_CONTRACT_VIOLATION en hermes_response». Lo señaló David: «se pasa la
+    // misma información tanto a recepción humana de la clínica como al equipo
+    // técnico, eso no puede pasar».
+    //
+    // Y tiene razón por dos motivos distintos. Uno práctico: un código de error no le
+    // dice NADA a quien tiene que seguir hablando con el paciente, y le tapa lo único
+    // que necesita saber, que es que le toca a ella y de qué se estaba hablando. Y
+    // otro de imagen: un recepcionista leyendo trazas internas delante de un paciente
+    // no transmite ninguna confianza en la clínica.
+    //
+    // El detalle técnico va en su propia nota, mencionando solo a soporte
+    // -buildSupportNote-. Y lo que sí necesita recepción, el hilo de la conversación,
+    // va en la nota del resumen, que se publica aparte y sin mención.
     const avisoRecepcion = teamMention(opened.destination_team_id, 'reception');
-    const avisoSoporte = teamMention(opened.support_team_id, 'helios_support');
     return [
-      '**Helios ha tenido un fallo técnico**',
+      '**Helios no ha podido continuar**',
       '',
-      avisoRecepcion ? `${avisoRecepcion} — continúa tú la conversación con el paciente.` : null,
-      avisoSoporte ? `${avisoSoporte} — revisad el error y arregladlo.` : null,
+      avisoRecepcion
+        ? `${avisoRecepcion} — sigue tú la conversación con el paciente.`
+        : 'Hay que seguir esta conversación a mano.',
       '',
       `- **Paciente:** ${nombre || 'todavía no ha dado su nombre'}`,
       `- **Prioridad:** ${PRIORITY_LABELS_ES[request.priority] ?? request.priority}`,
-      // Aquí SÍ va el detalle técnico, al revés que en una derivación normal: es
-      // justo lo que soporte necesita para saber por dónde empezar.
-      request.summary ? `- **Qué falló:** ${request.summary}` : null,
+      '- **Qué ha pasado:** Helios tuvo un problema técnico. Soporte ya está avisado.',
       '',
       'El paciente ya ha recibido un aviso de que le atenderá una persona.',
+      'Justo debajo tienes el resumen de lo que se estaba hablando.',
       'Cuando termines de atenderle, escribe /fin en una nota privada para devolvérsela a Helios.'
     ].filter(line => line !== null).join('\n');
   }
@@ -591,6 +628,46 @@ export function buildRecapNote(recap?: ConversationRecap | null): string | null 
     : [];
   if (lines.length === 0) return null;
   return ['**Últimos mensajes de la conversación**', '', ...lines].join('\n');
+}
+
+/**
+ * El aviso a SOPORTE de un fallo técnico. Va en su propia nota, y aquí sí va el
+ * detalle.
+ *
+ * POR QUÉ ESTÁ SEPARADO de la nota de recepción: eran la misma, y recepción leía
+ * «Qué falló: OUTPUT_CONTRACT_VIOLATION en hermes_response». Quien tiene que seguir
+ * hablando con el paciente no necesita eso, y encima le tapa lo que sí necesita.
+ *
+ * UNA HONESTIDAD SOBRE EL ALCANCE DE ESTA SEPARACIÓN: las dos notas son notas
+ * privadas de la MISMA conversación de Chatwoot, así que un recepcionista que baje
+ * puede leer esta. Lo que se consigue es que no se le dirija a ella, que no sea lo
+ * primero que ve y que su nota no contenga nada técnico. Para que recepción NO PUEDA
+ * verlo haría falta otro canal —una conversación aparte en una bandeja de soporte, un
+ * webhook, un correo— y eso es un cambio de arquitectura, no de texto.
+ *
+ * Devuelve null cuando no es un fallo técnico o cuando no hay equipo de soporte
+ * configurado. En el segundo caso el error no se pierde: sigue en el log del Gateway y
+ * en la columna contract_debug del Adapter, que es donde se mira de verdad.
+ */
+export function buildSupportNote(opened: OpenedHandoff): string | null {
+  const { request } = opened;
+  if (request.origin !== 'technical_failure') return null;
+
+  const avisoSoporte = teamMention(opened.support_team_id, 'helios_support');
+  if (!avisoSoporte) return null;
+
+  return [
+    '**Fallo técnico de Helios**',
+    '',
+    `${avisoSoporte} — revisad el error. Recepción ya está siguiendo la conversación`,
+    'con el paciente, así que esto no es urgente para el paciente pero sí para vosotros.',
+    '',
+    request.summary ? `- **Qué falló:** ${request.summary}` : '- **Qué falló:** sin detalle registrado.',
+    `- **Motivo:** ${request.reason_code}`,
+    '',
+    'El detalle completo está en el panel del Adapter: la columna `contract_debug` de',
+    '`helios_adapter_events` dice qué pieza falló y dónde mirar.'
+  ].filter(line => line !== null).join('\n');
 }
 
 /**

@@ -14,6 +14,7 @@ const { clearHandoffRoutingCache, resolveHandoffRouting } = await import('../src
 const {
   buildNotificationPayload,
   buildPrivateNote,
+  buildSupportNote,
   buildRecapNote,
   resolveTransitionMessage
 } = await import('../src/handoff/service.js');
@@ -190,57 +191,109 @@ assert.match(
 );
 assert.doesNotMatch(note, /mention:\/\//, 'sin ID configurado la nota no lleva mención');
 
-// --- Fallo técnico: DOS equipos, con encargos distintos ---------------------
-// Si solo se avisara a soporte, el paciente esperaría respuesta de un equipo que
-// arregla programas y no atiende pacientes. Y si solo se avisara a recepción,
-// nadie arreglaría el fallo. Hacen falta los dos, y cada uno con su encargo.
+// --- Fallo técnico: DOS NOTAS, y recepción NO ve el detalle técnico ---------
+//
+// LO SEÑALO DAVID el 21-ago-2026: «cuando se hace el handoff, se pasa la misma
+// información tanto a recepción humana de la clínica como al equipo técnico, eso no
+// puede pasar».
+//
+// Antes era UNA nota que mencionaba a los dos equipos y dentro decía «Qué falló:
+// ADAPTER_UNSAFE_RESPONSE en hermes.call». Está mal por dos motivos: a quien tiene
+// que seguir hablando con el paciente un código de error no le dice nada y le tapa lo
+// que sí necesita, y un recepcionista leyendo trazas internas delante de un paciente
+// no transmite ninguna confianza en la clínica.
+//
+// Siguen haciendo falta los dos avisos —si solo se avisara a soporte, el paciente
+// esperaría respuesta de un equipo que arregla programas; si solo a recepción, nadie
+// arreglaría el fallo— pero en notas separadas y con contenido distinto.
 
-const technicalNote = buildPrivateNote(
-  openedHandoff({
-    request: normalizeHandoffRequest({
-      reason_code: 'operational_exception',
-      // El mismo texto que escribe escalateTechnicalFailure en produccion.
-      summary: 'Helios no pudo atender el mensaje: ADAPTER_UNSAFE_RESPONSE en hermes.call.'
-    }, 'technical_failure'),
-    destination_team_id: '2',
-    support_team_id: '3'
-  }),
-  verifiedPatient
-);
+const conFalloTecnico = openedHandoff({
+  request: normalizeHandoffRequest({
+    reason_code: 'operational_exception',
+    // El mismo texto que escribe escalateTechnicalFailure en produccion.
+    summary: 'Helios no pudo atender el mensaje: ADAPTER_UNSAFE_RESPONSE en hermes.call.'
+  }, 'technical_failure'),
+  destination_team_id: '2',
+  support_team_id: '3'
+});
 
-assert.match(technicalNote, /Helios ha tenido un fallo técnico/);
+const notaRecepcion = buildPrivateNote(conFalloTecnico, verifiedPatient);
+
+// LO QUE RECEPCION SI TIENE QUE VER
 assert.match(
-  technicalNote,
-  /\[@Equipo De Recepción\]\(mention:\/\/team\/2\/[^)]+\) — continúa tú la conversación/,
+  notaRecepcion,
+  /\[@Equipo De Recepción\]\(mention:\/\/team\/2\/[^)]+\) — sigue tú la conversación/,
   'recepción sigue con el paciente, y se le dice explícitamente'
 );
 assert.match(
-  technicalNote,
-  /\[@Soporte Técnico Helios\]\(mention:\/\/team\/3\/[^)]+\) — revisad el error/,
-  'soporte se entera para arreglarlo, sin quedarse la conversación'
-);
-assert.match(
-  technicalNote,
+  notaRecepcion,
   /El paciente ya ha recibido un aviso/,
   'y consta que al paciente ya se le ha dicho algo: no se queda callado'
 );
-// Al revés que en una derivación normal, aquí el detalle técnico SÍ es útil:
-// es por donde empieza a mirar quien tiene que arreglarlo.
-assert.match(technicalNote, /- \*\*Qué falló:\*\*/, 'soporte necesita saber qué falló');
-assert.match(technicalNote, /escribe \/fin/, 'y el retorno se explica igual que siempre');
+assert.match(notaRecepcion, /Soporte ya está avisado/, 'y que el fallo no se está ignorando');
+assert.match(notaRecepcion, /escribe \/fin/, 'y el retorno se explica igual que siempre');
 
-// Sin equipo de soporte configurado la nota no se rompe: recepción sigue
-// avisada, que es lo que impide que el paciente se quede sin nadie.
-const soloRecepcion = buildPrivateNote(
-  openedHandoff({
-    request: normalizeHandoffRequest({ reason_code: 'operational_exception' }, 'technical_failure'),
-    destination_team_id: '2',
-    support_team_id: null
-  }),
-  verifiedPatient
+// LO QUE RECEPCION NO PUEDE VER. Esta es la razón de ser del cambio.
+assert.doesNotMatch(
+  notaRecepcion, /ADAPTER_UNSAFE_RESPONSE/,
+  'el código de error NO va en la nota de recepción'
 );
-assert.match(soloRecepcion, /continúa tú la conversación/);
-assert.doesNotMatch(soloRecepcion, /revisad el error/);
+assert.doesNotMatch(
+  notaRecepcion, /hermes\.call/,
+  'ni la etapa interna donde se rompió'
+);
+assert.doesNotMatch(
+  notaRecepcion, /Qué falló/,
+  'ni el epígrafe del detalle técnico'
+);
+assert.doesNotMatch(
+  notaRecepcion, /operational_exception/,
+  'ni el código de motivo, que tampoco significa nada para quien atiende'
+);
+assert.doesNotMatch(
+  notaRecepcion, /mention:\/\/team\/3\//,
+  'y no se menciona a soporte en la nota de recepción: su aviso va aparte'
+);
+
+// LA NOTA DE SOPORTE, que es donde SI va el detalle.
+const notaSoporte = buildSupportNote(conFalloTecnico);
+assert.ok(notaSoporte, 'con equipo de soporte configurado tiene que haber nota');
+assert.match(
+  notaSoporte!,
+  /\[@Soporte Técnico Helios\]\(mention:\/\/team\/3\/[^)]+\) — revisad el error/,
+  'soporte se entera para arreglarlo, sin quedarse la conversación'
+);
+assert.match(notaSoporte!, /ADAPTER_UNSAFE_RESPONSE/, 'y aquí SÍ va lo que falló');
+assert.match(notaSoporte!, /contract_debug/, 'con el puntero a donde está el detalle completo');
+assert.match(
+  notaSoporte!, /Recepción ya está siguiendo la conversación/,
+  'y soporte sabe que el paciente no está desatendido, para no correr sin motivo'
+);
+
+// Sin equipo de soporte configurado no hay nota de soporte, y recepción sigue
+// avisada: es lo que impide que el paciente se quede sin nadie.
+const sinSoporte = openedHandoff({
+  request: normalizeHandoffRequest({
+    reason_code: 'operational_exception',
+    summary: 'Helios no pudo atender el mensaje: ADAPTER_UNSAFE_RESPONSE en hermes.call.'
+  }, 'technical_failure'),
+  destination_team_id: '2',
+  support_team_id: null
+});
+assert.equal(buildSupportNote(sinSoporte), null, 'sin equipo de soporte no se crea la nota');
+assert.match(buildPrivateNote(sinSoporte, verifiedPatient), /sigue tú la conversación/,
+  'pero recepción sigue avisada, que es lo que no puede faltar');
+assert.doesNotMatch(
+  buildPrivateNote(sinSoporte, verifiedPatient), /ADAPTER_UNSAFE_RESPONSE/,
+  'y el detalle NO se cuela en la nota de recepción por no haber soporte'
+);
+
+// Y en una derivación NORMAL no hay nota de soporte que valga.
+assert.equal(
+  buildSupportNote(openedHandoff({ destination_team_id: '2', support_team_id: '3' })),
+  null,
+  'una derivación normal no es un fallo técnico: no se molesta a soporte'
+);
 
 // --- Alerta al equipo -------------------------------------------------------
 
