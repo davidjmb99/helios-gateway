@@ -130,6 +130,19 @@ export const TABLAS_PURGABLES: TablaPurgable[] = [
     descripcion: 'El nombre, los apellidos y el correo verificados de cada paciente, y el enlace con su contacto de HubSpot.',
     grupo: 'Pacientes',
     advertencia: 'Helios volverá a pedir nombre, apellidos y correo. Si conservas los contactos en HubSpot, se crearán duplicados o se volverán a emparejar.'
+  },
+
+  {
+    // FALTABA, y una limpieza total sin esta tabla queda a medias: se borrarían las
+    // conversaciones del Gateway y quedarían aquí las filas apuntando a hilos de
+    // Hermes que ya no existen, con sus contadores de turnos y de rotaciones de otra
+    // época. No rompe nada —el Adapter abriría un hilo nuevo igual— pero el panel de
+    // sesiones mentiría y los contadores de gasto por conversación no cuadrarían.
+    tabla: 'helios_hermes_sessions',
+    etiqueta: 'Sesiones de Hermes',
+    descripcion: 'Qué hilo de Hermes le corresponde a cada conversación, cuántos turnos lleva y cuántas veces se ha empezado de cero.',
+    grupo: 'Trazas',
+    advertencia: 'Borrarlas hace que la próxima vez que escriba cada paciente se abra un hilo nuevo con Hermes: Helios no recordará la charla anterior. No pierde su nombre ni su cita, que viven en otra tabla.'
   }
 ];
 

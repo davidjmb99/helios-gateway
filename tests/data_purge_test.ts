@@ -186,6 +186,7 @@ assert.deepEqual(
     'helios_financing_cases',
     'helios_gateway_logs',
     'helios_handoff_events',
+    'helios_hermes_sessions',
     'helios_inbound_buffer',
     'helios_lead_followups',
     'helios_message_idempotency',
