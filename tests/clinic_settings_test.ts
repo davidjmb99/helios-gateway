@@ -419,3 +419,77 @@ assert.equal(contexto.tono, 'Cercano, de tú, sin tecnicismos.');
 
 console.log('clinic_settings_test: PASS');
 console.log('  minutos de la semana en que se puede escribir: ' + permitidos + ' de ' + 7 * 24 * 60);
+
+// --- LA DIRECCION VIAJA COMO DATO, NO COMO INSTRUCCION ----------------------
+//
+// EL FALLO, con hora exacta. El 20-ago-2026 se escribio la direccion en el perfil de
+// Hermes -«La clinica esta en Acarigua, CC Mamanico, local 27»-, se verifico el hash,
+// David reinicio, y desde una conversacion NUEVA el modelo se nego a decirla:
+//
+//   21:30  «¿donde estan ubicados?»
+//          «No quiero darte una direccion DE MEMORIA por si no es exacta. Te voy a
+//           conectar con una persona del equipo.»
+//
+//   21:36  «¿cual es el horario de atencion?»
+//          «De lunes a viernes de 10:00am a 8:00pm y los sabados de 10:00am a 3:00pm.»
+//
+// Seis minutos de diferencia, las dos preguntas generales, las dos en el prompt. El
+// horario lo contesta y la direccion no, y la razon es EL CANAL: el horario llega en
+// clinic_context dentro de la peticion, la direccion estaba escrita en el prompt. Lo
+// que viene en la peticion lo trata como dato; lo que esta en el prompt, como un
+// recuerdo del que el SOUL entero le enseña a desconfiar. Y bien que le enseña: es
+// lo que evita que invente citas.
+//
+// Asi que la direccion se manda por donde va el horario.
+
+{
+  const { normalizarDireccion, MAX_LARGO_DIRECCION } = esquema;
+
+  // Texto libre, limpiando espacios como el tono.
+  assert.equal(normalizarDireccion('  Acarigua,   CC Mamanico   local 27  '), 'Acarigua, CC Mamanico local 27');
+  assert.equal(normalizarDireccion('Acarigua, CC Mamánico local 27. Tiene estacionamiento.'),
+    'Acarigua, CC Mamánico local 27. Tiene estacionamiento.');
+
+  // VACIO ES NULL, NO CADENA VACIA. Una direccion en blanco que se guardara como ''
+  // se mandaria a Hermes como un campo presente y vacio, y eso es peor que no
+  // mandarlo: parece un dato confirmado que no dice nada.
+  assert.equal(normalizarDireccion(''), null);
+  assert.equal(normalizarDireccion('   '), null);
+  assert.equal(normalizarDireccion(null), null);
+  assert.equal(normalizarDireccion(undefined), null);
+
+  // Se rechaza en vez de recortar: media direccion es una direccion equivocada, y
+  // recortar en silencio mandaria al paciente a otro sitio.
+  assert.equal(normalizarDireccion('x'.repeat(MAX_LARGO_DIRECCION)), 'x'.repeat(MAX_LARGO_DIRECCION));
+  assert.equal(normalizarDireccion('x'.repeat(MAX_LARGO_DIRECCION + 1)), null,
+    'una direccion demasiado larga se rechaza entera, no se recorta');
+}
+
+{
+  // NO HAY DIRECCION POR DEFECTO, y esto es lo que impide el fallo de Madrid.
+  //
+  // Si hubiera un valor de siempre, TODAS las clinicas recibirian el de COI en
+  // cuanto se provisione la segunda -exactamente lo que paso con el horario y el
+  // tono antes de que fueran por clinica-. Un paciente de otra ciudad se plantaria
+  // en Acarigua.
+  const defectos = await settings.leerAjustes('clinica-sin-nada');
+  assert.equal(defectos.clinic_address, null, 'sin configurar no puede haber direccion');
+}
+
+{
+  // Y EL CABLEADO, que es donde estaba el fallo de verdad: no basta con guardarla,
+  // tiene que LLEGAR en el contexto del turno. Si esta prueba no existiera, se podria
+  // guardar la direccion en el panel y seguir sin que Hermes la viera nunca.
+  const fuente = readFileSync(new URL('../src/orchestrator.ts', import.meta.url), 'utf8');
+  const bloque = fuente.slice(fuente.indexOf('clinic_context: {'), fuente.indexOf('clinic_context: {') + 2000);
+  assert.ok(
+    /clinic_address:\s*contextoDeClinica\.direccion/.test(bloque),
+    'clinic_context no lleva clinic_address: la direccion se guardaria y Hermes no la veria'
+  );
+  assert.ok(
+    /contextoDeClinica\.direccion\s*\?/.test(bloque),
+    'la direccion tiene que mandarse SOLO si esta configurada; un campo vacio parece un dato confirmado'
+  );
+}
+
+console.log('clinic_settings_test: direccion OK');

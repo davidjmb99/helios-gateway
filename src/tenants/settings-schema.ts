@@ -269,3 +269,41 @@ export function normalizarTono(valor: unknown): string | null {
 }
 
 export const MAX_LARGO_TONO = MAX_TONO;
+
+// --- Direccion de la clinica -------------------------------------------------
+
+const MAX_DIRECCION = 200;
+
+/**
+ * Donde esta la clinica, para responder «¿donde quedan?».
+ *
+ * POR QUE ES UN AJUSTE Y NO UNA LINEA DEL PROMPT. Se escribio primero en el perfil
+ * de Hermes -«La clinica esta en Acarigua, CC Mamanico, local 27»- y el modelo se
+ * NEGO a decirla. Textualmente: «no quiero darte una direccion de memoria por si no
+ * es exacta». Y tenia su lógica: el SOUL entero le repite que no afirme nada sin
+ * confirmar, asi que un dato suelto en las instrucciones lo trata como recuerdo
+ * dudoso. En el mismo minuto contesto el HORARIO sin dudar, porque el horario llega
+ * en `clinic_context` dentro de la peticion: eso lo trata como dato.
+ *
+ * Asi que la direccion viaja por donde viaja el horario. No es un truco: es la
+ * distincion correcta. Lo que la clinica ha configurado es un hecho de esa clinica;
+ * lo que esta escrito en un prompt compartido, no necesariamente.
+ *
+ * Y RESUELVE ALGO QUE EL PROMPT ROMPIA. Escribir «Acarigua» en el SOUL habria
+ * mentido a la segunda clinica en cuanto exista, porque el perfil es uno para
+ * todas hasta que se clone. Aqui cada cuenta manda la suya y no se mezclan.
+ *
+ * Es texto libre a proposito: «Acarigua, CC Mamanico local 27, tiene
+ * estacionamiento» es una direccion util, y partirla en calle/numero/ciudad
+ * obligaria a la clinica a rellenar campos que no siempre aplican.
+ *
+ * Se limita el largo porque viaja en CADA turno, igual que el tono.
+ */
+export function normalizarDireccion(valor: unknown): string | null {
+  const limpio = String(valor ?? '').trim().replace(/\s+/g, ' ');
+  if (!limpio) return null;
+  if (limpio.length > MAX_DIRECCION) return null;
+  return limpio;
+}
+
+export const MAX_LARGO_DIRECCION = MAX_DIRECCION;

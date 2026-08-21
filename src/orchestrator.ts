@@ -476,7 +476,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     const contextoDeClinica = await leerContextoDeClinica(tenantId).catch(() => ({
       horario: null,
       tono: null,
-      zona: config.CLINIC_TIMEZONE || 'Europe/Madrid'
+      zona: config.CLINIC_TIMEZONE || 'Europe/Madrid',
+      direccion: null
     }));
 
     // 6. Preparar el payload limpio para Hermes con identidad real desde Supabase
@@ -547,6 +548,19 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         timezone: contextoDeClinica.zona,
         tone: contextoDeClinica.tono || config.CLINIC_TONE || "es-ES",
         ...(contextoDeClinica.horario ? { clinic_hours: contextoDeClinica.horario } : {}),
+        // LA DIRECCION VIAJA COMO DATO, NO COMO INSTRUCCION, y es deliberado.
+        //
+        // Estuvo escrita en el perfil de Hermes -«La clinica esta en Acarigua, CC
+        // Mamanico, local 27»- y el modelo se NEGO a decirla: «no quiero darte una
+        // direccion de memoria por si no es exacta». En el mismo minuto contesto el
+        // horario sin dudar, porque el horario llegaba por aqui. La diferencia no es
+        // el dato, es el canal: lo que viene en la peticion es un hecho, lo que esta
+        // en el prompt compartido es un recuerdo del que el SOUL le enseña a
+        // desconfiar -y bien, que es lo que evita que invente citas-.
+        //
+        // Solo se manda si la clinica la configuro. Sin direccion, Helios deriva; una
+        // direccion inventada manda al paciente a otro sitio.
+        ...(contextoDeClinica.direccion ? { clinic_address: contextoDeClinica.direccion } : {}),
         first_visit_free: true,
         no_diagnosis: true,
         no_medication: true,

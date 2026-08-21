@@ -43,12 +43,14 @@ import {
   LIMITES_VENTANA_ENVIO,
   MODOS_FUNCION,
   MAX_LARGO_TONO,
+  MAX_LARGO_DIRECCION,
   horaDeMinutos,
   horarioParaGuardar,
   normalizarEquipos,
   normalizarHorario,
   normalizarModo,
   normalizarTono,
+  normalizarDireccion,
   normalizarVentanaEnvio,
   normalizarZona,
   type EquiposClinica,
@@ -86,6 +88,8 @@ export interface AjustesClinica {
   recovery_intentos: number;
   clinic_timezone: string;
   clinic_tone: string | null;
+  /** Donde esta la clinica. Viaja en clinic_context, no en el prompt. */
+  clinic_address: string | null;
   /** Qué campos los eligió la clínica y cuáles vienen de lo de siempre. */
   origen: Record<string, Origen>;
 }
@@ -105,7 +109,8 @@ const CAMPOS = {
   leads_mode: { normalizar: normalizarModo, error: 'MODO_INVALIDO' },
   chatwoot_teams: { normalizar: normalizarEquipos, error: 'EQUIPOS_INVALIDOS' },
   clinic_timezone: { normalizar: normalizarZona, error: 'ZONA_INVALIDA' },
-  clinic_tone: { normalizar: normalizarTono, error: 'TONO_INVALIDO' }
+  clinic_tone: { normalizar: normalizarTono, error: 'TONO_INVALIDO' },
+  clinic_address: { normalizar: normalizarDireccion, error: 'DIRECCION_INVALIDA' }
 } as const;
 
 type CampoAjuste = keyof typeof CAMPOS;
@@ -151,6 +156,9 @@ function porDefecto(): AjustesClinica {
     chatwoot_teams: {},
     clinic_timezone: config.CLINIC_TIMEZONE,
     clinic_tone: null,
+    // SIN DIRECCION POR DEFECTO. Inventar una es peor que no tenerla: el paciente se
+    // presentaria en un sitio equivocado. Si no esta configurada, Helios deriva.
+    clinic_address: null,
     origen: {}
   };
 }
@@ -329,9 +337,13 @@ export async function leerContextoDeClinica(tenantId: string): Promise<{
   horario: Record<string, Array<[string, string]>> | null;
   tono: string | null;
   zona: string;
+  direccion: string | null;
 }> {
   const ajustes = await ajustesDe(tenantId);
   return {
+    // La direccion SI se manda tal cual esté: no hay valor por defecto que pudiera
+    // colarse como si fuera real, porque el defecto es null.
+    direccion: ajustes.clinic_address,
     // Solo se manda si la clínica lo configuró: mandar el horario por defecto haría
     // creer a Hermes que es el de verdad cuando nadie lo ha confirmado.
     horario: ajustes.origen.clinic_hours === 'clinica'
@@ -376,6 +388,8 @@ export async function leerAjustes(tenantId: string): Promise<Record<string, unkn
     clinic_timezone: ajustes.clinic_timezone,
     clinic_tone: ajustes.clinic_tone,
     clinic_tone_max: MAX_LARGO_TONO,
+    clinic_address: ajustes.clinic_address,
+    clinic_address_max: MAX_LARGO_DIRECCION,
 
     // De dónde sale cada valor. El panel lo necesita para no decir «elegido por la
     // clínica» cuando en realidad es el de siempre.

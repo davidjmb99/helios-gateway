@@ -2292,7 +2292,11 @@
           : 'ninguno'
       },
       clinic_timezone: { nombre: 'La zona horaria', texto: z => z || 'sin definir' },
-      clinic_tone: { nombre: 'El tono', texto: t => t ? '«' + t + '»' : 'sin definir' }
+      clinic_tone: { nombre: 'El tono', texto: t => t ? '«' + t + '»' : 'sin definir' },
+      clinic_address: {
+        nombre: 'La dirección',
+        texto: d => d ? '«' + d + '»' : 'sin definir (Helios derivará a una persona)'
+      }
     };
 
     /** Las pestañas que comparten el botón de guardar. */
@@ -2467,6 +2471,7 @@
       document.getElementById('envio-hasta').value = ventana.hasta || '';
       document.getElementById('clinica-zona').value = valorEnPantalla('clinic_timezone') || '';
       document.getElementById('clinica-tono').value = valorEnPantalla('clinic_tone') || '';
+      document.getElementById('clinica-direccion').value = valorEnPantalla('clinic_address') || '';
 
       document.getElementById('horario-estado').innerHTML = textoDeOrigen(
         ajustesActuales.origen.clinic_hours,
@@ -2943,6 +2948,20 @@
               la mañana. <b class="text-slate-400">Tiene que ser la misma que tengas en Cal.com</b>,
               o la agenda y lo que dice Helios no coincidirán.
             </p>
+          </div>
+          <div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Dirección de la clínica</h3>
+            <p class="text-[11px] text-slate-400 mb-2">
+              Lo que Helios responde cuando preguntan <b class="text-slate-300">«¿dónde
+              quedan?»</b>. Escríbela como se la dirías a un paciente, con lo que le
+              ayude a llegar. <b class="text-slate-300">Si la dejas vacía, Helios no
+              se la inventa: deriva a una persona.</b> Tiene que coincidir con la que
+              tengas en Cal.com, o la confirmación de la cita dirá otra cosa.
+            </p>
+            <input id="clinica-direccion" type="text" maxlength="200"
+                   placeholder="Acarigua, CC Mamánico local 27. Tiene estacionamiento."
+                   onchange="cambiarTexto('clinic_address', this.value)"
+                   class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none">
           </div>
           <div>
             <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Tono</h3>
