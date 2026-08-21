@@ -84,7 +84,20 @@ function montarEscenario(ajustes: Array<Record<string, any>>) {
   ]);
   db.seed('helios_inbound_buffer', [
     { id: 1, tenant_id: 'democoi1', conversation_id: '100', created_at: hace(3), body: 'hola' },
-    { id: 2, tenant_id: 'fisio7', conversation_id: '200', created_at: hace(3), body: 'hola' }
+    { id: 2, tenant_id: 'fisio7', conversation_id: '200', created_at: hace(3), body: 'hola' },
+    // ALGUIEN DEL EQUIPO YA CONTESTO. Sin esto, desde el 21-ago estas conversaciones
+    // caen en «sin atender» y NO se devuelven, por lo que pidio David: el reloj de
+    // inactividad mide cuanto lleva parada una atencion que empezo. Estos escenarios
+    // prueban el umbral por clinica, que es otra cosa, asi que la atencion tiene que
+    // haber empezado.
+    {
+      id: 3, tenant_id: 'democoi1', conversation_id: '100', created_at: hace(3),
+      body: 'Buenas, le atiendo yo', direction: 'outgoing', author: 'clinic_team'
+    },
+    {
+      id: 4, tenant_id: 'fisio7', conversation_id: '200', created_at: hace(3),
+      body: 'Buenas, le atiendo yo', direction: 'outgoing', author: 'clinic_team'
+    }
   ]);
   db.seed('helios_gateway_logs', []);
   db.seed('helios_handoff_events', []);
@@ -202,6 +215,54 @@ assert.deepEqual(
   ['200'],
   'la 100 esta con la clinica cerrada y su plazo no ha empezado; la 200, con la clinica '
   + 'abierta y los mismos datos, si vuelve. Si vuelven las dos, el barrido no mira el horario'
+);
+
+// --- UNA DERIVACION QUE NADIE HA TOCADO NO SE DEVUELVE ---------------------
+//
+// LO PIDIO DAVID el 21-ago-2026: «no la quita hasta que la atienda el humano; lo de
+// inactividad es solo cuando ya la persona recibio respuesta humana».
+//
+// Los datos son LOS MISMOS que en el escenario que si devuelve la 100 -tres horas de
+// inactividad, umbral de dos, horario abierto-. Lo unico que cambia es que aqui NADIE
+// del equipo ha escrito. Antes de este cambio, la 100 volvia a la IA y la peticion del
+// paciente desaparecia sin que nadie se enterase.
+
+db = montarEscenario([
+  { tenant_id: 'democoi1', handoff_stale_hours: 2, clinic_hours: ABIERTA, clinic_timezone: ZONA },
+  { tenant_id: 'fisio7', handoff_stale_hours: 2, clinic_hours: ABIERTA, clinic_timezone: ZONA }
+]);
+// Se quitan las respuestas del equipo: nadie ha atendido ninguna de las dos.
+db.seed('helios_inbound_buffer', [
+  { id: 1, tenant_id: 'democoi1', conversation_id: '100', created_at: hace(3), body: 'hola' },
+  { id: 2, tenant_id: 'fisio7', conversation_id: '200', created_at: hace(3), body: 'hola' }
+]);
+assert.deepEqual(
+  await conversacionesIntentadas(db),
+  [],
+  'sin que nadie las haya atendido, NINGUNA se devuelve a la IA: el paciente pidio una '
+  + 'persona y sigue en su cola. Si aqui vuelve alguna, se esta borrando su peticion'
+);
+
+// Y CON UNA ATENDIDA Y OTRA NO, se distinguen. Este es el par que demuestra que la
+// diferencia la hace la respuesta humana y no otra cosa del escenario.
+db = montarEscenario([
+  { tenant_id: 'democoi1', handoff_stale_hours: 2, clinic_hours: ABIERTA, clinic_timezone: ZONA },
+  { tenant_id: 'fisio7', handoff_stale_hours: 2, clinic_hours: ABIERTA, clinic_timezone: ZONA }
+]);
+db.seed('helios_inbound_buffer', [
+  { id: 1, tenant_id: 'democoi1', conversation_id: '100', created_at: hace(3), body: 'hola' },
+  { id: 2, tenant_id: 'fisio7', conversation_id: '200', created_at: hace(3), body: 'hola' },
+  // Solo la 100 recibio respuesta humana.
+  {
+    id: 3, tenant_id: 'democoi1', conversation_id: '100', created_at: hace(3),
+    body: 'Buenas, le atiendo yo', direction: 'outgoing', author: 'clinic_team'
+  }
+]);
+assert.deepEqual(
+  await conversacionesIntentadas(db),
+  ['100'],
+  'la 100 fue atendida y luego se quedo parada tres horas: eso si es inactividad. La 200 '
+  + 'nunca se atendio, asi que sigue esperando a una persona'
 );
 
 // --- Con el handoff apagado no se toca nada --------------------------------

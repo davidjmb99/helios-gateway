@@ -263,3 +263,152 @@ console.log('stale_policy_test: PASS');
 }
 
 console.log('stale_policy_test: reloj de atencion OK');
+
+// --- UNA DERIVACION SIN ATENDER NO SE DEVUELVE: SE AVISA -------------------
+//
+// LO PIDIO DAVID el 21-ago-2026: «si la persona dice que si quiere un humano, pues
+// entonces pasa la conversacion a humano, y no la quita hasta que la atienda el
+// humano. Lo de inactividad es solo cuando ya la persona recibio respuesta humana».
+//
+// Es correcto: el reloj de inactividad mide cuanto lleva PARADA una atencion que
+// empezo. Si no empezo, no hay nada que haya caducado, y devolverla borra la peticion
+// del paciente.
+//
+// PERO ESO QUITA LA RED CONTRA EL OLVIDO, que es el motivo por el que existe este
+// barrido. Asi que la red cambia de forma: en vez de QUITARLE la conversacion al
+// equipo, se le AVISA, y la conversacion sigue en manos humanas.
+
+{
+  const ZONA = 'America/Caracas';
+  const HORARIO: Record<number, Array<{ desde: number; hasta: number }>> = {
+    0: [], 6: [{ desde: 600, hasta: 900 }],
+    1: [{ desde: 600, hasta: 1200 }], 2: [{ desde: 600, hasta: 1200 }],
+    3: [{ desde: 600, hasta: 1200 }], 4: [{ desde: 600, hasta: 1200 }],
+    5: [{ desde: 600, hasta: 1200 }]
+  };
+  const ccs = (iso: string) => new Date(`${iso}-04:00`);
+
+  const decidir = (extra: Record<string, any>) => decidirVuelta({
+    referencia: ccs('2026-08-20T20:03:00').toISOString(),
+    umbralHoras: 3,
+    zona: ZONA,
+    horario: HORARIO,
+    ...extra
+  } as any);
+
+  // 1. NADIE LA HA TOCADO. Por muchas horas que pasen, NO se devuelve.
+  {
+    const d = decidir({
+      ahora: ccs('2026-08-21T18:00:00'),
+      handoffPedidoAt: ccs('2026-08-20T20:03:00').toISOString(),
+      primerHumanoAt: null
+    });
+    assert.equal(d.volver, false, 'sin atender NO se devuelve, pasen las horas que pasen');
+    assert.equal(d.motivo, 'sin_atender');
+  }
+  {
+    // Ni a los tres dias. Antes de este cambio, esto volvia a la IA y la peticion
+    // del paciente desaparecia sin que nadie se enterase.
+    const d = decidir({
+      ahora: ccs('2026-08-24T12:00:00'),
+      handoffPedidoAt: ccs('2026-08-20T20:03:00').toISOString(),
+      primerHumanoAt: null
+    });
+    assert.equal(d.volver, false, 'ni a los tres dias: la peticion del paciente sigue viva');
+  }
+
+  // 2. EL AVISO llega al cumplirse el umbral, en horas de ATENCION.
+  {
+    // Derivacion el jueves a las 20:03, cerrado. El viernes a las 12:59 llevan 2h59
+    // de atencion sin tocarla: todavia no.
+    const d = decidir({
+      ahora: ccs('2026-08-21T12:59:00'),
+      handoffPedidoAt: ccs('2026-08-20T20:03:00').toISOString(),
+      primerHumanoAt: null
+    });
+    assert.equal(d.avisar_sin_atender, false, `a las 2h59 de atencion aun no -> ${d.horas_sin_atender}`);
+  }
+  {
+    const d = decidir({
+      ahora: ccs('2026-08-21T13:00:00'),
+      handoffPedidoAt: ccs('2026-08-20T20:03:00').toISOString(),
+      primerHumanoAt: null
+    });
+    assert.equal(d.avisar_sin_atender, true, 'a las 3h de atencion sin tocarla, se avisa');
+    assert.equal(d.horas_sin_atender, 3);
+    assert.equal(d.volver, false, 'y AVISAR no es DEVOLVER: la conversacion sigue siendo suya');
+  }
+  {
+    // Las horas de la madrugada no cuentan, igual que en el reloj de inactividad: no
+    // se puede reprochar a nadie no haber atendido con la clinica cerrada.
+    const d = decidir({
+      ahora: ccs('2026-08-21T09:00:00'),
+      handoffPedidoAt: ccs('2026-08-20T20:03:00').toISOString(),
+      primerHumanoAt: null
+    });
+    assert.equal(d.horas_sin_atender, 0, 'trece horas de reloj, cero de atencion');
+    assert.equal(d.avisar_sin_atender, false);
+  }
+
+  // 3. EL AVISO NO SE REPITE. El barrido corre cada pocos minutos: si se repitiera,
+  //    el equipo recibiria el mismo aviso decenas de veces y dejaria de leerlos.
+  {
+    const d = decidir({
+      ahora: ccs('2026-08-21T14:00:00'),
+      handoffPedidoAt: ccs('2026-08-20T20:03:00').toISOString(),
+      primerHumanoAt: null,
+      avisoSinAtenderAt: ccs('2026-08-21T13:00:00').toISOString()
+    });
+    assert.equal(d.avisar_sin_atender, false, 'ya avisado: no se repite');
+    assert.equal(d.motivo, 'sin_atender', 'pero sigue sin atender y sigue sin devolverse');
+  }
+  {
+    // Un aviso ANTERIOR a esta derivacion es de otro episodio y no silencia el nuevo.
+    const d = decidir({
+      ahora: ccs('2026-08-21T14:00:00'),
+      handoffPedidoAt: ccs('2026-08-20T20:03:00').toISOString(),
+      primerHumanoAt: null,
+      avisoSinAtenderAt: ccs('2026-08-15T10:00:00').toISOString()
+    });
+    assert.equal(d.avisar_sin_atender, true, 'un aviso de un handoff viejo no silencia el de ahora');
+  }
+
+  // 4. EN CUANTO ESCRIBE UN HUMANO, arranca el reloj de siempre.
+  {
+    const d = decidir({
+      ahora: ccs('2026-08-21T13:00:00'),
+      handoffPedidoAt: ccs('2026-08-20T20:03:00').toISOString(),
+      primerHumanoAt: ccs('2026-08-21T10:30:00').toISOString(),
+      referencia: ccs('2026-08-21T10:30:00').toISOString()
+    });
+    assert.equal(d.motivo, 'todavia_activa', 'ya atendida: vuelve a mandar el reloj de inactividad');
+    assert.equal(d.avisar_sin_atender, false, 'y no se avisa de algo que ya se atendio');
+  }
+  {
+    // Atendida a las 10:30 y sin nada mas desde entonces: a las 13:30 son tres horas
+    // de atencion paradas, y AHORA si se devuelve.
+    const d = decidir({
+      ahora: ccs('2026-08-21T13:30:00'),
+      handoffPedidoAt: ccs('2026-08-20T20:03:00').toISOString(),
+      primerHumanoAt: ccs('2026-08-21T10:30:00').toISOString(),
+      referencia: ccs('2026-08-21T10:30:00').toISOString()
+    });
+    assert.equal(d.volver, true, 'atendida y luego parada tres horas: eso si es inactividad');
+    assert.equal(d.motivo, 'inactividad');
+  }
+
+  // 5. SIN FECHA DE DERIVACION no se puede razonar sobre la atencion, y entonces se
+  //    conserva el comportamiento anterior. Es el lado seguro PARA EL PACIENTE:
+  //    devolver significa que Helios le vuelve a hablar; no devolver, silencio.
+  {
+    const d = decidir({
+      ahora: ccs('2026-08-21T13:30:00'),
+      handoffPedidoAt: null,
+      primerHumanoAt: null,
+      referencia: ccs('2026-08-21T10:30:00').toISOString()
+    });
+    assert.equal(d.volver, true, 'sin fecha de derivacion se mantiene el reloj de siempre');
+  }
+}
+
+console.log('stale_policy_test: derivacion sin atender OK');

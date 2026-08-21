@@ -74,7 +74,9 @@ export interface DecisionVuelta {
     /** La clínica está cerrada desde la derivación: el reloj aún no ha arrancado. */
     | 'esperando_horario'
     /** Volvió por el tope de siete días, no por haber agotado el umbral. */
-    | 'techo_de_reloj';
+    | 'techo_de_reloj'
+    /** Nadie del equipo ha escrito todavía. NO se devuelve: se avisa. */
+    | 'sin_atender';
   horas_inactiva: number | null;
   /**
    * Horas de ATENCIÓN acumuladas, que es lo que de verdad decide. Null cuando la
@@ -82,6 +84,13 @@ export interface DecisionVuelta {
    */
   horas_de_atencion: number | null;
   umbral_horas: number;
+  /**
+   * Hay que avisar al equipo de que llevan demasiado tiempo con esta derivación sin
+   * tocarla. NO va acompañado de `volver`: son dos cosas opuestas.
+   */
+  avisar_sin_atender: boolean;
+  /** Horas de atención desde que se pidió la derivación, si nadie la ha atendido. */
+  horas_sin_atender: number | null;
 }
 
 /** Dos decimales, como horas_inactiva, para que las dos cifras se lean igual. */
@@ -111,6 +120,16 @@ export function decidirVuelta(entrada: {
    */
   zona?: string | null;
   horario?: HorarioClinica | null;
+  /**
+   * Cuándo escribió una persona del equipo POR PRIMERA VEZ desde la derivación, o
+   * null si nadie la ha tocado todavía. Sale de las filas del buffer con
+   * `author = 'clinic_team'`.
+   */
+  primerHumanoAt?: string | null;
+  /** Cuándo se pidió la derivación. Es la referencia del plazo sin atender. */
+  handoffPedidoAt?: string | null;
+  /** Cuándo se avisó ya de que estaba sin atender, para no repetir el aviso. */
+  avisoSinAtenderAt?: string | null;
 }): DecisionVuelta {
   const umbral = entrada.umbralHoras;
   const ahoraMs = entrada.ahora instanceof Date ? entrada.ahora.getTime() : entrada.ahora;
@@ -120,8 +139,53 @@ export function decidirVuelta(entrada: {
     motivo: 'sin_referencia',
     horas_inactiva: null,
     horas_de_atencion: null,
-    umbral_horas: umbral
+    umbral_horas: umbral,
+    avisar_sin_atender: false,
+    horas_sin_atender: null
   };
+
+  // UNA DERIVACIÓN QUE NADIE HA TOCADO NO SE DEVUELVE NUNCA.
+  //
+  // LO PIDIO DAVID: «no la quita hasta que la atienda el humano; lo de inactividad es
+  // solo cuando ya la persona recibió respuesta humana». Y es lo correcto: el reloj de
+  // inactividad mide cuánto lleva PARADA una atención que empezó. Si no empezó, no hay
+  // nada que haya caducado; devolverla borra la petición del paciente, que es
+  // exactamente el fallo del 20 de agosto por la noche.
+  //
+  // PERO ESO QUITA LA RED CONTRA EL OLVIDO, que es el motivo por el que existe este
+  // barrido -la noche del 10 al 11 de agosto, una conversación se quedó en modo humano
+  // para siempre y nadie contestó-. Así que la red cambia de forma: en vez de QUITARLE
+  // la conversación al equipo, se le AVISA. El paciente sigue en la cola de una
+  // persona, que es donde pidió estar, y el equipo se entera de que la tiene ahí.
+  //
+  // Se reutiliza el MISMO umbral que la clínica ya eligió para devolver a la IA. Ya
+  // dijo cuánto es demasiado; no hace falta otro mando que configurar y que quede
+  // desactualizado.
+  if (entrada.handoffPedidoAt && !entrada.primerHumanoAt) {
+    const pedidoMs = new Date(entrada.handoffPedidoAt).getTime();
+    if (Number.isFinite(pedidoMs)) {
+      const usaHorario = Boolean(entrada.zona) && horarioAbreAlgunaVez(entrada.horario);
+      const horasSinAtender = usaHorario
+        ? enHoras(minutosDeAtencion(new Date(pedidoMs), new Date(ahoraMs), entrada.zona!, entrada.horario!))
+        : Math.round((ahoraMs - pedidoMs) / 36_000) / 100;
+
+      // El aviso se manda UNA VEZ por episodio. Se compara con la fecha de la
+      // derivación: un aviso de un handoff anterior no silencia el de este.
+      const avisadoMs = entrada.avisoSinAtenderAt ? new Date(entrada.avisoSinAtenderAt).getTime() : NaN;
+      const yaAvisado = Number.isFinite(avisadoMs) && avisadoMs >= pedidoMs;
+
+      return {
+        volver: false,
+        motivo: 'sin_atender',
+        horas_inactiva: null,
+        horas_de_atencion: usaHorario ? horasSinAtender : null,
+        umbral_horas: umbral,
+        avisar_sin_atender: horasSinAtender >= umbral && !yaAvisado,
+        horas_sin_atender: horasSinAtender
+      };
+    }
+  }
+
   if (!entrada.referencia) return sinReferencia;
 
   const referenciaMs = new Date(entrada.referencia).getTime();
@@ -141,14 +205,22 @@ export function decidirVuelta(entrada: {
     if (horasDeAtencion >= umbral) {
       return {
         volver: true, motivo: 'inactividad',
-        horas_inactiva: horasInactiva, horas_de_atencion: horasDeAtencion, umbral_horas: umbral
+        horas_inactiva: horasInactiva, horas_de_atencion: horasDeAtencion, umbral_horas: umbral,
+        // Aqui solo se llega si un humano YA escribio, o si no se puede saber:
+        // en ninguno de los dos casos toca avisar de una derivacion sin atender.
+        avisar_sin_atender: false,
+        horas_sin_atender: null
       };
     }
 
     if (transcurridoMs >= TECHO_RELOJ_HORAS * MS_POR_HORA) {
       return {
         volver: true, motivo: 'techo_de_reloj',
-        horas_inactiva: horasInactiva, horas_de_atencion: horasDeAtencion, umbral_horas: umbral
+        horas_inactiva: horasInactiva, horas_de_atencion: horasDeAtencion, umbral_horas: umbral,
+        // Aqui solo se llega si un humano YA escribio, o si no se puede saber:
+        // en ninguno de los dos casos toca avisar de una derivacion sin atender.
+        avisar_sin_atender: false,
+        horas_sin_atender: null
       };
     }
 
@@ -157,7 +229,11 @@ export function decidirVuelta(entrada: {
       // Que el reloj no haya arrancado -cero horas de atención- es una situación
       // distinta de que vaya corriendo y aún no llegue, y en el log se distinguen.
       motivo: horasDeAtencion === 0 ? 'esperando_horario' : 'todavia_activa',
-      horas_inactiva: horasInactiva, horas_de_atencion: horasDeAtencion, umbral_horas: umbral
+      horas_inactiva: horasInactiva, horas_de_atencion: horasDeAtencion, umbral_horas: umbral,
+      // Aqui solo se llega si un humano YA escribio, o si no se puede saber:
+      // en ninguno de los dos casos toca avisar de una derivacion sin atender.
+      avisar_sin_atender: false,
+      horas_sin_atender: null
     };
   }
 
@@ -167,12 +243,20 @@ export function decidirVuelta(entrada: {
   if (transcurridoMs < umbral * MS_POR_HORA) {
     return {
       volver: false, motivo: 'todavia_activa',
-      horas_inactiva: horasInactiva, horas_de_atencion: null, umbral_horas: umbral
+      horas_inactiva: horasInactiva, horas_de_atencion: null, umbral_horas: umbral,
+      // Aqui solo se llega si un humano YA escribio, o si no se puede saber:
+      // en ninguno de los dos casos toca avisar de una derivacion sin atender.
+      avisar_sin_atender: false,
+      horas_sin_atender: null
     };
   }
 
   return {
     volver: true, motivo: 'inactividad',
-    horas_inactiva: horasInactiva, horas_de_atencion: null, umbral_horas: umbral
+    horas_inactiva: horasInactiva, horas_de_atencion: null, umbral_horas: umbral,
+    // Aqui solo se llega si un humano YA escribio, o si no se puede saber:
+    // en ninguno de los dos casos toca avisar de una derivacion sin atender.
+    avisar_sin_atender: false,
+    horas_sin_atender: null
   };
 }

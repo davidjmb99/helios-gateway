@@ -17,11 +17,13 @@ import { supabase } from '../supabase/client.js';
 import { assertSupabaseSuccess } from '../supabase/assert-success.js';
 import { logsRepository } from '../repositories/database.js';
 import { resolveTenantContextByTenantId } from '../tenants/context.js';
-import { returnConversationToBot } from '../handoff/service.js';
+import { returnConversationToBot, teamMention } from '../handoff/service.js';
+import { resolveHandoffRouting } from '../handoff/routing.js';
+import { chatwootClient } from '../chatwoot/client.js';
 import { HANDOFF_STAGES, isHumanOwnedStage } from '../handoff/stage.js';
 import { decidirVuelta } from '../handoff/stale-policy.js';
 import type { HorarioClinica } from '../leads/policy.js';
-import { obtenerHorasVuelta, umbralMinimoDeVuelta, obtenerHorarioYVentana } from '../tenants/settings.js';
+import { obtenerHorasVuelta, umbralMinimoDeVuelta, obtenerHorarioYVentana, obtenerEquipos } from '../tenants/settings.js';
 
 let running = false;
 let interval: NodeJS.Timeout | null = null;
@@ -29,6 +31,8 @@ let interval: NodeJS.Timeout | null = null;
 export const staleHandoffMetrics = {
   returned: 0,
   failed: 0,
+  avisos_sin_atender: 0,
+  avisos_fallidos: 0,
   last_sweep_at: null as string | null,
   last_error_code: null as string | null
 };
@@ -55,6 +59,113 @@ async function lastActivityAt(tenantId: string, conversationId: string): Promise
   return result.data?.created_at ?? null;
 }
 
+/**
+ * Cuando escribio una persona del equipo POR PRIMERA VEZ desde la derivacion.
+ *
+ * ES LA PIEZA QUE DISTINGUE «parada» de «nunca empezada». El reloj de inactividad
+ * mide cuanto lleva PARADA una atencion; si nadie ha escrito, no hay atencion que
+ * pueda haberse parado, y devolver la conversacion borra la peticion del paciente.
+ *
+ * La marca `author = 'clinic_team'` la pone saveHumanAgentMessage. Es lo unico que
+ * distingue lo que escribio una persona de un eco de Helios: `direction = outgoing`
+ * por si solo no vale, porque los mensajes que manda Helios tambien son salientes.
+ */
+async function primerMensajeHumanoDesde(
+  tenantId: string,
+  conversationId: string,
+  desde: string | null
+): Promise<string | null> {
+  if (!desde) return null;
+  const result = await supabase
+    .from('helios_inbound_buffer')
+    .select('created_at')
+    .eq('tenant_id', tenantId)
+    .eq('conversation_id', conversationId)
+    .eq('author', 'clinic_team')
+    .gte('created_at', desde)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  assertSupabaseSuccess(result, 'inbound_buffer.primer_humano', {
+    tenant_id: tenantId,
+    row_id: conversationId
+  });
+  return result.data?.created_at ?? null;
+}
+
+/**
+ * El aviso al equipo de que tiene una derivacion sin tocar.
+ *
+ * VA COMO NOTA PRIVADA CON MENCION, que es lo que genera correo en Chatwoot y lo que
+ * el equipo ya esta acostumbrado a mirar. NO se le dice nada al paciente: el paciente
+ * no tiene que enterarse de la gestion interna, y decirle «seguimos sin atenderte»
+ * empeora su espera sin acortarla.
+ */
+function textoDelAviso(horas: number | null, umbral: number, mencion: string | null): string {
+  const cuanto = horas === null ? `mas de ${umbral} horas` : `${horas} horas`;
+  return [
+    '**Hay un paciente esperando a una persona**',
+    '',
+    mencion ? `${mencion} — esta conversacion lleva ${cuanto} de horario de atencion sin que nadie la haya tocado.` : `Esta conversacion lleva ${cuanto} de horario de atencion sin que nadie la haya tocado.`,
+    '',
+    'El paciente pidio hablar con alguien del equipo y sigue esperando. NO se le ha',
+    'devuelto a Helios a proposito: pidio una persona y eso es lo que espera.',
+    '',
+    'Las horas se cuentan solo en horario de atencion, asi que la noche y los dias',
+    'cerrados no cuentan.'
+  ].join('\n');
+}
+
+/**
+ * Manda el aviso y lo marca, en ese orden.
+ *
+ * SE MARCA DESPUES DE MANDARLO, al contrario que en el seguimiento de leads. Aqui el
+ * riesgo esta al reves: si se marcara antes y el envio fallara, el equipo se quedaria
+ * sin aviso PARA SIEMPRE y un paciente esperando a nadie. Un aviso repetido molesta;
+ * un aviso perdido deja a alguien sin atender.
+ *
+ * Y NINGUN FALLO DE AQUI puede parar el barrido: es un aviso, no una atencion.
+ */
+async function avisarDerivacionSinAtender(
+  row: any,
+  decision: { horas_sin_atender: number | null },
+  umbral: number
+): Promise<void> {
+  try {
+    const tenantContext = resolveTenantContextByTenantId(row.tenant_id);
+    const routing = resolveHandoffRouting(row.tenant_id);
+    const equipos = await obtenerEquipos(row.tenant_id, routing.teams).catch(() => routing.teams);
+    const mencion = teamMention(equipos.reception ?? null, 'reception');
+
+    await chatwootClient.createHandoffPrivateNote(
+      tenantContext.account_id,
+      row.conversation_id,
+      textoDelAviso(decision.horas_sin_atender, umbral, mencion)
+    );
+
+    await supabase
+      .from('helios_conversation_state')
+      .update({ handoff_aviso_sin_atender_at: new Date().toISOString() })
+      .eq('tenant_id', row.tenant_id)
+      .eq('conversation_id', row.conversation_id);
+
+    staleHandoffMetrics.avisos_sin_atender += 1;
+    console.log(JSON.stringify({
+      event: 'handoff_sin_atender_avisado',
+      conversation_id: row.conversation_id,
+      horas_sin_atender: decision.horas_sin_atender,
+      umbral_horas: umbral
+    }));
+  } catch (error: any) {
+    staleHandoffMetrics.avisos_fallidos += 1;
+    console.error(JSON.stringify({
+      event: 'handoff_sin_atender_aviso_fallido',
+      conversation_id: row.conversation_id,
+      error_code: error?.code || 'AVISO_SIN_ATENDER_FALLIDO'
+    }));
+  }
+}
+
 export async function runStaleHandoffSweep(): Promise<void> {
   if (running) return;
   running = true;
@@ -79,7 +190,7 @@ export async function runStaleHandoffSweep(): Promise<void> {
     // las más antiguas, que son las más probables de estar pasadas de plazo.
     const candidates = await supabase
       .from('helios_conversation_state')
-      .select('tenant_id, conversation_id, contact_id, inbox_id, phone, stage, handoff_id, handoff_requested_at')
+      .select('tenant_id, conversation_id, contact_id, inbox_id, phone, stage, handoff_id, handoff_requested_at, handoff_aviso_sin_atender_at')
       .in('stage', HUMAN_OWNED)
       .lt('updated_at', cutoffAmplio.toISOString())
       .order('updated_at', { ascending: true })
@@ -113,9 +224,38 @@ export async function runStaleHandoffSweep(): Promise<void> {
           /* sin horario legible, reloj de pared */
         }
 
-        const decision = decidirVuelta({
-          referencia: reference, umbralHoras: umbralDeEstaClinica, ahora, zona, horario
+        // ¿LA HA ATENDIDO ALGUIEN YA? De esto depende todo lo demás.
+        const primerHumanoAt = await primerMensajeHumanoDesde(
+          row.tenant_id, row.conversation_id, row.handoff_requested_at
+        ).catch(() => {
+          // Si no se puede saber, es más seguro NO asumir que está sin atender: eso
+          // dejaría la conversación en manos humanas para siempre por un fallo de
+          // lectura. Se devuelve una fecha para que el reloj de siempre siga mandando.
+          console.warn(JSON.stringify({
+            event: 'handoff_primer_humano_ilegible',
+            conversation_id: row.conversation_id
+          }));
+          return row.handoff_requested_at ?? null;
         });
+
+        const decision = decidirVuelta({
+          referencia: reference,
+          umbralHoras: umbralDeEstaClinica,
+          ahora,
+          zona,
+          horario,
+          primerHumanoAt,
+          handoffPedidoAt: row.handoff_requested_at ?? null,
+          avisoSinAtenderAt: row.handoff_aviso_sin_atender_at ?? null
+        });
+
+        // NADIE LA HA TOCADO: no se devuelve, se avisa. Es lo contrario de lo que
+        // hacía antes, y es lo que pidió David: «no la quita hasta que la atienda el
+        // humano». El paciente pidió una persona y sigue en su cola.
+        if (decision.avisar_sin_atender) {
+          await avisarDerivacionSinAtender(row, decision, umbralDeEstaClinica);
+        }
+
         if (!decision.volver) continue;
 
         const staleHours = decision.umbral_horas;
