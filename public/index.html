@@ -68,7 +68,10 @@
       <form id="login-form" onsubmit="handleLogin(event)" class="space-y-4">
         <div>
           <label class="block text-[10px] uppercase font-bold text-slate-400 mb-1.5 tracking-wider">Usuario de la Clínica</label>
-          <input type="text" id="login-username" required placeholder="Ej: democoi1" class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-amber-500 text-white placeholder-slate-600 transition-colors">
+          <!-- SIN EJEMPLO. Decia «Ej: democoi1», que es el identificador REAL de una
+               clinica, en la pantalla de login y visible sin autenticarse. Un usuario
+               valido a la vista solo deja el trabajo de adivinar la contraseña. -->
+          <input type="text" id="login-username" required placeholder="Usuario" class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-amber-500 text-white placeholder-slate-600 transition-colors">
         </div>
         <div>
           <label class="block text-[10px] uppercase font-bold text-slate-400 mb-1.5 tracking-wider">Contraseña</label>
@@ -1384,15 +1387,16 @@
      */
     async function empezarConversacionDeCero(tenantId, conversationId) {
       if (empezarDeCeroEnCurso) return;
+      // El texto va en template literal, con los saltos de linea de verdad. Aqui hubo
+      // un '\n' escrito a mano que se convirtio en un salto REAL dentro de una cadena
+      // de comillas simples, y eso dejo el script del panel SIN PARSEAR: no se
+      // ejecutaba nada, ni el login. Con backticks no hay nada que escapar.
       if (!confirm(
-        'Helios va a olvidar el hilo de esta conversacion: empezara de cero en el '
-        + 'proximo mensaje del paciente.
+`Helios va a olvidar el hilo de esta conversacion: empezara de cero en el proximo mensaje del paciente.
 
-NO olvida su nombre, su correo ni su cita, '
-        + 'que viven en la base de datos. Solo pierde el historial de la charla.
+NO olvida su nombre, su correo ni su cita, que viven en la base de datos. Solo pierde el historial de la charla.
 
-'
-        + 'Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?')) return;
+Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) return;
 
       empezarDeCeroEnCurso = true;
       const salida = document.getElementById('resultado-empezar-de-cero');
