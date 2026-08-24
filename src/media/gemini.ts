@@ -27,6 +27,7 @@ import {
   PROMPT_DOCUMENTO,
   PROMPT_IMAGEN,
   leerClasificacionDeImagen,
+  queHacerCon,
   type CategoriaDeImagen
 } from './prompts.js';
 
@@ -52,6 +53,12 @@ export interface ResultadoDeMedia {
   categoria: CategoriaDeImagen | null;
   /** true si esto lo tiene que ver una persona y Hermes no debe seguir solo. */
   derivar: boolean;
+  /**
+   * true si NO hay que contestar nada: una cadena reenviada, un meme, publicidad de otro
+   * negocio. NO significa «no enterarse»: se registra igual, con su clasificación y su
+   * coste, para que se pueda comprobar que no se está comiendo mensajes de pacientes.
+   */
+  ignorar: boolean;
   /** Tokens que consumió, para que el Adapter le ponga precio. */
   uso: { input_tokens: number; output_tokens: number } | null;
   /** Por qué no se pudo, o null. */
@@ -59,7 +66,7 @@ export interface ResultadoDeMedia {
 }
 
 const sinProcesar = (error: string): ResultadoDeMedia =>
-  ({ texto: null, categoria: null, derivar: false, uso: null, error });
+  ({ texto: null, categoria: null, derivar: false, ignorar: false, uso: null, error });
 
 /**
  * Descarga el archivo, con el tope de tamaño aplicado MIENTRAS se lee.
@@ -116,15 +123,15 @@ async function descargar(
  */
 export async function procesarAdjunto(
   adjunto: AdjuntoNormalizado,
+  /**
+   * ¿El paciente escribió algo además de mandar el archivo? Decide si una cadena
+   * reenviada se puede ignorar: con texto es una conversación, no una cadena.
+   */
+  vieneConTexto: boolean = false,
   fetchImpl: typeof fetch = fetch
 ): Promise<ResultadoDeMedia> {
   if (adjunto.rechazo) return sinProcesar(adjunto.rechazo);
   if (!config.GEMINI_API_KEY) return sinProcesar('sin_clave_de_gemini');
-
-  // El vídeo se deriva sin gastar ni una llamada.
-  if (adjunto.tipo === 'video') {
-    return { texto: null, categoria: null, derivar: true, uso: null, error: null };
-  }
 
   const mime = MIME[adjunto.extension];
   if (!mime) return sinProcesar('formato_no_soportado');
@@ -132,8 +139,12 @@ export async function procesarAdjunto(
   const bajada = await descargar(adjunto.url, fetchImpl);
   if ('error' in bajada) return sinProcesar(bajada.error);
 
+  // El video se clasifica con el MISMO prompt que la imagen: la pregunta es la misma
+  // -¿es una boca, un pago, una promocion o una cadena?- y tener un prompt distinto
+  // significaria mantener dos versiones de la misma regla de seguridad.
+  const esVisual = adjunto.tipo === 'imagen' || adjunto.tipo === 'video';
   const prompt = adjunto.tipo === 'audio' ? PROMPT_AUDIO
-    : adjunto.tipo === 'imagen' ? PROMPT_IMAGEN
+    : esVisual ? PROMPT_IMAGEN
     : PROMPT_DOCUMENTO;
 
   const corte = new AbortController();
@@ -155,7 +166,16 @@ export async function procesarAdjunto(
           contents: [{
             parts: [
               { text: prompt },
-              { inline_data: { mime_type: mime, data: Buffer.from(bajada.bytes).toString('base64') } }
+              {
+                inline_data: { mime_type: mime, data: Buffer.from(bajada.bytes).toString('base64') },
+                // SOLO LOS PRIMEROS DIEZ SEGUNDOS DE UN VIDEO. Clasificar uno entero es
+                // caro: uno de tres minutos son unos 46.000 tokens, como OCHO turnos de
+                // texto, y para una cadena reenviada eso es tirar dinero. Para saber si es
+                // una boca o un meme sobran diez segundos.
+                ...(adjunto.tipo === 'video'
+                  ? { video_metadata: { start_offset: '0s', end_offset: '10s' } }
+                  : {})
+              }
             ]
           }],
           generationConfig: {
@@ -199,22 +219,27 @@ export async function procesarAdjunto(
   if (!salida || salida === ILEGIBLE) {
     // Se devuelve el uso igualmente: la llamada se pagó aunque no sirviera, y esconder
     // ese gasto es justo lo que el panel de métricas existe para evitar.
-    return { texto: null, categoria: null, derivar: false, uso, error: 'ilegible' };
+    return { texto: null, categoria: null, derivar: false, ignorar: false, uso, error: 'ilegible' };
   }
 
-  if (adjunto.tipo === 'imagen') {
+  if (esVisual) {
     const clasificacion = leerClasificacionDeImagen(salida);
-    const derivar = clasificacion.categoria === 'clinica' || clasificacion.categoria === 'pago';
-    return {
-      // En las ramas que se derivan NO viaja descripción, ni aunque el modelo la haya
-      // generado: leerClasificacionDeImagen ya la tiró. Aquí solo se confirma.
-      texto: derivar ? null : (clasificacion.descripcion || null),
+    const accion = queHacerCon({
       categoria: clasificacion.categoria,
-      derivar,
+      confiable: clasificacion.confiable,
+      vieneConTexto
+    });
+    return {
+      // En las ramas que no siguen NO viaja descripción, ni aunque el modelo la haya
+      // generado: leerClasificacionDeImagen ya la tiró. Aquí solo se confirma.
+      texto: accion === 'seguir' ? (clasificacion.descripcion || null) : null,
+      categoria: clasificacion.categoria,
+      derivar: accion === 'derivar',
+      ignorar: accion === 'ignorar',
       uso,
       error: clasificacion.confiable ? null : 'clasificacion_no_confiable'
     };
   }
 
-  return { texto: salida, categoria: null, derivar: false, uso, error: null };
+  return { texto: salida, categoria: null, derivar: false, ignorar: false, uso, error: null };
 }

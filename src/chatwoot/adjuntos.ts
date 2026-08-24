@@ -260,18 +260,18 @@ export function textoDelAdjunto(
   const nombre = adjunto.nombre ? `: ${adjunto.nombre}` : '';
 
   if (adjunto.rechazo === 'demasiado_grande') {
-    return `[${etiqueta}${nombre} demasiado grande para procesarla]`;
+    return `[${etiqueta}${nombre}: demasiado grande para procesarlo]`;
   }
   if (adjunto.rechazo === 'tipo_no_soportado' || adjunto.rechazo === 'formato_no_soportado') {
     return `[archivo adjunto${nombre} en un formato que no se puede leer]`;
   }
   if (adjunto.rechazo) {
-    return `[${etiqueta}${nombre} que no se pudo obtener]`;
+    return `[${etiqueta}${nombre}: no se pudo obtener]`;
   }
   if (!contenido || !contenido.trim()) {
     return adjunto.tipo === 'audio'
       ? `[nota de voz que no se pudo transcribir]`
-      : `[${etiqueta}${nombre} recibida, sin contenido legible]`;
+      : `[${etiqueta}${nombre}: sin contenido legible]`;
   }
 
   return marcarContenidoNoFiable(etiqueta + nombre, contenido);

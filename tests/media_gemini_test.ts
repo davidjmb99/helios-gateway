@@ -90,7 +90,7 @@ function fakeRed(opciones: {
 
 {
   const { impl, registro } = fakeRed({});
-  const r = await procesarAdjunto(adjunto(), impl);
+  const r = await procesarAdjunto(adjunto(), false, impl);
 
   assert.equal(r.texto, 'Buenas, quería cita para mañana');
   assert.equal(r.error, null);
@@ -123,7 +123,7 @@ function fakeRed(opciones: {
     }
   });
   const r = await procesarAdjunto(
-    adjunto({ file_type: 'image', data_url: `${CHATWOOT}/x/muela.jpg` }), impl
+    adjunto({ file_type: 'image', data_url: `${CHATWOOT}/x/muela.jpg` }), false, impl
   );
 
   assert.equal(r.categoria, 'clinica');
@@ -152,7 +152,7 @@ function fakeRed(opciones: {
       usageMetadata: { promptTokenCount: 900, candidatesTokenCount: 20 }
     }
   });
-  const r = await procesarAdjunto(adjunto({ file_type: 'image', data_url: `${CHATWOOT}/x/pago.png` }), impl);
+  const r = await procesarAdjunto(adjunto({ file_type: 'image', data_url: `${CHATWOOT}/x/pago.png` }), false, impl);
   assert.equal(r.derivar, true);
   assert.equal(r.texto, null, 'la cifra de un pago no se transcribe');
 }
@@ -165,7 +165,7 @@ function fakeRed(opciones: {
       usageMetadata: { promptTokenCount: 900, candidatesTokenCount: 20 }
     }
   });
-  const r = await procesarAdjunto(adjunto({ file_type: 'image', data_url: `${CHATWOOT}/x/promo.jpg` }), impl);
+  const r = await procesarAdjunto(adjunto({ file_type: 'image', data_url: `${CHATWOOT}/x/promo.jpg` }), false, impl);
   assert.equal(r.derivar, false, 'una promocion no interrumpe la conversacion');
   assert.match(String(r.texto), /20%/);
 }
@@ -179,7 +179,7 @@ function fakeRed(opciones: {
       usageMetadata: { promptTokenCount: 900, candidatesTokenCount: 5 }
     }
   });
-  const r = await procesarAdjunto(adjunto({ file_type: 'image', data_url: `${CHATWOOT}/x/x.jpg` }), impl);
+  const r = await procesarAdjunto(adjunto({ file_type: 'image', data_url: `${CHATWOOT}/x/x.jpg` }), false, impl);
   assert.equal(r.derivar, true);
   assert.equal(r.error, 'clasificacion_no_confiable');
 }
@@ -191,7 +191,7 @@ function fakeRed(opciones: {
   // pegada a la llamada de red. Se fuerza un adjunto con URL ajena y sin rechazo previo.
   const { impl, registro } = fakeRed({});
   const ajeno = { ...adjunto(), url: 'http://169.254.169.254/latest/meta-data/', rechazo: null };
-  const r = await procesarAdjunto(ajeno as any, impl);
+  const r = await procesarAdjunto(ajeno as any, false, impl);
 
   assert.equal(r.error, 'url_no_es_de_chatwoot');
   assert.equal(
@@ -206,7 +206,7 @@ function fakeRed(opciones: {
   // comprobacion de arriba.
   process.env.CHATWOOT_API_TOKEN = 'token-de-chatwoot';
   const { impl, registro } = fakeRed({});
-  await procesarAdjunto(adjunto(), impl);
+  await procesarAdjunto(adjunto(), false, impl);
   const descarga = registro.find(p => p.url.startsWith(CHATWOOT));
   assert.ok(descarga, 'se descarga del propio Chatwoot');
 }
@@ -217,7 +217,7 @@ function fakeRed(opciones: {
   // 400 con un audio ogg/opus significa que Gemini no lee el codec de WhatsApp. Eso NO es
   // un fallo aislado: fallarian TODAS las notas de voz.
   const { impl } = fakeRed({ estadoDeGemini: 400 });
-  const r = await procesarAdjunto(adjunto({ data_url: `${CHATWOOT}/x/nota.ogg` }), impl);
+  const r = await procesarAdjunto(adjunto({ data_url: `${CHATWOOT}/x/nota.ogg` }), false, impl);
   assert.equal(
     r.error, 'gemini_rechaza_el_codec',
     'un 400 con ogg/opus tiene su propio error: es el aviso de que hace falta ffmpeg'
@@ -228,14 +228,14 @@ function fakeRed(opciones: {
   // Un 400 con un formato que SI esta prometido es otra cosa, y no puede confundirse con
   // el problema del codec.
   const { impl } = fakeRed({ estadoDeGemini: 400 });
-  const r = await procesarAdjunto(adjunto({ data_url: `${CHATWOOT}/x/nota.mp3` }), impl);
+  const r = await procesarAdjunto(adjunto({ data_url: `${CHATWOOT}/x/nota.mp3` }), false, impl);
   assert.equal(r.error, 'gemini_400', 'un 400 con mp3 no es el problema del codec');
 }
 
 {
   // El limite del nivel gratuito tiene su propio codigo, para no confundirlo con Opus.
   const { impl } = fakeRed({ estadoDeGemini: 429 });
-  const r = await procesarAdjunto(adjunto(), impl);
+  const r = await procesarAdjunto(adjunto(), false, impl);
   assert.equal(r.error, 'gemini_limite_de_frecuencia');
 }
 
@@ -250,7 +250,7 @@ function fakeRed(opciones: {
       usageMetadata: { promptTokenCount: 960, candidatesTokenCount: 3 }
     }
   });
-  const r = await procesarAdjunto(adjunto(), impl);
+  const r = await procesarAdjunto(adjunto(), false, impl);
   assert.equal(r.texto, null, 'sin transcripcion');
   assert.equal(r.error, 'ilegible');
   assert.deepEqual(r.uso, { input_tokens: 960, output_tokens: 3 }, 'pero el gasto SI se reporta');
@@ -258,20 +258,108 @@ function fakeRed(opciones: {
 
 // --- Los caminos que no gastan nada ------------------------------------
 
+// --- EL VIDEO SE CLASIFICA, Y LAS CADENAS SE IGNORAN --------------------
+//
+// LO PIDIO DAVID: «imaginate que manden un video que no tenga nada que ver, solo que
+// alguien decidio enviarlo a todos los contactos. Creo que no es necesario derivarlo, sino
+// tiene nada que ver, pues que no lo pase a nadie, que lo ignore».
+//
+// Antes el video se derivaba a ciegas, que era demasiado brusco: una cadena reenviada le
+// hacia perder el tiempo a recepcion.
+
 {
-  // El video se deriva sin gastar ni una llamada: mas clinico que una foto y mucho mas
-  // caro en tokens.
-  const { impl, registro } = fakeRed({});
-  const r = await procesarAdjunto(adjunto({ file_type: 'video', data_url: `${CHATWOOT}/x/v.mp4` }), impl);
-  assert.equal(r.derivar, true);
-  assert.equal(r.uso, null);
-  assert.equal(registro.length, 0, 'un video no se descarga ni se manda: se deriva');
+  // Un video de una boca: se clasifica y se DERIVA. Nunca se ignora algo clinico.
+  const { impl, registro } = fakeRed({
+    respuestaDeGemini: {
+      candidates: [{ content: { parts: [{ text: '{"categoria":"clinica","descripcion":""}' }] } }],
+      usageMetadata: { promptTokenCount: 8000, candidatesTokenCount: 15 }
+    }
+  });
+  const r = await procesarAdjunto(adjunto({ file_type: 'video', data_url: `${CHATWOOT}/x/boca.mp4` }), false, impl);
+  assert.equal(r.derivar, true, 'un video clinico lo ve una persona');
+  assert.equal(r.ignorar, false, 'y NUNCA se ignora');
+  assert.equal(r.texto, null, 'sin describirlo');
+
+  // SOLO LOS PRIMEROS DIEZ SEGUNDOS. Clasificar un video entero de tres minutos son unos
+  // 46.000 tokens, como ocho turnos de texto, y para una cadena eso es tirar dinero.
+  const aGemini = registro.find(p => p.url.includes('generativelanguage'))!;
+  const parteDelArchivo = aGemini.body.contents[0].parts[1];
+  assert.deepEqual(
+    parteDelArchivo.video_metadata, { start_offset: '0s', end_offset: '10s' },
+    'un video se clasifica con los primeros diez segundos, no entero'
+  );
+}
+
+{
+  // UNA CADENA REENVIADA, sin texto: se ignora. Nadie contesta.
+  const { impl } = fakeRed({
+    respuestaDeGemini: {
+      candidates: [{ content: { parts: [{ text: '{"categoria":"irrelevante","descripcion":""}' }] } }],
+      usageMetadata: { promptTokenCount: 8000, candidatesTokenCount: 10 }
+    }
+  });
+  const r = await procesarAdjunto(adjunto({ file_type: 'video', data_url: `${CHATWOOT}/x/cadena.mp4` }), false, impl);
+  assert.equal(r.ignorar, true, 'una cadena reenviada no merece respuesta');
+  assert.equal(r.derivar, false, 'y tampoco le hace perder el tiempo a recepcion');
+
+  // PERO EL GASTO SE REPORTA IGUAL: «ignorar» significa no contestar, NO no enterarse. Si
+  // no quedara rastro y el clasificador empezara a comerse fotos de pacientes, no habria
+  // forma de verlo.
+  assert.deepEqual(r.uso, { input_tokens: 8000, output_tokens: 10 });
+  assert.equal(r.categoria, 'irrelevante', 'y consta por que se ignoro');
+}
+
+{
+  // LA MISMA CADENA, PERO CON TEXTO: NO se ignora. Si alguien manda un video y escribe
+  // «mira esto, ¿es normal?», eso es una conversacion y el texto manda.
+  const { impl } = fakeRed({
+    respuestaDeGemini: {
+      candidates: [{ content: { parts: [{ text: '{"categoria":"irrelevante","descripcion":""}' }] } }],
+      usageMetadata: { promptTokenCount: 8000, candidatesTokenCount: 10 }
+    }
+  });
+  const r = await procesarAdjunto(
+    adjunto({ file_type: 'video', data_url: `${CHATWOOT}/x/cadena.mp4` }), true, impl
+  );
+  assert.equal(
+    r.ignorar, false,
+    'con texto NO se ignora: el paciente esta hablando, no reenviando'
+  );
+}
+
+{
+  // Y «otra» ES LA RED DE SEGURIDAD: si el modelo no esta seguro cae aqui, y el paciente
+  // recibe respuesta. Solo se ignora cuando dice «irrelevante» explicitamente.
+  const { impl } = fakeRed({
+    respuestaDeGemini: {
+      candidates: [{ content: { parts: [{ text: '{"categoria":"otra","descripcion":"Una foto de un coche"}' }] } }],
+      usageMetadata: { promptTokenCount: 900, candidatesTokenCount: 12 }
+    }
+  });
+  const r = await procesarAdjunto(adjunto({ file_type: 'image', data_url: `${CHATWOOT}/x/coche.jpg` }), false, impl);
+  assert.equal(r.ignorar, false, '«otra» NO se ignora: es la red de seguridad');
+  assert.equal(r.derivar, false);
+  assert.match(String(r.texto), /coche/, 'y se describe, para que la conversacion siga');
+}
+
+{
+  // Una clasificacion NO CONFIABLE no puede hacer que se ignore nada, ni aunque dijera
+  // «irrelevante». Sin confianza no se tira nada.
+  const { impl } = fakeRed({
+    respuestaDeGemini: {
+      candidates: [{ content: { parts: [{ text: 'esto es una cadena, ignoralo' }] } }],
+      usageMetadata: { promptTokenCount: 900, candidatesTokenCount: 8 }
+    }
+  });
+  const r = await procesarAdjunto(adjunto({ file_type: 'image', data_url: `${CHATWOOT}/x/x.jpg` }), false, impl);
+  assert.equal(r.ignorar, false, 'sin clasificacion confiable no se ignora nada');
+  assert.equal(r.derivar, true, 'cae en clinica, que es el lado seguro');
 }
 
 {
   // Un adjunto ya rechazado no se toca.
   const { impl, registro } = fakeRed({});
-  const r = await procesarAdjunto(adjunto({ file_type: 'image', data_url: `${CHATWOOT}/x/a.gif` }), impl);
+  const r = await procesarAdjunto(adjunto({ file_type: 'image', data_url: `${CHATWOOT}/x/a.gif` }), false, impl);
   assert.equal(r.error, 'formato_no_soportado');
   assert.equal(registro.length, 0, 'un formato no soportado no se descarga: se sabe antes');
 }
@@ -283,7 +371,7 @@ function fakeRed(opciones: {
   const { config } = await import('../src/config.js');
   (config as any).GEMINI_API_KEY = '';
   const { impl, registro } = fakeRed({});
-  const r = await procesarAdjunto(adjunto(), impl);
+  const r = await procesarAdjunto(adjunto(), false, impl);
   assert.equal(r.error, 'sin_clave_de_gemini');
   assert.equal(registro.length, 0);
   (config as any).GEMINI_API_KEY = original;
@@ -293,7 +381,7 @@ function fakeRed(opciones: {
 {
   // Un archivo vacio no se manda al modelo.
   const { impl } = fakeRed({ bytesDelArchivo: 0 });
-  assert.equal((await procesarAdjunto(adjunto(), impl)).error, 'archivo_vacio');
+  assert.equal((await procesarAdjunto(adjunto(), false, impl)).error, 'archivo_vacio');
 }
 
 {
@@ -301,7 +389,7 @@ function fakeRed(opciones: {
   // del webhook: mirarlo antes de empezar no basta.
   const { impl } = fakeRed({ bytesDelArchivo: 21 * 1024 * 1024 });
   assert.equal(
-    (await procesarAdjunto(adjunto({ file_size: 1000 }), impl)).error,
+    (await procesarAdjunto(adjunto({ file_size: 1000 }), false, impl)).error,
     'demasiado_grande_al_descargar',
     'declara 1 KB y manda 21 MB: se corta al leerlo, no al creerlo'
   );

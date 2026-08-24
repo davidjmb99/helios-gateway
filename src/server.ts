@@ -8,6 +8,7 @@ import { applyCsatOnResolution, csatMetrics } from './csat/service.js';
 import { describirModo, accionPara } from './handoff/modo.js';
 import { pedirEmpezarDeCero } from './conversaciones/empezar-de-cero.js';
 import { normalizeChatwootPayload } from './chatwoot/normalizer.js';
+import { procesarMediaDelMensaje } from './media/pipeline.js';
 import { resolveTenantContext, TenantContextError, validateWebhookTenantRoute, resolveTenantContextByTenantId } from './tenants/context.js';
 import {
   bufferRepository,
@@ -1020,6 +1021,65 @@ async function handleChatwootWebhook(payload: any, urlTenantId: string | undefin
     }
   } catch (err: any) {
     log.warn({ err: err.message }, 'No se pudo inicializar proactivamente el estado de conversación.');
+  }
+
+  // --- LOS ARCHIVOS SE CONVIERTEN EN TEXTO AQUI ----------------------------
+  //
+  // AQUI Y NO EN OTRO SITIO. Despues de la idempotencia, porque si Chatwoot reintenta el
+  // webhook no se paga Gemini dos veces por la misma nota de voz; y antes del buffer,
+  // porque desde el buffer hacia dentro -Hermes, el contrato, las metricas- todo el
+  // sistema ve texto y no hace falta cambiar nada mas.
+  if (normalized.adjuntos && normalized.adjuntos.length > 0) {
+    try {
+      const media = await procesarMediaDelMensaje({
+        texto: normalized.text,
+        adjuntos: normalized.adjuntos
+      });
+
+      // El gasto se registra SIEMPRE, incluso cuando el mensaje se ignora. «Ignorar»
+      // significa no contestar, no no enterarse: si manana el clasificador empieza a
+      // comerse fotos de pacientes de verdad, tiene que poder verse aqui.
+      for (const gasto of media.gastos) {
+        await logsRepository.save({
+          trace_id: normalized.trace_id,
+          tenant_id: normalized.tenant_id,
+          conversation_id: normalized.conversation_id,
+          contact_id: normalized.contact_id,
+          event_type: 'media_procesada',
+          metadata: gasto as any
+        }).catch(() => {});
+      }
+
+      if (media.ignorarMensaje) {
+        // UNA CADENA REENVIADA NO MERECE RESPUESTA, y lo pidio David asi: «si no tiene
+        // nada que ver, que no lo pase a nadie, que lo ignore, el paciente no reciba ni
+        // respuesta». No entra en el buffer, asi que no hay turno ni coste de DeepSeek.
+        log.info({
+          conversation_id: normalized.conversation_id,
+          categorias: media.gastos.map(g => g.categoria)
+        }, 'Mensaje ignorado: solo archivos sin relacion con la clinica.');
+        debugTracker.updateEvent(normalized.trace_id, {
+          decision: 'ignored', reason: 'media_irrelevante'
+        } as any);
+        return { ok: true, status: 'ignored', reason: 'media_irrelevante' };
+      }
+
+      normalized.text = media.texto;
+      debugTracker.updateEvent(normalized.trace_id, { text: media.texto } as any);
+      log.info({
+        conversation_id: normalized.conversation_id,
+        archivos: media.gastos.length,
+        derivar: media.derivar
+      }, 'Archivos convertidos en texto.');
+    } catch (error: any) {
+      // SI ESTO FALLA, EL MENSAJE SIGUE. Un fallo procesando el archivo no puede dejar al
+      // paciente sin respuesta: Hermes recibe la linea de abajo y pide que se lo escriban.
+      log.error({ err: error?.message }, 'No se pudieron procesar los archivos del mensaje.');
+      normalized.text = [
+        normalized.text,
+        '[El paciente ha enviado un archivo que no se ha podido leer. Pidele con amabilidad que te lo escriba.]'
+      ].filter(Boolean).join('\n\n');
+    }
   }
 
   // Agregar el mensaje al buffer (espera activa de 5s)

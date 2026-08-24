@@ -60,18 +60,21 @@ export const PROMPT_AUDIO = [
  * VALIDAR: cualquier cosa que no esté en la lista se trata como clínica y se deriva. Con
  * texto libre habría que adivinar qué quiso decir.
  */
-export const CATEGORIAS_DE_IMAGEN = ['clinica', 'pago', 'promocional', 'otra'] as const;
+export const CATEGORIAS_DE_IMAGEN = ['clinica', 'pago', 'promocional', 'irrelevante', 'otra'] as const;
 export type CategoriaDeImagen = typeof CATEGORIAS_DE_IMAGEN[number];
 
 export const PROMPT_IMAGEN = [
-  'Clasifica esta imagen en UNA de estas cuatro categorías exactas:',
+  'Clasifica esta imagen en UNA de estas cinco categorías exactas:',
   '',
   '- "clinica": cualquier parte del cuerpo, boca, dientes, encías, lengua, una herida,',
   '  una radiografía, un molde dental, o cualquier imagen médica u odontológica.',
   '- "pago": un comprobante de pago, una transferencia, un recibo o una factura.',
   '- "promocional": un cartel, una promoción, una publicación de redes sociales, un',
-  '  folleto o una captura de una web.',
-  '- "otra": cualquier otra cosa.',
+  '  folleto o una captura de una web relacionada con la clínica o con salud dental.',
+  '- "irrelevante": una cadena reenviada, un meme, un chiste, una felicitación genérica,',
+  '  publicidad de otro negocio, o cualquier cosa SIN NINGUNA relación con una clínica',
+  '  dental ni con la salud de quien lo envía. Usa esta categoría SOLO si estás seguro.',
+  '- "otra": cualquier cosa que no encaje con claridad en las anteriores.',
   '',
   'Responde SOLO con un objeto JSON, sin texto alrededor y sin markdown:',
   '{"categoria":"...","descripcion":"..."}',
@@ -79,11 +82,13 @@ export const PROMPT_IMAGEN = [
   'REGLA ABSOLUTA SOBRE "descripcion":',
   '- Si la categoría es "promocional" u "otra": describe brevemente lo que se ve, en una',
   '  frase, en español.',
-  '- Si la categoría es "clinica" o "pago": deja "descripcion" como cadena vacía "".',
+  '- Si la categoría es "clinica", "pago" o "irrelevante": deja "descripcion" como',
+  '  cadena vacía "".',
   '  NO describas nada. NO opines. NO menciones qué se aprecia. NO sugieras un',
   '  diagnóstico, una causa, una gravedad ni un tratamiento.',
   '',
-  'Ante cualquier duda entre "clinica" y otra categoría, elige "clinica".'
+  'Ante cualquier duda entre "clinica" y otra categoría, elige "clinica".',
+  'Ante cualquier duda entre "irrelevante" y otra categoría, elige "otra".'
 ].join('\n');
 
 /**
@@ -146,4 +151,45 @@ export function leerClasificacionDeImagen(bruto: unknown): {
   const descripcion = esDescriptible ? String(datos.descripcion ?? '').trim().slice(0, 500) : '';
 
   return { categoria: categoria as CategoriaDeImagen, descripcion, confiable: true };
+}
+
+/**
+ * Qué se hace con una imagen o un vídeo ya clasificado.
+ *
+ * ESTA FUNCION ES EL UNICO SITIO donde se decide, y está aparte para que la decisión se
+ * pueda leer de un vistazo y probar sin red ni modelo.
+ *
+ * «IGNORAR» SIGNIFICA NO CONTESTAR, NO «NO ENTERARSE». El archivo se registra igual, con
+ * su clasificación y su coste. Si no quedara rastro volveríamos a la invisibilidad, que es
+ * el fallo que este bloque entero viene a arreglar: si mañana el clasificador empieza a
+ * comerse fotos de pacientes de verdad, hay que poder verlo.
+ *
+ * DOS CASOS EN LOS QUE NUNCA SE IGNORA, y los dos son deliberados:
+ *
+ *   Si es clinico. Aunque el modelo dijera «irrelevante» -no puede, porque clinico y
+ *   irrelevante son categorias distintas, pero la regla se escribe igual-.
+ *
+ *   SI EL MENSAJE TRAIA TEXTO. Si alguien manda un video y escribe «mira esto, ¿es
+ *   normal?», eso es una conversacion y no una cadena. El texto manda. Solo se ignora
+ *   cuando el archivo viene SOLO.
+ *
+ * Y solo se ignora con una clasificacion CONFIABLE. Un JSON roto cae en «clinica» por el
+ * lado seguro, pero incluso si algun dia cayera en «irrelevante», sin `confiable` no se
+ * tira nada.
+ */
+export function queHacerCon(entrada: {
+  categoria: CategoriaDeImagen;
+  confiable: boolean;
+  /** true si el paciente escribió algo además de mandar el archivo. */
+  vieneConTexto: boolean;
+}): 'derivar' | 'ignorar' | 'seguir' {
+  if (entrada.categoria === 'clinica' || entrada.categoria === 'pago') return 'derivar';
+
+  if (entrada.categoria === 'irrelevante' && entrada.confiable && !entrada.vieneConTexto) {
+    return 'ignorar';
+  }
+
+  // «otra» es la red de seguridad: si el modelo no está seguro cae aquí, y el paciente
+  // recibe respuesta. Solo se ignora cuando dice «irrelevante» explícitamente.
+  return 'seguir';
 }

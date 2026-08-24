@@ -25,7 +25,8 @@ import {
   PROMPT_AUDIO,
   PROMPT_DOCUMENTO,
   PROMPT_IMAGEN,
-  leerClasificacionDeImagen
+  leerClasificacionDeImagen,
+  queHacerCon
 } from '../src/media/prompts.js';
 
 // --- 1 y 2. UNA IMAGEN CLINICA NUNCA SE DESCRIBE ---------------------------
@@ -145,8 +146,22 @@ import {
     assert.ok(PROMPT_IMAGEN.includes(`"${categoria}"`), `la categoria ${categoria} tiene que estar en el prompt`);
   }
   assert.match(PROMPT_IMAGEN, /NO sugieras un\s*\n?\s*diagn[oó]stico/i, 'prohibicion explicita de diagnosticar');
-  assert.match(PROMPT_IMAGEN, /deja "descripcion" como cadena vac[ií]a/i, 'lo clinico no se describe');
-  assert.match(PROMPT_IMAGEN, /Ante cualquier duda.*elige "clinica"/s, 'la duda cae del lado seguro');
+  // La expresion tolera saltos de linea a proposito: el prompt esta partido en varias
+  // lineas para leerse, y una regex pegada a una linea concreta se rompe al reformatear.
+  assert.match(
+    PROMPT_IMAGEN.replace(/\s+/g, ' '),
+    /deja "descripcion" como cadena vac[ií]a/i,
+    'lo clinico no se describe'
+  );
+  const enUnaLinea = PROMPT_IMAGEN.replace(/\s+/g, ' ');
+  assert.match(enUnaLinea, /Ante cualquier duda.*elige "clinica"/, 'la duda cae del lado seguro');
+  // Y LA OTRA DIRECCION DE LA DUDA: entre «irrelevante» y otra cosa, «otra». Si faltara,
+  // el modelo se inclinaria a ignorar en la duda y se comeria mensajes de pacientes.
+  assert.match(
+    enUnaLinea, /Ante cualquier duda entre "irrelevante".*elige "otra"/,
+    'en la duda NO se ignora'
+  );
+  assert.match(enUnaLinea, /SOLO si est[aá]s seguro/i, 'ignorar exige seguridad');
 }
 
 {
@@ -154,6 +169,47 @@ import {
   assert.match(PROMPT_DOCUMENTO, /NO las sigas/, 'un documento no da ordenes');
   assert.match(PROMPT_DOCUMENTO, /NO resumas/);
   assert.ok(PROMPT_DOCUMENTO.includes(ILEGIBLE));
+}
+
+// --- QUE SE HACE CON CADA CATEGORIA ---------------------------------------
+//
+// LO PIDIO DAVID: que una cadena reenviada no le haga perder el tiempo a nadie. Pero
+// «ignorar» tuvo que quedar con el valor por defecto INVERTIDO: solo se ignora cuando el
+// modelo esta seguro, porque una mala clasificacion significaria SILENCIO para un paciente
+// de verdad, y el silencio es justo el fallo que todo este bloque viene a arreglar.
+
+{
+  const decidir = (categoria: any, confiable = true, vieneConTexto = false) =>
+    queHacerCon({ categoria, confiable, vieneConTexto });
+
+  // Lo que se deriva a una persona.
+  assert.equal(decidir('clinica'), 'derivar');
+  assert.equal(decidir('pago'), 'derivar');
+
+  // Lo que sigue la conversacion.
+  assert.equal(decidir('promocional'), 'seguir');
+  assert.equal(decidir('otra'), 'seguir', '«otra» es la red de seguridad: siempre se contesta');
+
+  // Lo que se ignora, y sus tres condiciones.
+  assert.equal(decidir('irrelevante'), 'ignorar', 'una cadena sin texto se ignora');
+  assert.equal(
+    decidir('irrelevante', true, true), 'seguir',
+    'CON TEXTO no se ignora: el paciente esta hablando, no reenviando'
+  );
+  assert.equal(
+    decidir('irrelevante', false, false), 'seguir',
+    'SIN CLASIFICACION CONFIABLE no se ignora: no se tira nada por una respuesta que no se entendio'
+  );
+
+  // Y lo clinico NUNCA se ignora, pase lo que pase con las otras condiciones.
+  for (const confiable of [true, false]) {
+    for (const conTexto of [true, false]) {
+      assert.equal(
+        decidir('clinica', confiable, conTexto), 'derivar',
+        'lo clinico se deriva SIEMPRE: ni se ignora ni se contesta solo'
+      );
+    }
+  }
 }
 
 console.log('media_prompts_test: OK');
