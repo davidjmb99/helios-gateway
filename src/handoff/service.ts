@@ -383,22 +383,20 @@ export async function completeHandoff(input: CompleteHandoffInput): Promise<Comp
     return { chatwoot_message_id: noteId };
   });
 
-  // 7b. El resumen, en una nota aparte y SIN mención. Una nota privada sin
-  //     mención no avisa a nadie por correo, así que el resumen se ve en Chatwoot
-  //     —donde hace falta, sobre todo en el móvil— y no viaja al correo, donde
-  //     estaría repetido. Va después del aviso a propósito: si esta falla, el
-  //     aviso con la mención ya salió y el handoff no se queda a medias.
-  const recapNote = buildRecapNote(recap);
-  if (recapNote) {
-    await runStep('private_note_recap', async () => {
-      const noteId = await chatwootClient.createHandoffPrivateNote(
-        accountId,
-        conversationId,
-        recapNote
-      );
-      return { chatwoot_message_id: noteId };
-    });
-  }
+  // 7b. EL RESUMEN YA NO SE PUBLICA EN CHATWOOT. Lo pidió David el 24-ago-2026:
+  //     «como manda la conversación directa, la persona solo debe deslizar hacia
+  //     arriba y ve esos mensajes; el contexto que le llega es como más ruido
+  //     visual». Tiene razón: en Chatwoot el equipo está mirando la conversación,
+  //     y repetírsela debajo en forma de lista tapa lo único que sí aporta la
+  //     nota, que es el motivo y la prioridad.
+  //
+  //     EL RESUMEN NO DESAPARECE, cambia de sitio: sigue viajando en el aviso
+  //     externo -ver `buildNotificationPayload` unas líneas más abajo-, que es
+  //     donde de verdad hace falta porque ahí NO hay conversación que deslizar.
+  //     Y el correo de la mención lleva además el bloque «Previous messages» que
+  //     Chatwoot añade por su cuenta.
+  //
+  //     Antes esto era una nota privada sin mención, publicada aquí.
 
   // 7c. EL DETALLE TÉCNICO, en su propia nota y mencionando SOLO a soporte.
   //
@@ -593,7 +591,8 @@ export function buildPrivateNote(
   // markdown se procesa está comprobado: la mención llega como
   // «@Recepción Clínica» y no con su sintaxis cruda.
   //
-  // El resumen NO va aquí: viaja en su propia nota sin mención (buildRecapNote).
+  // El resumen NO va aquí: viaja en el aviso externo, donde no hay conversación
+  // que deslizar. En Chatwoot ya no se publica: ver el paso 7b.
   return [
     '**Un paciente necesita atención humana**',
     '',
@@ -610,25 +609,13 @@ export function buildPrivateNote(
   ].filter(line => line !== null).join('\n');
 }
 
-/**
- * El resumen de la conversación, en su propia nota privada y SIN mención.
- *
- * POR QUÉ VA APARTE. La nota que lleva la mención es la que Chatwoot convierte en
- * correo, y a ese correo le añade por su cuenta su bloque «Previous messages» con
- * los últimos mensajes. Con el resumen dentro, el correo llegaba con la misma
- * conversación dos veces. Una nota privada SIN mención no avisa a nadie por
- * correo, así que el resumen se queda donde hace falta —Chatwoot, sobre todo en
- * el móvil, donde no se ve el hilo completo— y no viaja duplicado.
- *
- * Devuelve null si no hay nada que resumir, y entonces no se crea ninguna nota.
- */
-export function buildRecapNote(recap?: ConversationRecap | null): string | null {
-  const lines = recap
-    ? renderRecap(recap, config.CLINIC_TIMEZONE || 'Europe/Madrid', 'markdown')
-    : [];
-  if (lines.length === 0) return null;
-  return ['**Últimos mensajes de la conversación**', '', ...lines].join('\n');
-}
+// AQUÍ VIVÍA `buildRecapNote`, que publicaba el resumen como nota privada en
+// Chatwoot. Se retiró el 24-ago-2026 a petición de David: en Chatwoot el equipo
+// está mirando la conversación y le basta con deslizar hacia arriba, así que la
+// lista repetida debajo solo tapaba el motivo y la prioridad.
+//
+// El resumen sigue construyéndose y sigue viajando en el aviso externo, que es
+// donde no hay conversación que deslizar. Ver `buildNotificationPayload`.
 
 /**
  * El aviso a SOPORTE de un fallo técnico. Va en su propia nota, y aquí sí va el

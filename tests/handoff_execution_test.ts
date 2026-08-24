@@ -11,13 +11,13 @@ const { normalizeChatwootPayload } = await import('../src/chatwoot/normalizer.js
 const { resolveTenantContext } = await import('../src/tenants/context.js');
 const { normalizeHandoffRequest } = await import('../src/handoff/stage.js');
 const { clearHandoffRoutingCache, resolveHandoffRouting } = await import('../src/handoff/routing.js');
+const servicio = await import('../src/handoff/service.js');
 const {
   buildNotificationPayload,
   buildPrivateNote,
   buildSupportNote,
-  buildRecapNote,
   resolveTransitionMessage
-} = await import('../src/handoff/service.js');
+} = servicio;
 const { renderTelegramMessage } = await import('../src/services/notification-outbox-worker.js');
 const { createHandoffIdentity } = await import('../src/durable/identity.js');
 
@@ -124,38 +124,47 @@ assert.doesNotMatch(note, /Conversación: 44/, 'el id de conversación ya lo ve 
 assert.doesNotMatch(note, /\+34600111222/, 'el teléfono ya lo ve en la ficha del contacto');
 assert.doesNotMatch(note, /xavier@example\.com/, 'sin correo');
 
-// --- La nota del resumen: aparte y SIN mención ------------------------------
-// Una nota privada sin mención no dispara correo a nadie. Eso es lo que permite
-// que el resumen se vea en Chatwoot, donde hace falta, sin viajar duplicado.
+// --- EL RESUMEN YA NO SE PUBLICA EN CHATWOOT -------------------------------
+//
+// LO PIDIO DAVID el 24-ago-2026: «como manda la conversacion directa, la persona solo
+// debe deslizar hacia arriba y ve esos mensajes; el contexto que le llega es como mas
+// ruido visual». En Chatwoot el equipo esta mirando la conversacion, y repetirsela
+// debajo en forma de lista tapaba lo unico que aporta la nota: el motivo y la prioridad.
+//
+// LO QUE ESTA PRUEBA PROTEGE NO ES QUE SE HAYA QUITADO, sino que NO SE HAYA PERDIDO.
+// El resumen sigue haciendo falta donde NO hay conversacion que deslizar: el aviso
+// externo. Quitarlo de los dos sitios a la vez es el error facil de cometer aqui, y
+// dejaria a quien recibe el aviso sin saber de que va el caso.
 
-const recapNote = buildRecapNote(recapEjemplo) ?? '';
-assert.ok(recapNote.length > 0, 'con mensajes sí hay nota de resumen');
-assert.match(recapNote, /\*\*Últimos mensajes de la conversación\*\*/);
-assert.match(recapNote, /molestia en una muela/, 'el resumen son los mensajes reales');
-assert.match(recapNote, /Helios:\*\* Entiendo/, 'se distingue quién dijo cada cosa');
-assert.match(
-  recapNote,
-  /^- \*\*\d{2}:\d{2} · (Paciente|Helios|Equipo):\*\* /m,
-  'cada intervención es un punto de lista, con hora y con quién habló'
-);
-assert.doesNotMatch(
-  recapNote,
-  /mention:\/\//,
-  'SIN mención: es justo lo que evita el segundo correo'
+assert.ok(
+  !('buildRecapNote' in servicio),
+  'buildRecapNote ya no existe: el resumen no se publica como nota en Chatwoot'
 );
 
-// Conversación larga: hay que recomendar leerla entera.
-const resumenLargo = buildRecapNote({
-  messages: recapEjemplo.messages,
-  total_messages: 42,
-  truncated: true
-}) ?? '';
-assert.match(resumenLargo, /de 42 mensajes/);
-assert.match(resumenLargo, /leer la conversación completa/);
+{
+  // Y EN EL AVISO EXTERNO SIGUE ESTANDO, con los mensajes de verdad.
+  const aviso = buildNotificationPayload(
+    openedHandoff(),
+    { first_name: 'Xavier', last_name: 'Pla', identity_complete: true, crm_synced: true },
+    recapEjemplo
+  ) as any;
 
-// Sin nada que resumir no se crea ninguna nota: nada de notas vacías.
-assert.equal(buildRecapNote(null), null);
-assert.equal(buildRecapNote({ messages: [], total_messages: 0, truncated: false }), null);
+  assert.ok(aviso.recap, 'el aviso externo lleva el resumen');
+  assert.ok(
+    aviso.recap.lines.some((l: string) => /molestia en una muela/.test(l)),
+    'y son los mensajes reales de la conversacion'
+  );
+  assert.equal(aviso.recap.total_messages, recapEjemplo.total_messages);
+
+  // Una conversacion larga sigue avisando de que hay mas de lo que se ve.
+  const largo = buildNotificationPayload(
+    openedHandoff(),
+    { first_name: 'Xavier', last_name: 'Pla', identity_complete: true, crm_synced: true },
+    { messages: recapEjemplo.messages, total_messages: 42, truncated: true }
+  ) as any;
+  assert.equal(largo.recap.truncated, true, 'y se dice que esta recortada');
+  assert.equal(largo.recap.total_messages, 42);
+}
 
 const noteWithoutIdentity = buildPrivateNote(openedHandoff(), {
   first_name: null,
