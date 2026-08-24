@@ -121,7 +121,7 @@ export function extensionDe(bruto: any): string {
  * con una solucion conocida -convertirlo con ffmpeg antes de mandarlo, que para un audio
  * de treinta segundos son milisegundos de CPU, no segundos-.
  */
-export type SoporteDeGemini = 'directo' | 'probable' | 'no_soportado';
+export type SoporteDeGemini = 'directo' | 'probable' | 'no_soportado' | 'desconocido';
 
 const DIRECTO: Record<TipoDeAdjunto, string[]> = {
   audio: ['wav', 'mp3', 'aiff', 'aac', 'flac'],
@@ -139,11 +139,35 @@ const PROBABLE: Record<TipoDeAdjunto, string[]> = {
   documento: []
 };
 
+/**
+ * Formatos que Gemini NO lee, comprobados contra la documentacion de Google.
+ *
+ * ESTA LISTA ES LO UNICO QUE SE RECHAZA ANTES DE DESCARGAR. Todo lo demas que no
+ * reconozcamos se descarga y se le pregunta al `content-type`, porque una extension que
+ * no esta en ninguna lista NO significa «formato malo»: significa «no lo se».
+ *
+ * LA DIFERENCIA LA APRENDIMOS EL 24 DE AGOSTO, con la primera nota de voz de verdad. Un
+ * .amr es un formato que Gemini no lee, y rechazarlo sin descargarlo ahorra red. Pero
+ * `AUDIO-2026-08-24-14.47.31` -que es como WhatsApp nombra las notas de voz- daba
+ * extension «31», y una URL de ActiveStorage sin nombre de archivo daba extension vacia.
+ * Los dos acababan en «formato_no_soportado» sin llegar a intentarlo.
+ */
+const NO_SOPORTADO: Record<TipoDeAdjunto, string[]> = {
+  audio: ['amr', 'wma', 'mid', 'midi', 'ra', 'au'],
+  imagen: ['gif', 'bmp', 'tif', 'tiff', 'svg', 'ico'],
+  video: ['mkv', 'ogv', 'ts', 'm2ts'],
+  documento: ['doc', 'docx', 'rtf', 'odt', 'txt', 'md', 'xls', 'xlsx', 'ppt', 'pptx', 'csv', 'zip']
+};
+
 export function soporteDeGemini(tipo: TipoDeAdjunto, extension: string): SoporteDeGemini {
   const ext = String(extension || '').toLowerCase();
   if (DIRECTO[tipo].includes(ext)) return 'directo';
   if (PROBABLE[tipo].includes(ext)) return 'probable';
-  return 'no_soportado';
+  if (NO_SOPORTADO[tipo].includes(ext)) return 'no_soportado';
+
+  // NI LO UNO NI LO OTRO: no sabemos que es. Se resuelve al descargar, mirando el
+  // content-type que manda Chatwoot, que es quien tiene el dato de verdad.
+  return 'desconocido';
 }
 
 /**
@@ -216,6 +240,11 @@ export function normalizarAdjuntos(body: any, baseDeChatwoot: string): AdjuntoNo
     // aqui, ANTES de descargar el archivo, para no gastar red y tiempo en algo que la
     // llamada iba a rechazar de todas formas. Y el paciente se entera igual: el texto
     // marcado se lo dice a Hermes.
+    //
+    // PERO SOLO SI SABEMOS QUE NO SE PUEDE. «desconocido» NO se rechaza: se descarga y se
+    // mira el content-type. Rechazar lo que no reconocemos es lo que dejo sin transcribir
+    // la primera nota de voz de verdad, el 24 de agosto: WhatsApp la nombro
+    // «AUDIO-2026-08-24-14.47.31» y la «extension» salio «31».
     else if (soporte === 'no_soportado') rechazo = 'formato_no_soportado';
 
     return {

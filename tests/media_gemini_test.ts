@@ -51,6 +51,8 @@ function fakeRed(opciones: {
   estadoDeGemini?: number;
   bytesDelArchivo?: number;
   estadoDeDescarga?: number;
+  /** El content-type con el que Chatwoot sirve el archivo. */
+  tipoDeContenido?: string;
 }) {
   const registro: Array<{ url: string; headers: any; body?: any }> = [];
   const impl = (async (url: any, init: any = {}) => {
@@ -67,6 +69,10 @@ function fakeRed(opciones: {
       return {
         ok: estado >= 200 && estado < 300,
         status: estado,
+        headers: {
+          get: (n: string) =>
+            (n.toLowerCase() === 'content-type' ? (opciones.tipoDeContenido ?? '') : null)
+        },
         arrayBuffer: async () => new ArrayBuffer(opciones.bytesDelArchivo ?? 1000)
       };
     }

@@ -19,7 +19,7 @@
  */
 
 import { config } from '../config.js';
-import type { AdjuntoNormalizado } from '../chatwoot/adjuntos.js';
+import type { AdjuntoNormalizado, TipoDeAdjunto } from '../chatwoot/adjuntos.js';
 import { urlDeAdjuntoEsSegura } from '../chatwoot/adjuntos.js';
 import {
   ILEGIBLE,
@@ -45,6 +45,60 @@ const MIME: Record<string, string> = {
   '3gp': 'video/3gpp', '3gpp': 'video/3gpp',
   pdf: 'application/pdf'
 };
+
+/**
+ * Los tipos MIME que se aceptan de la cabecera `content-type`.
+ *
+ * ES UNA LISTA CERRADA A PROPOSITO, y no un «si empieza por audio/ vale». El content-type
+ * lo pone Chatwoot -un host ya comprobado-, asi que fiarse no es descabellado, pero lo que
+ * se le declara a Gemini tiene que salir de una lista nuestra: es lo que impide que una
+ * cabecera raroa acabe convertida en un campo `mime_type` arbitrario en la llamada.
+ *
+ * Y SE COMPRUEBA QUE LA FAMILIA CUADRE con lo que dijo Chatwoot en `file_type`. Si el
+ * webhook dice «audio» y la cabecera dice `image/png`, algo no encaja y no se manda: son
+ * dos fuentes que deberian coincidir, y cuando no lo hacen lo prudente es no adivinar.
+ */
+const MIME_POR_CABECERA: Record<string, TipoDeAdjunto> = {
+  'audio/wav': 'audio', 'audio/x-wav': 'audio', 'audio/wave': 'audio',
+  'audio/mp3': 'audio', 'audio/mpeg': 'audio', 'audio/mpg': 'audio',
+  'audio/aiff': 'audio', 'audio/x-aiff': 'audio',
+  'audio/aac': 'audio', 'audio/flac': 'audio', 'audio/x-flac': 'audio',
+  'audio/ogg': 'audio', 'audio/opus': 'audio', 'audio/mp4': 'audio', 'audio/m4a': 'audio',
+  'image/png': 'imagen', 'image/jpeg': 'imagen', 'image/jpg': 'imagen',
+  'image/webp': 'imagen', 'image/heic': 'imagen', 'image/heif': 'imagen',
+  'video/mp4': 'video', 'video/mpeg': 'video', 'video/quicktime': 'video',
+  'video/x-msvideo': 'video', 'video/x-flv': 'video', 'video/webm': 'video',
+  'video/x-ms-wmv': 'video', 'video/3gpp': 'video',
+  'application/pdf': 'documento'
+};
+
+/**
+ * Lo que se le declara a Gemini cuando la cabecera es la unica pista.
+ *
+ * Gemini no acepta cualquier nombre: `audio/opus` y `audio/x-wav` son validos en HTTP
+ * pero no estan en su lista. Se traducen al nombre que el si conoce.
+ */
+const NOMBRE_PARA_GEMINI: Record<string, string> = {
+  'audio/x-wav': 'audio/wav', 'audio/wave': 'audio/wav',
+  'audio/mpeg': 'audio/mp3', 'audio/mpg': 'audio/mp3',
+  'audio/x-aiff': 'audio/aiff', 'audio/x-flac': 'audio/flac',
+  // OGG OPUS: el formato REAL de las notas de voz de WhatsApp. Google documenta «OGG
+  // Vorbis» y no dice nada de Opus, asi que se declara como audio/ogg y se prueba. Si lo
+  // rechaza, el error sale con nombre propio y la solucion es convertir con ffmpeg.
+  'audio/opus': 'audio/ogg',
+  'audio/m4a': 'audio/mp4',
+  'image/jpg': 'image/jpeg',
+  'video/quicktime': 'video/mov', 'video/x-msvideo': 'video/avi',
+  'video/x-ms-wmv': 'video/wmv'
+};
+
+function mimeAceptado(contentType: string, tipo: AdjuntoNormalizado['tipo']): string | null {
+  const limpio = String(contentType || '').trim().toLowerCase();
+  const familia = MIME_POR_CABECERA[limpio];
+  if (!familia) return null;
+  if (familia !== tipo) return null;
+  return NOMBRE_PARA_GEMINI[limpio] || limpio;
+}
 
 export interface ResultadoDeMedia {
   /** El texto extraído, o null si no se pudo. */
@@ -84,7 +138,7 @@ const sinProcesar = (error: string): ResultadoDeMedia =>
 async function descargar(
   url: string,
   fetchImpl: typeof fetch
-): Promise<{ bytes: Uint8Array } | { error: string }> {
+): Promise<{ bytes: Uint8Array; contentType: string } | { error: string }> {
   if (!urlDeAdjuntoEsSegura(url, config.CHATWOOT_BASE_URL || '')) {
     return { error: 'url_no_es_de_chatwoot' };
   }
@@ -104,10 +158,17 @@ async function descargar(
     });
     if (!respuesta.ok) return { error: `descarga_${respuesta.status}` };
 
+    // EL CONTENT-TYPE ES QUIEN SABE DE VERDAD QUE ES ESTO. La extension de la URL es una
+    // pista y a veces no la hay: WhatsApp nombra las notas de voz con puntos en la fecha
+    // -AUDIO-2026-08-24-14.47.31- y ActiveStorage sirve blobs sin nombre. Chatwoot si
+    // guarda el tipo, y lo manda en esta cabecera.
+    const contentType = String(respuesta.headers?.get?.('content-type') ?? '')
+      .split(';')[0].trim().toLowerCase();
+
     const crudo = new Uint8Array(await respuesta.arrayBuffer());
     if (crudo.byteLength > 20 * 1024 * 1024) return { error: 'demasiado_grande_al_descargar' };
     if (crudo.byteLength === 0) return { error: 'archivo_vacio' };
-    return { bytes: crudo };
+    return { bytes: crudo, contentType };
   } catch (error: any) {
     return { error: error?.name === 'AbortError' ? 'descarga_agotó_el_tiempo' : 'descarga_fallida' };
   } finally {
@@ -133,11 +194,21 @@ export async function procesarAdjunto(
   if (adjunto.rechazo) return sinProcesar(adjunto.rechazo);
   if (!config.GEMINI_API_KEY) return sinProcesar('sin_clave_de_gemini');
 
-  const mime = MIME[adjunto.extension];
-  if (!mime) return sinProcesar('formato_no_soportado');
-
   const bajada = await descargar(adjunto.url, fetchImpl);
   if ('error' in bajada) return sinProcesar(bajada.error);
+
+  // EL ORDEN IMPORTA: primero la extension, que cuando existe es fiable y no depende de
+  // como sirva el archivo Chatwoot; y si no dice nada, el content-type de la descarga.
+  //
+  // ANTES ESTO ERA SOLO LA EXTENSION, Y ANTES DE DESCARGAR. Es lo que dejo sin
+  // transcribir la primera nota de voz de verdad, el 24 de agosto: se rechazaba sin
+  // haberlo intentado, gastando cero y sin forma de saber que el archivo estaba bien.
+  const mime = MIME[adjunto.extension] || mimeAceptado(bajada.contentType, adjunto.tipo);
+  if (!mime) {
+    return sinProcesar(
+      bajada.contentType ? `formato_no_soportado_${bajada.contentType.replace('/', '_')}` : 'formato_no_soportado'
+    );
+  }
 
   // El video se clasifica con el MISMO prompt que la imagen: la pregunta es la misma
   // -¿es una boca, un pago, una promocion o una cadena?- y tener un prompt distinto
