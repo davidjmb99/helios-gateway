@@ -73,11 +73,19 @@ export const PROMPT_IMAGEN = [
   '  folleto o una captura de una web relacionada con la clínica o con salud dental.',
   '- "irrelevante": una cadena reenviada, un meme, un chiste, una felicitación genérica,',
   '  publicidad de otro negocio, o cualquier cosa SIN NINGUNA relación con una clínica',
-  '  dental ni con la salud de quien lo envía. Usa esta categoría SOLO si estás seguro.',
+  '  dental ni con la salud de quien lo envía. Usa esta categoría SOLO si estás seguro,',
+  '  y con "seguridad":"alta" SOLO si es imposible que tenga relación con la clínica o',
+  '  con la salud de quien lo manda: a este mensaje NO se le va a responder.',
   '- "otra": cualquier cosa que no encaje con claridad en las anteriores.',
   '',
   'Responde SOLO con un objeto JSON, sin texto alrededor y sin markdown:',
-  '{"categoria":"...","descripcion":"..."}',
+  '{"categoria":"...","descripcion":"...","seguridad":"alta"}',
+  '',
+  'EL CAMPO "seguridad" solo puede valer "alta" o "baja", y mide lo seguro que estás',
+  'de la categoría que has elegido:',
+  '- "alta": SOLO si no existe ninguna posibilidad razonable de que sea otra cosa.',
+  '- "baja": en cuanto quepa alguna duda, aunque sea pequeña.',
+  'Si no estás seguro de lo seguro que estás, pon "baja".',
   '',
   'REGLA ABSOLUTA SOBRE "descripcion":',
   '- Si la categoría es "promocional" u "otra": describe brevemente lo que se ve, en una',
@@ -120,12 +128,24 @@ export const PROMPT_DOCUMENTO = [
  * Equivocarse hacia «que lo vea un dentista» es recuperable. Equivocarse hacia
  * «descríbeme esta radiografía» no.
  */
+export type Seguridad = 'alta' | 'baja';
+
 export function leerClasificacionDeImagen(bruto: unknown): {
   categoria: CategoriaDeImagen;
   descripcion: string;
   confiable: boolean;
+  /**
+   * Lo seguro que dijo estar el modelo. POR DEFECTO «baja», y esa es la parte que
+   * importa: si el campo no viene, viene mal escrito o viene con cualquier otra cosa,
+   * se trata como duda. Lo unico que abre la puerta a ignorar un mensaje es un «alta»
+   * explicito.
+   */
+  seguridad: Seguridad;
 } {
-  const seguro = { categoria: 'clinica' as CategoriaDeImagen, descripcion: '', confiable: false };
+  const seguro = {
+    categoria: 'clinica' as CategoriaDeImagen, descripcion: '',
+    confiable: false, seguridad: 'baja' as Seguridad
+  };
 
   const texto = String(bruto ?? '').trim();
   if (!texto) return seguro;
@@ -150,7 +170,10 @@ export function leerClasificacionDeImagen(bruto: unknown): {
   const esDescriptible = categoria === 'promocional' || categoria === 'otra';
   const descripcion = esDescriptible ? String(datos.descripcion ?? '').trim().slice(0, 500) : '';
 
-  return { categoria: categoria as CategoriaDeImagen, descripcion, confiable: true };
+  const seguridad: Seguridad =
+    String(datos.seguridad ?? '').trim().toLowerCase() === 'alta' ? 'alta' : 'baja';
+
+  return { categoria: categoria as CategoriaDeImagen, descripcion, confiable: true, seguridad };
 }
 
 /**
@@ -173,19 +196,39 @@ export function leerClasificacionDeImagen(bruto: unknown): {
  *   normal?», eso es una conversacion y no una cadena. El texto manda. Solo se ignora
  *   cuando el archivo viene SOLO.
  *
- * Y solo se ignora con una clasificacion CONFIABLE. Un JSON roto cae en «clinica» por el
- * lado seguro, pero incluso si algun dia cayera en «irrelevante», sin `confiable` no se
- * tira nada.
+ * Y HACEN FALTA DOS SEÑALES DISTINTAS, no una. Lo pidió David así: «cuando se vaya por
+ * ignorar es cuando esté 100% seguro que es irrelevante».
+ *
+ *   `confiable`  dice que la RESPUESTA es válida: JSON que se parsea, categoría de la
+ *                lista cerrada. Es una comprobación nuestra, y no se puede desobedecer.
+ *
+ *   `seguridad`  dice que el MODELO estaba seguro de lo que eligió. Es un dato que él
+ *                declara, y por eso por sí solo no bastaría.
+ *
+ * La primera sin la segunda es lo que había antes, y no medía nada: un JSON perfecto
+ * diciendo «irrelevante» con una duda enorme detrás pasaba igual. Pedir el campo aparte
+ * cuesta dos tokens de salida y obliga al modelo a comprometerse por separado, en vez de
+ * que la seguridad quede escondida dentro de la elección de categoría.
+ *
+ * POR DEFECTO «baja»: si el campo falta, viene mal escrito o trae cualquier otra cosa, se
+ * trata como duda y el paciente recibe respuesta.
  */
 export function queHacerCon(entrada: {
   categoria: CategoriaDeImagen;
   confiable: boolean;
   /** true si el paciente escribió algo además de mandar el archivo. */
   vieneConTexto: boolean;
+  /** Lo seguro que dijo estar el modelo. Cualquier cosa que no sea «alta» es duda. */
+  seguridad?: Seguridad;
 }): 'derivar' | 'ignorar' | 'seguir' {
   if (entrada.categoria === 'clinica' || entrada.categoria === 'pago') return 'derivar';
 
-  if (entrada.categoria === 'irrelevante' && entrada.confiable && !entrada.vieneConTexto) {
+  if (
+    entrada.categoria === 'irrelevante'
+    && entrada.confiable
+    && entrada.seguridad === 'alta'
+    && !entrada.vieneConTexto
+  ) {
     return 'ignorar';
   }
 

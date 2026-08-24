@@ -227,6 +227,7 @@ export async function procesarAdjunto(
     const accion = queHacerCon({
       categoria: clasificacion.categoria,
       confiable: clasificacion.confiable,
+      seguridad: clasificacion.seguridad,
       vieneConTexto
     });
     return {

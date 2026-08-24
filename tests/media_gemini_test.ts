@@ -294,7 +294,7 @@ function fakeRed(opciones: {
   // UNA CADENA REENVIADA, sin texto: se ignora. Nadie contesta.
   const { impl } = fakeRed({
     respuestaDeGemini: {
-      candidates: [{ content: { parts: [{ text: '{"categoria":"irrelevante","descripcion":""}' }] } }],
+      candidates: [{ content: { parts: [{ text: '{"categoria":"irrelevante","descripcion":"","seguridad":"alta"}' }] } }],
       usageMetadata: { promptTokenCount: 8000, candidatesTokenCount: 10 }
     }
   });
@@ -314,7 +314,7 @@ function fakeRed(opciones: {
   // «mira esto, ¿es normal?», eso es una conversacion y el texto manda.
   const { impl } = fakeRed({
     respuestaDeGemini: {
-      candidates: [{ content: { parts: [{ text: '{"categoria":"irrelevante","descripcion":""}' }] } }],
+      candidates: [{ content: { parts: [{ text: '{"categoria":"irrelevante","descripcion":"","seguridad":"alta"}' }] } }],
       usageMetadata: { promptTokenCount: 8000, candidatesTokenCount: 10 }
     }
   });

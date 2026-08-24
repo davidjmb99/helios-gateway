@@ -74,8 +74,8 @@ function fakeRed(respuestas: string[], opciones: { falla?: boolean } = {}) {
   return { impl, llamadas };
 }
 
-const clasif = (categoria: string, descripcion = '') =>
-  JSON.stringify({ categoria, descripcion });
+const clasif = (categoria: string, descripcion = '', seguridad = 'alta') =>
+  JSON.stringify({ categoria, descripcion, seguridad });
 
 // --- SIN ARCHIVOS NO SE TOCA NADA ------------------------------------------
 
@@ -209,6 +209,30 @@ const clasif = (categoria: string, descripcion = '') =>
   assert.equal(r.gastos[0].accion, 'ignorar');
   assert.equal(r.gastos[0].categoria, 'irrelevante');
   assert.equal(r.gastos[0].input_tokens, 900, 'el gasto se registra aunque no se conteste');
+}
+
+{
+  // LA MISMA CADENA, PERO EL MODELO DUDANDO: no se ignora. Lo pidio David: «cuando se
+  // vaya por ignorar es cuando este 100% seguro que es irrelevante». Sin ese 100%, el
+  // paciente recibe respuesta.
+  const { impl } = fakeRed([clasif('irrelevante', '', 'baja')]);
+  const r = await procesarMediaDelMensaje(
+    { texto: '', adjuntos: adjuntos(VIDEO) }, { fetchImpl: impl }
+  );
+  assert.equal(r.ignorarMensaje, false, 'con duda NO se ignora, aunque diga «irrelevante»');
+  assert.ok(r.texto.length > 0, 'algo llega, para que el paciente reciba respuesta');
+}
+
+{
+  // Y si el modelo se olvida del campo, tampoco. El defecto es la duda.
+  const { impl } = fakeRed([JSON.stringify({ categoria: 'irrelevante', descripcion: '' })]);
+  const r = await procesarMediaDelMensaje(
+    { texto: '', adjuntos: adjuntos(VIDEO) }, { fetchImpl: impl }
+  );
+  assert.equal(
+    r.ignorarMensaje, false,
+    'sin el campo de seguridad NO se ignora: un modelo olvidadizo no puede callar a nadie'
+  );
 }
 
 {

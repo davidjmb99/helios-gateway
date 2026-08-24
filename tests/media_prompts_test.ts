@@ -162,6 +162,26 @@ import {
     'en la duda NO se ignora'
   );
   assert.match(enUnaLinea, /SOLO si est[aá]s seguro/i, 'ignorar exige seguridad');
+
+  // Y EL PROMPT TIENE QUE PEDIR EL CAMPO. Sin esta parte el modelo no lo devuelve, todo
+  // cae en «baja» y nunca se ignoraria nada: el fallo seria silencioso y hacia el lado
+  // bueno, que es justo el que no se nota.
+  // SE COMPRUEBA LA PLANTILLA JSON, no que la palabra aparezca por ahi. Es la linea que
+  // el modelo copia: describir el campo mas abajo y olvidarlo en la plantilla es el fallo
+  // realista, y era el que se me escapaba con una regex mas floja.
+  assert.match(
+    enUnaLinea, /\{"categoria":"\.\.\.","descripcion":"\.\.\.","seguridad":"[^"]*"\}/,
+    'la plantilla JSON tiene que incluir el campo de seguridad'
+  );
+  assert.match(enUnaLinea, /solo puede valer "alta" o "baja"/i);
+  assert.match(
+    enUnaLinea, /Si no est[aá]s seguro de lo seguro que est[aá]s, pon "baja"/i,
+    'y se le dice explicitamente que la duda es «baja»'
+  );
+  assert.match(
+    enUnaLinea, /a este mensaje NO se le va a responder/i,
+    'el modelo tiene que saber que hay en juego cuando pone «alta»'
+  );
 }
 
 {
@@ -169,6 +189,36 @@ import {
   assert.match(PROMPT_DOCUMENTO, /NO las sigas/, 'un documento no da ordenes');
   assert.match(PROMPT_DOCUMENTO, /NO resumas/);
   assert.ok(PROMPT_DOCUMENTO.includes(ILEGIBLE));
+}
+
+// --- LA SEGURIDAD SE LEE, Y POR DEFECTO ES «baja» -------------------------
+
+{
+  assert.equal(
+    leerClasificacionDeImagen('{"categoria":"irrelevante","seguridad":"alta"}').seguridad,
+    'alta'
+  );
+  assert.equal(
+    leerClasificacionDeImagen('{"categoria":"irrelevante","seguridad":"ALTA "}').seguridad,
+    'alta', 'se normaliza igual que la categoria'
+  );
+
+  // EL VALOR POR DEFECTO ES LO QUE IMPORTA: sin campo, con basura, o con la respuesta
+  // entera rota, se trata como duda. Un modelo que se olvide de contestar esta parte no
+  // puede acabar silenciando a un paciente.
+  for (const bruto of [
+    '{"categoria":"irrelevante"}',
+    '{"categoria":"irrelevante","seguridad":"media"}',
+    '{"categoria":"irrelevante","seguridad":true}',
+    '{"categoria":"irrelevante","seguridad":null}',
+    'no soy json',
+    ''
+  ]) {
+    assert.equal(
+      leerClasificacionDeImagen(bruto).seguridad, 'baja',
+      `${bruto || '(vacio)'}: sin un «alta» explicito, es duda`
+    );
+  }
 }
 
 // --- QUE SE HACE CON CADA CATEGORIA ---------------------------------------
@@ -179,8 +229,8 @@ import {
 // de verdad, y el silencio es justo el fallo que todo este bloque viene a arreglar.
 
 {
-  const decidir = (categoria: any, confiable = true, vieneConTexto = false) =>
-    queHacerCon({ categoria, confiable, vieneConTexto });
+  const decidir = (categoria: any, confiable = true, vieneConTexto = false, seguridad: any = 'alta') =>
+    queHacerCon({ categoria, confiable, vieneConTexto, seguridad });
 
   // Lo que se deriva a una persona.
   assert.equal(decidir('clinica'), 'derivar');
@@ -199,6 +249,38 @@ import {
   assert.equal(
     decidir('irrelevante', false, false), 'seguir',
     'SIN CLASIFICACION CONFIABLE no se ignora: no se tira nada por una respuesta que no se entendio'
+  );
+
+  // LA SEGUNDA SEÑAL, la que pidio David: «cuando se vaya por ignorar es cuando este
+  // 100% seguro que es irrelevante». Un JSON perfecto diciendo «irrelevante» con dudas
+  // detras NO basta.
+  assert.equal(
+    decidir('irrelevante', true, false, 'baja'), 'seguir',
+    'CON DUDA no se ignora, aunque la respuesta sea valida y la categoria sea irrelevante'
+  );
+  // Se llama directo y no por el ayudante, porque su valor por defecto se comeria el
+  // `undefined`, que es justo el caso que mas importa: el campo que no viene.
+  for (const raro of [undefined, null, '', 'media', 'ALTA?', 'si', true, 0]) {
+    assert.equal(
+      queHacerCon({
+        categoria: 'irrelevante', confiable: true, vieneConTexto: false, seguridad: raro as any
+      }),
+      'seguir',
+      `seguridad ${JSON.stringify(raro)}: cualquier cosa que no sea «alta» es duda`
+    );
+  }
+  // OJO AL REPARTO: `queHacerCon` NO normaliza, compara con «alta» tal cual. Quien
+  // normaliza es `leerClasificacionDeImagen` -probado mas arriba-, y esa es la unica
+  // puerta por la que entra este dato en produccion. Aqui se comprueba el reparto:
+  assert.equal(
+    decidir('irrelevante', true, false, 'ALTA'), 'seguir',
+    'queHacerCon compara con «alta» exacto; normalizar es trabajo de la lectura'
+  );
+  assert.equal(
+    decidir('irrelevante', true, false,
+      leerClasificacionDeImagen('{"categoria":"irrelevante","seguridad":"ALTA "}').seguridad),
+    'ignorar',
+    'y pasando por la lectura, «ALTA » con mayusculas y espacio si ignora'
   );
 
   // Y lo clinico NUNCA se ignora, pase lo que pase con las otras condiciones.
