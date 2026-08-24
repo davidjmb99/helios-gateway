@@ -25,7 +25,9 @@ import {
   normalizarAdjuntos,
   textoDelAdjunto,
   tipoDeAdjunto,
-  urlDeAdjuntoEsSegura
+  urlDeAdjuntoEsSegura,
+  extensionDe,
+  soporteDeGemini
 } from '../src/chatwoot/adjuntos.js';
 
 const CHATWOOT = 'https://chatwoot.app.escala365.com';
@@ -154,6 +156,72 @@ process.env.CHATWOOT_TENANT_CONTEXTS_JSON = JSON.stringify({
   }, CHATWOOT);
   assert.equal(raro.rechazo, 'tipo_no_soportado');
   assert.match(textoDelAdjunto(raro, null), /no se puede leer/);
+}
+
+// --- LOS FORMATOS QUE GEMINI ACEPTA DE VERDAD ------------------------------
+//
+// Esta parte existe porque mi primera version de estas listas estaba mal en SEIS sitios
+// -las escribi de memoria- y habria hecho fallar la llamada con el archivo ya descargado
+// y el paciente esperando. Ahora estan comprobadas contra la documentacion.
+
+{
+  // Lo que la documentacion promete.
+  for (const ext of ['wav', 'mp3', 'aiff', 'aac', 'flac']) {
+    assert.equal(soporteDeGemini('audio', ext), 'directo', `${ext} esta en la lista de audio`);
+  }
+  for (const ext of ['png', 'jpg', 'jpeg', 'webp', 'heic', 'heif']) {
+    assert.equal(soporteDeGemini('imagen', ext), 'directo', `${ext} esta en la lista de imagen`);
+  }
+  assert.equal(soporteDeGemini('documento', 'pdf'), 'directo');
+
+  // LO QUE YO PERMITIA Y GEMINI NO ACEPTA. Cada linea es un fallo que habria pasado.
+  assert.equal(soporteDeGemini('audio', 'amr'), 'no_soportado', 'AMR no esta en la lista');
+  assert.equal(soporteDeGemini('imagen', 'gif'), 'no_soportado', 'GIF no esta en la lista');
+  assert.equal(soporteDeGemini('video', 'mkv'), 'no_soportado', 'MKV no esta en la lista');
+  for (const ext of ['docx', 'doc', 'rtf', 'odt']) {
+    assert.equal(
+      soporteDeGemini('documento', ext), 'no_soportado',
+      `${ext} no: «document vision only meaningfully understands PDFs»`
+    );
+  }
+
+  // EL CASO QUE DECIDE SI ESTO SIRVE: las notas de voz de WhatsApp son OGG con codec
+  // OPUS y Google documenta «OGG Vorbis». Mismo contenedor, codec distinto, y no esta
+  // prometido. No se puede saber sin la clave puesta, asi que se marca «probable»: se
+  // intenta, y si el modelo lo rechaza es un caso conocido con solucion conocida
+  // -convertir con ffmpeg-, no un silencio para el paciente.
+  assert.equal(soporteDeGemini('audio', 'opus'), 'probable', 'WhatsApp: ogg/opus');
+  assert.equal(soporteDeGemini('audio', 'ogg'), 'probable');
+  assert.equal(soporteDeGemini('audio', 'm4a'), 'probable', 'Instagram: audio/mp4');
+
+  // Y que «probable» NO se confunda con «directo»: si se tratara igual, un fallo
+  // sistematico en las notas de voz pareceria un fallo aislado.
+  assert.notEqual(soporteDeGemini('audio', 'opus'), 'directo');
+}
+
+{
+  // Un formato que el modelo no lee se rechaza ANTES de descargar el archivo: no se
+  // gasta red en algo que la llamada iba a rechazar. Pero el paciente se entera.
+  const [gif] = normalizarAdjuntos({
+    attachments: [{ file_type: 'image', data_url: `${CHATWOOT}/x/animado.gif`, file_size: 5000 }]
+  }, CHATWOOT);
+  assert.equal(gif.tipo, 'imagen', 'un GIF sigue siendo una imagen: eso es lo que mando el paciente');
+  assert.equal(gif.rechazo, 'formato_no_soportado');
+  assert.match(textoDelAdjunto(gif, null), /formato que no se puede leer/);
+
+  // Y una nota de voz de WhatsApp NO se rechaza: se intenta.
+  const [nota] = normalizarAdjuntos({
+    attachments: [{ file_type: 'audio', data_url: `${CHATWOOT}/x/nota.ogg`, file_size: 12000 }]
+  }, CHATWOOT);
+  assert.equal(nota.rechazo, null, 'la nota de voz de WhatsApp se intenta, no se descarta');
+  assert.equal(nota.soporte, 'probable', 'pero se sabe que su soporte no esta prometido');
+}
+
+{
+  // La extension sale de la URL o del nombre del archivo, sin la firma de la query.
+  assert.equal(extensionDe({ data_url: 'https://x/y/nota.ogg?firma=abc' }), 'ogg');
+  assert.equal(extensionDe({ file_name: 'presupuesto.PDF' }), 'pdf');
+  assert.equal(extensionDe({}), '');
 }
 
 // --- Los tipos y el tope de cantidad ---------------------------------------

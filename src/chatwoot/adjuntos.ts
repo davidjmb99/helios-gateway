@@ -48,6 +48,10 @@ export interface AdjuntoNormalizado {
   url: string;
   nombre: string | null;
   bytes: number | null;
+  /** La extensión, para decidir si hace falta convertirlo. */
+  extension: string;
+  /** Si Gemini lo lee tal cual, probablemente, o no. */
+  soporte: SoporteDeGemini;
   /** Por qué NO se puede procesar, o null si se puede. */
   rechazo: string | null;
 }
@@ -71,14 +75,75 @@ export function tipoDeAdjunto(bruto: any): TipoDeAdjunto | null {
   if (declarado === 'file') return 'documento';
 
   // Respaldo por extensión, para webhooks que no traigan file_type.
-  const url = String(bruto?.data_url ?? bruto?.thumb_url ?? '').toLowerCase();
-  const extension = (url.split('?')[0].match(/\.([a-z0-9]{1,5})$/) || [])[1] || '';
-  if (['ogg', 'oga', 'opus', 'mp3', 'm4a', 'wav', 'amr', 'aac'].includes(extension)) return 'audio';
-  if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic'].includes(extension)) return 'imagen';
-  if (['mp4', 'mov', '3gp', 'webm', 'mkv'].includes(extension)) return 'video';
-  if (['pdf', 'doc', 'docx', 'txt', 'rtf', 'odt'].includes(extension)) return 'documento';
+  //
+  // AQUI SE CLASIFICA POR FAMILIA, no por si el modelo lo acepta: eso lo decide
+  // `soporteDeGemini`. Un .amr es audio aunque Gemini no lo lea, y llamarlo «no audio»
+  // seria mentir sobre lo que mando el paciente.
+  const extension = extensionDe(bruto);
+  if (['ogg', 'oga', 'opus', 'mp3', 'm4a', 'wav', 'amr', 'aac', 'aiff', 'flac'].includes(extension)) return 'audio';
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif'].includes(extension)) return 'imagen';
+  if (['mp4', 'mov', '3gp', '3gpp', 'webm', 'mkv', 'avi', 'mpeg', 'mpg', 'wmv', 'flv'].includes(extension)) return 'video';
+  if (['pdf', 'doc', 'docx', 'txt', 'rtf', 'odt', 'md'].includes(extension)) return 'documento';
 
   return null;
+}
+
+/** La extensión, sin la firma de la query. */
+export function extensionDe(bruto: any): string {
+  const url = String(bruto?.data_url ?? bruto?.thumb_url ?? '').toLowerCase();
+  const porNombre = String(bruto?.file_name ?? '').toLowerCase();
+  const buscar = (t: string) => (t.split('?')[0].match(/\.([a-z0-9]{1,5})$/) || [])[1] || '';
+  return buscar(url) || buscar(porNombre);
+}
+
+/**
+ * ¿Puede Gemini leer esto tal cual?
+ *
+ * COMPROBADO CONTRA LA DOCUMENTACION, no de memoria, porque mi primera version de estas
+ * listas estaba mal en SEIS sitios y habria hecho fallar la llamada con el archivo ya
+ * descargado y el paciente esperando:
+ *
+ *   audio ....... WAV, MP3, AIFF, AAC, OGG Vorbis, FLAC
+ *   imagen ...... PNG, JPEG, WEBP, HEIC, HEIF        (GIF no)
+ *   video ....... MP4, MPEG, MOV, AVI, FLV, MPG, WEBM, WMV, 3GPP   (MKV no)
+ *   documento ... PDF. «Document vision only meaningfully understands PDFs»
+ *
+ * Y EL CASO QUE DECIDE SI ESTO SIRVE DE ALGO: las notas de voz de WhatsApp son OGG con
+ * codec OPUS, y Google documenta «OGG Vorbis». El contenedor es el mismo, asi que puede
+ * que su decodificador lo lea igual, pero NO ESTA PROMETIDO. Es el formato mas comun de
+ * todos y no hay forma de saberlo sin probarlo con la clave puesta.
+ *
+ * Las de Instagram, cuando entre ese canal, suelen venir en .m4a -audio/mp4-, que
+ * tampoco esta en la lista.
+ *
+ * POR ESO HAY TRES ESTADOS Y NO DOS. «probable» significa: intentalo, y si el modelo lo
+ * rechaza NO es un fallo nuestro ni un silencio para el paciente, es un caso conocido
+ * con una solucion conocida -convertirlo con ffmpeg antes de mandarlo, que para un audio
+ * de treinta segundos son milisegundos de CPU, no segundos-.
+ */
+export type SoporteDeGemini = 'directo' | 'probable' | 'no_soportado';
+
+const DIRECTO: Record<TipoDeAdjunto, string[]> = {
+  audio: ['wav', 'mp3', 'aiff', 'aac', 'flac'],
+  imagen: ['png', 'jpg', 'jpeg', 'webp', 'heic', 'heif'],
+  video: ['mp4', 'mpeg', 'mpg', 'mov', 'avi', 'flv', 'webm', 'wmv', '3gp', '3gpp'],
+  documento: ['pdf']
+};
+
+/** Mismo contenedor que uno soportado, pero con un codec que la documentación no promete. */
+const PROBABLE: Record<TipoDeAdjunto, string[]> = {
+  // OGG Opus: WhatsApp. M4A: Instagram. Los dos son los formatos REALES del canal.
+  audio: ['ogg', 'oga', 'opus', 'm4a'],
+  imagen: [],
+  video: [],
+  documento: []
+};
+
+export function soporteDeGemini(tipo: TipoDeAdjunto, extension: string): SoporteDeGemini {
+  const ext = String(extension || '').toLowerCase();
+  if (DIRECTO[tipo].includes(ext)) return 'directo';
+  if (PROBABLE[tipo].includes(ext)) return 'probable';
+  return 'no_soportado';
 }
 
 /**
@@ -140,14 +205,24 @@ export function normalizarAdjuntos(body: any, baseDeChatwoot: string): AdjuntoNo
     const url = String(bruto?.data_url ?? '').trim();
     const bytes = Number.isFinite(Number(bruto?.file_size)) ? Number(bruto.file_size) : null;
 
+    const extension = extensionDe(bruto);
+    const soporte = tipo ? soporteDeGemini(tipo, extension) : 'no_soportado';
+
     let rechazo: string | null = null;
     if (!tipo) rechazo = 'tipo_no_soportado';
     else if (!urlDeAdjuntoEsSegura(url, baseDeChatwoot)) rechazo = 'url_no_es_de_chatwoot';
     else if (bytes !== null && bytes > MAXIMO_BYTES) rechazo = 'demasiado_grande';
+    // UN FORMATO QUE EL MODELO NO LEE NO ES UN FALLO: es un caso conocido. Se rechaza
+    // aqui, ANTES de descargar el archivo, para no gastar red y tiempo en algo que la
+    // llamada iba a rechazar de todas formas. Y el paciente se entera igual: el texto
+    // marcado se lo dice a Hermes.
+    else if (soporte === 'no_soportado') rechazo = 'formato_no_soportado';
 
     return {
       tipo: (tipo ?? 'documento') as TipoDeAdjunto,
       url,
+      extension,
+      soporte,
       nombre: typeof bruto?.file_name === 'string' && bruto.file_name.trim()
         ? bruto.file_name.trim().slice(0, 120)
         : null,
@@ -187,8 +262,8 @@ export function textoDelAdjunto(
   if (adjunto.rechazo === 'demasiado_grande') {
     return `[${etiqueta}${nombre} demasiado grande para procesarla]`;
   }
-  if (adjunto.rechazo === 'tipo_no_soportado') {
-    return `[archivo adjunto${nombre} de un tipo que no se puede leer]`;
+  if (adjunto.rechazo === 'tipo_no_soportado' || adjunto.rechazo === 'formato_no_soportado') {
+    return `[archivo adjunto${nombre} en un formato que no se puede leer]`;
   }
   if (adjunto.rechazo) {
     return `[${etiqueta}${nombre} que no se pudo obtener]`;
