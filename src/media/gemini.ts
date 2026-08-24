@@ -92,6 +92,30 @@ const NOMBRE_PARA_GEMINI: Record<string, string> = {
   'video/x-ms-wmv': 'video/wmv'
 };
 
+/**
+ * Saca de la respuesta de error de Google lo que sirve para arreglarlo.
+ *
+ * Su formato es `{ error: { code, message, status } }`. `status` es un codigo corto y
+ * estable -NOT_FOUND, PERMISSION_DENIED, RESOURCE_EXHAUSTED- que cabe en la columna del
+ * panel; `message` es la frase larga que dice exactamente que pasa, y esa va al log.
+ *
+ * NO SE MANDA EL CUERPO ENTERO A LA COLUMNA. Puede traer cientos de caracteres y el panel
+ * no es un visor de logs; y un texto largo del proveedor en un campo que se muestra es
+ * una via de entrada de contenido que no controlamos.
+ */
+function leerErrorDeGoogle(cuerpo: string): { estado: string; mensaje: string } {
+  try {
+    const datos = JSON.parse(String(cuerpo || ''));
+    return {
+      // Solo letras, numeros y guion bajo: es un codigo, no texto libre.
+      estado: String(datos?.error?.status ?? '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 40),
+      mensaje: String(datos?.error?.message ?? '').slice(0, 400)
+    };
+  } catch {
+    return { estado: '', mensaje: String(cuerpo || '').slice(0, 400) };
+  }
+}
+
 function mimeAceptado(contentType: string, tipo: AdjuntoNormalizado['tipo']): string | null {
   const limpio = String(contentType || '').trim().toLowerCase();
   const familia = MIME_POR_CABECERA[limpio];
@@ -261,6 +285,34 @@ export async function procesarAdjunto(
 
     if (!respuesta.ok) {
       const cuerpo = await respuesta.text().catch(() => '');
+
+      // EL CUERPO DEL ERROR SE REGISTRA, y esto no es un detalle. Antes se pedia y se
+      // TIRABA -habia un `${cuerpo ? '' : ''}` que siempre daba cadena vacia-, asi que
+      // un 404 llegaba al panel como «gemini_404» y nada mas. Google explica en ese
+      // cuerpo exactamente que modelo no encuentra y para que version de la API; tener
+      // que averiguarlo desde fuera costo una prueba entera con un paciente esperando.
+      const detalle = leerErrorDeGoogle(cuerpo);
+      console.error(JSON.stringify({
+        event: 'gemini_rechazo_la_llamada',
+        http_status: respuesta.status,
+        modelo: config.GEMINI_MODEL,
+        estado_de_google: detalle.estado,
+        mensaje_de_google: detalle.mensaje,
+        tipo_de_archivo: adjunto.tipo,
+        extension: adjunto.extension,
+        mime_declarado: mime
+      }));
+
+      // UN 404 NO ES UN FALLO DE ESTE ARCHIVO: es que el modelo no existe para esta clave
+      // o para esta version de la API, y entonces fallan TODAS las llamadas. Se marca
+      // aparte por el mismo motivo que el codec: para que un problema sistematico no
+      // parezca uno aislado en el panel.
+      if (respuesta.status === 404) {
+        return sinProcesar(`gemini_modelo_no_existe_${config.GEMINI_MODEL}`.slice(0, 80));
+      }
+      if (respuesta.status === 401 || respuesta.status === 403) {
+        return sinProcesar(`gemini_clave_rechazada_${detalle.estado}`.slice(0, 80));
+      }
       // EL CASO QUE HAY QUE DISTINGUIR: 400 con un audio ogg/opus significa que Gemini no
       // lee el codec de WhatsApp, y entonces NO es un fallo aislado: fallarían TODAS las
       // notas de voz. Se marca aparte para que se vea en el panel como lo que es, con su
@@ -269,7 +321,10 @@ export async function procesarAdjunto(
         return sinProcesar('gemini_rechaza_el_codec');
       }
       if (respuesta.status === 429) return sinProcesar('gemini_limite_de_frecuencia');
-      return sinProcesar(`gemini_${respuesta.status}${cuerpo ? '' : ''}`);
+      return sinProcesar(
+        detalle.estado ? `gemini_${respuesta.status}_${detalle.estado}`.slice(0, 80)
+          : `gemini_${respuesta.status}`
+      );
     }
     datos = await respuesta.json();
   } catch (error: any) {

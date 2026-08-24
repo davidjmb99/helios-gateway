@@ -1,20 +1,26 @@
 /**
  * De dónde sale el tipo de un archivo: la extensión, y si no, la cabecera.
  *
- * ESTA PRUEBA NACE DE LA PRIMERA NOTA DE VOZ DE VERDAD, el 24 de agosto de 2026. No se
- * transcribió, y no fue culpa de Gemini: se rechazó aquí, sin llegar a intentarlo,
- * gastando cero. El panel decía «1 audio · 1 fallaron» y «Gemini $0», que es justo el
- * síntoma de haberse rendido antes de empezar.
+ * ESTA PRUEBA NACE DE LA PRIMERA NOTA DE VOZ DE VERDAD, el 24 de agosto de 2026, PERO NO
+ * DEL FALLO QUE LA CAUSÓ. Conviene dejarlo claro para que nadie lea aquí una historia
+ * equivocada, como hice yo:
  *
- * LA CAUSA. WhatsApp nombra las notas de voz «AUDIO-2026-08-24-14.47.31», con puntos en
- * la fecha, y mi expresión regular se tragaba el «31» como si fuera el formato. Y una URL
- * de ActiveStorage sin nombre de archivo no da extensión ninguna. Los dos casos acababan
- * en `formato_no_soportado`.
+ *   LO QUE YO DIJE. Que WhatsApp nombraba la nota «AUDIO-2026-08-24-14.47.31» y que mi
+ *   expresión regular se tragaba el «31» como extensión. Lo deduje del síntoma -«1 audio
+ *   · 1 fallaron», «Gemini $0»- sin esperar el dato.
  *
- * LO QUE SE APRENDIÓ, y es la propiedad que esta prueba protege: UNA EXTENSIÓN QUE NO
- * RECONOCEMOS NO SIGNIFICA «FORMATO MALO», SIGNIFICA «NO LO SÉ». Y cuando no se sabe, se
- * pregunta a quien tiene el dato -el `content-type` que manda Chatwoot- en vez de decidir
- * por el paciente.
+ *   LO QUE PASÓ DE VERDAD. La extensión se leyó bien, `ogg`. La llamada SÍ se hizo. Y
+ *   Gemini devolvió un 404: el modelo no existía para esa clave. Lo dijo la columna
+ *   `error` de helios_media_events, que es donde estaba el dato desde el principio.
+ *
+ * ASÍ QUE ESTA PRUEBA CUBRE DOS COSAS DISTINTAS. La primera parte es una mejora real que
+ * NO era la causa de aquello: una extensión que no reconocemos no significa «formato
+ * malo», significa «no lo sé», y cuando no se sabe se pregunta al `content-type` en vez
+ * de decidir por el paciente. Ese fallo no había ocurrido todavía, pero ocurrirá -las
+ * URLs de ActiveStorage sin nombre son reales-.
+ *
+ * La segunda parte, al final del archivo, SÍ es del incidente: el cuerpo del error de
+ * Google se pedía y se tiraba, y por eso el panel decía «gemini_404» sin explicar nada.
  *
  * Lo que se protege, por orden de daño:
  *
@@ -206,3 +212,113 @@ function red(opciones: { contentType?: string; texto?: string; tokens?: number }
 }
 
 console.log('media_content_type_test: OK');
+
+// --- EL ERROR DE GOOGLE SE LEE, NO SE TIRA ---------------------------------
+//
+// ESTO NACE DE UN FALLO MIO QUE COSTO UNA PRUEBA ENTERA. El codigo pedia el cuerpo del
+// error y lo tiraba: habia un `${cuerpo ? '' : ''}` que siempre daba cadena vacia. Asi
+// que un 404 llegaba al panel como «gemini_404» y punto, cuando Google estaba explicando
+// en ese cuerpo exactamente que modelo no encontraba y para que version de la API.
+//
+// El resultado fue que diagnostique mal -culpe al nombre del archivo- y David tuvo que
+// mandar otra nota de voz para averiguar algo que ya estaba escrito en la respuesta.
+
+{
+  // UN 404 SE MARCA APARTE, con el nombre del modelo dentro. No es un fallo de este
+  // archivo: es que el modelo no existe para esta clave, y entonces fallan TODAS las
+  // llamadas. Mismo criterio que el codec: un problema sistematico no puede parecer uno
+  // aislado en el panel.
+  const impl = (async (url: any) => {
+    if (!String(url).includes('generativelanguage')) {
+      return {
+        ok: true, status: 200,
+        headers: { get: () => 'audio/ogg' },
+        arrayBuffer: async () => new ArrayBuffer(1000)
+      };
+    }
+    return {
+      ok: false,
+      status: 404,
+      text: async () => JSON.stringify({
+        error: {
+          code: 404,
+          message: 'models/gemini-2.5-flash-lite is not found for API version v1beta, or is not supported for generateContent.',
+          status: 'NOT_FOUND'
+        }
+      })
+    };
+  }) as unknown as typeof fetch;
+
+  const r = await procesarAdjunto(adjunto({ data_url: `${CHATWOOT}/x/nota.ogg` }), false, impl);
+  assert.match(
+    String(r.error), /^gemini_modelo_no_existe_/,
+    'un 404 dice que el MODELO no existe, no un «gemini_404» que no explica nada'
+  );
+  assert.match(
+    String(r.error), /gemini-2\.5-flash-lite/,
+    'y lleva dentro el nombre del modelo, que es el dato que hace falta para arreglarlo'
+  );
+  assert.ok(String(r.error).length <= 80, 'sin pasarse de largo: es una columna, no un log');
+}
+
+{
+  // UNA CLAVE RECHAZADA es otra cosa distinta, y tambien sistematica.
+  for (const estado of [401, 403]) {
+    const impl = (async (url: any) => {
+      if (!String(url).includes('generativelanguage')) {
+        return {
+          ok: true, status: 200,
+          headers: { get: () => 'audio/ogg' },
+          arrayBuffer: async () => new ArrayBuffer(1000)
+        };
+      }
+      return {
+        ok: false, status: estado,
+        text: async () => JSON.stringify({ error: { status: 'PERMISSION_DENIED', message: 'API key not valid' } })
+      };
+    }) as unknown as typeof fetch;
+
+    const r = await procesarAdjunto(adjunto({ data_url: `${CHATWOOT}/x/nota.ogg` }), false, impl);
+    assert.match(String(r.error), /^gemini_clave_rechazada_/, `${estado}: se distingue de un 404`);
+  }
+}
+
+{
+  // Y CUALQUIER OTRO ERROR lleva el codigo corto de Google, que es lo que cabe en la
+  // columna. Sin el, dos fallos con motivos distintos se ven iguales.
+  const impl = (async (url: any) => {
+    if (!String(url).includes('generativelanguage')) {
+      return {
+        ok: true, status: 200,
+        headers: { get: () => 'audio/ogg' },
+        arrayBuffer: async () => new ArrayBuffer(1000)
+      };
+    }
+    return {
+      ok: false, status: 500,
+      text: async () => JSON.stringify({ error: { status: 'INTERNAL', message: 'algo se rompio en Google' } })
+    };
+  }) as unknown as typeof fetch;
+
+  const r = await procesarAdjunto(adjunto({ data_url: `${CHATWOOT}/x/nota.ogg` }), false, impl);
+  assert.equal(r.error, 'gemini_500_INTERNAL', 'el codigo de Google viaja hasta el panel');
+}
+
+{
+  // Y SI EL CUERPO NO ES JSON no se rompe nada: se cae al codigo HTTP a secas.
+  const impl = (async (url: any) => {
+    if (!String(url).includes('generativelanguage')) {
+      return {
+        ok: true, status: 200,
+        headers: { get: () => 'audio/ogg' },
+        arrayBuffer: async () => new ArrayBuffer(1000)
+      };
+    }
+    return { ok: false, status: 502, text: async () => '<html>Bad Gateway</html>' };
+  }) as unknown as typeof fetch;
+
+  const r = await procesarAdjunto(adjunto({ data_url: `${CHATWOOT}/x/nota.ogg` }), false, impl);
+  assert.equal(r.error, 'gemini_502', 'un cuerpo que no es JSON no puede tumbar el manejo del error');
+}
+
+console.log('media_content_type_test: errores de Google OK');
