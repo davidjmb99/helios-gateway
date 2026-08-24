@@ -133,6 +133,33 @@ export const config = {
   HELIOS_OUTBOX_LEASE_MS: envNumber(process.env.HELIOS_OUTBOX_LEASE_MS, 60000),
   CHATWOOT_TIMEOUT_MS: envNumber(process.env.CHATWOOT_TIMEOUT_MS, 15000),
 
+  // --- Archivos: audios, imagenes, videos y documentos ---
+  //
+  // Sin GEMINI_API_KEY, los archivos siguen ENTRANDO al sistema -no se descartan como
+  // antes- pero llegan a Hermes sin procesar: «[nota de voz que no se pudo transcribir]».
+  // Es peor que transcribirla y muchisimo mejor que el silencio de antes.
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
+  GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite',
+
+  /**
+   * Que nivel de la API de Gemini se esta usando. Lo DECLARA el operador, no se detecta:
+   * no hay forma fiable de saberlo desde la clave.
+   *
+   * Existe porque el nivel gratuito usa el contenido para entrenar los modelos de Google
+   * -su tabla de precios dice «Data usage: Yes»- y eso serian la voz y las fotos de los
+   * pacientes. El plan es «gratis para probar, de pago para produccion», y eso es
+   * exactamente el tipo de cosa que se queda olvidada. Mientras diga «gratuito», el panel
+   * lo avisa en rojo.
+   *
+   * Por defecto «gratuito»: si nadie lo declara, se avisa. Es el lado seguro.
+   */
+  GEMINI_NIVEL: (process.env.GEMINI_NIVEL || 'gratuito').trim().toLowerCase() === 'pago'
+    ? 'pago' as const
+    : 'gratuito' as const,
+
+  /** Tiempo maximo para descargar el archivo y para la llamada al modelo, por separado. */
+  MEDIA_TIMEOUT_MS: envNumber(process.env.MEDIA_TIMEOUT_MS, 20000),
+
   // --- Handoff humano ---
   // Con el flag apagado el comportamiento es exactamente el de antes del bloque
   // de handoff: la IA se bloquea con el booleano legacy, sin efectos en Chatwoot
