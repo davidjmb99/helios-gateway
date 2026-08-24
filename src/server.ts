@@ -14,6 +14,7 @@ import {
   bufferRepository,
   idempotencyRepository,
   logsRepository,
+  mediaRepository,
   patientRepository,
   stateRepository
 } from './repositories/database.js';
@@ -1038,16 +1039,26 @@ async function handleChatwootWebhook(payload: any, urlTenantId: string | undefin
 
       // El gasto se registra SIEMPRE, incluso cuando el mensaje se ignora. «Ignorar»
       // significa no contestar, no no enterarse: si manana el clasificador empieza a
-      // comerse fotos de pacientes de verdad, tiene que poder verse aqui.
+      // comerse fotos de pacientes de verdad, tiene que poder verse aqui. Y una cadena
+      // ignorada CUESTA DINERO sin generar respuesta, asi que sin esta fila ese gasto
+      // seria invisible en el panel.
       for (const gasto of media.gastos) {
-        await logsRepository.save({
-          trace_id: normalized.trace_id,
+        await mediaRepository.registrar({
           tenant_id: normalized.tenant_id,
           conversation_id: normalized.conversation_id,
           contact_id: normalized.contact_id,
-          event_type: 'media_procesada',
-          metadata: gasto as any
-        }).catch(() => {});
+          trace_id: normalized.trace_id,
+          tipo: gasto.tipo,
+          extension: gasto.extension,
+          categoria: gasto.categoria,
+          accion: gasto.accion,
+          modelo: config.GEMINI_MODEL,
+          // El nivel se guarda TAL COMO ESTABA en este momento, no se deduce despues.
+          nivel: config.GEMINI_NIVEL,
+          input_tokens: gasto.input_tokens,
+          output_tokens: gasto.output_tokens,
+          error: gasto.error
+        });
       }
 
       if (media.ignorarMensaje) {

@@ -506,6 +506,50 @@ export const logsRepository = {
   }
 };
 
+// --- ARCHIVOS PROCESADOS (el coste de Gemini) ---
+//
+// SEPARADO DE LOS LOGS A PROPOSITO. Los logs se leen cuando algo va mal y se pueden
+// purgar sin pensarlo; esto es facturacion, y David lo quiere por periodos. Ver la
+// migracion 20260824010000_media_events.sql para el razonamiento completo.
+export const mediaRepository = {
+  /**
+   * Apunta un archivo procesado.
+   *
+   * NUNCA LANZA. Un fallo apuntando el gasto no puede impedir que el paciente reciba
+   * respuesta: el mensaje ya esta convertido en texto y lo unico que se perderia es una
+   * fila de contabilidad. Se registra el fallo y se sigue.
+   */
+  async registrar(evento: {
+    tenant_id: string;
+    conversation_id?: string | null;
+    contact_id?: string | null;
+    trace_id?: string | null;
+    tipo: string;
+    extension?: string | null;
+    categoria?: string | null;
+    accion: string;
+    modelo?: string | null;
+    nivel?: string | null;
+    input_tokens: number;
+    output_tokens: number;
+    error?: string | null;
+  }): Promise<void> {
+    try {
+      const { error } = await supabase
+        .from('helios_media_events')
+        .insert({ ...evento, proveedor: 'gemini', created_at: new Date().toISOString() });
+      if (error) throw error;
+    } catch (error: any) {
+      console.error(JSON.stringify({
+        event: 'media_event_no_registrado',
+        error_code: error?.code || 'MEDIA_EVENT_INSERT_FAILED',
+        tenant_id: evento.tenant_id,
+        aviso: 'el mensaje sigue su curso; solo se ha perdido la fila de coste'
+      }));
+    }
+  }
+};
+
 // --- HANDOFF EVENTOS ---
 export const handoffRepository = {
   async create(event: {
