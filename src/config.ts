@@ -147,7 +147,11 @@ export const config = {
   // Los dos fallos son invisibles: `echo "[$GEMINI_MODEL]"` imprime lo mismo con espacio
   // que sin el si el espacio va justo antes del corchete de cierre.
   GEMINI_API_KEY: (process.env.GEMINI_API_KEY || '').trim(),
-  GEMINI_MODEL: (process.env.GEMINI_MODEL || '').trim() || 'gemini-2.5-flash-lite',
+  // EL VALOR POR DEFECTO CAMBIO EL 24-ago-2026. gemini-2.5-flash-lite sigue listado y
+  // sigue en la pagina de precios de Google, pero esta CERRADO A CLAVES NUEVAS: devuelve
+  // un 404 diciendo «no longer available to new users, please update your code to use
+  // models/gemini-3.5-flash-lite». Con la clave y el nombre perfectamente correctos.
+  GEMINI_MODEL: (process.env.GEMINI_MODEL || '').trim() || 'gemini-3.5-flash-lite',
 
   /**
    * Que nivel de la API de Gemini se esta usando. Lo DECLARA el operador, no se detecta:
