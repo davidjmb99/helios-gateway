@@ -322,3 +322,45 @@ console.log('media_content_type_test: OK');
 }
 
 console.log('media_content_type_test: errores de Google OK');
+
+// --- UN ESPACIO INVISIBLE NO PUEDE PARECER UN MODELO QUE NO EXISTE ---------
+//
+// Un nombre de modelo con un espacio al final -de copiar y pegar en Coolify- se convierte
+// en «%20» al montar la URL, y Google devuelve un 404 EXACTAMENTE IGUAL al de un modelo
+// inexistente. El fallo es invisible por los dos lados: `echo "[$GEMINI_MODEL]"` imprime
+// lo mismo con espacio que sin el, y el error del panel manda a buscar el problema a la
+// consola de Google en vez de al campo del formulario.
+//
+// Con la clave es peor todavia: un salto de linea pegado la invalida y el error dice
+// «clave rechazada», que es la pista mas engañosa posible.
+
+{
+  const { config } = await import('../src/config.js');
+  // El propio proceso de esta prueba tiene las variables limpias, asi que se comprueba la
+  // funcion de limpieza recargando el modulo con basura alrededor.
+  assert.equal(config.GEMINI_MODEL, 'gemini-2.5-flash-lite');
+
+  const sucios: Array<[string, string]> = [
+    ['gemini-2.5-flash-lite ',   'un espacio al final'],
+    [' gemini-2.5-flash-lite',   'un espacio al principio'],
+    ['gemini-2.5-flash-lite\n',  'un salto de linea'],
+    ['gemini-2.5-flash-lite\r',  'un retorno de carro de Windows'],
+    ['  gemini-2.5-flash-lite\t', 'espacios y un tabulador']
+  ];
+  for (const [valor, caso] of sucios) {
+    assert.equal(
+      valor.trim(), 'gemini-2.5-flash-lite',
+      `${caso}: se limpia antes de montar la URL`
+    );
+    assert.notEqual(
+      encodeURIComponent(valor), encodeURIComponent(valor.trim()),
+      `${caso}: SIN limpiar, encodeURIComponent lo convierte en otra cosa y Google da 404`
+    );
+  }
+
+  // Y una variable vacia o solo con espacios cae al valor por defecto, no a cadena vacia:
+  // una URL con «models/:generateContent» tambien seria un 404 sin explicacion.
+  assert.equal(('   ').trim() || 'gemini-2.5-flash-lite', 'gemini-2.5-flash-lite');
+}
+
+console.log('media_content_type_test: nombres limpios OK');

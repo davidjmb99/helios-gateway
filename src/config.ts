@@ -138,8 +138,16 @@ export const config = {
   // Sin GEMINI_API_KEY, los archivos siguen ENTRANDO al sistema -no se descartan como
   // antes- pero llegan a Hermes sin procesar: «[nota de voz que no se pudo transcribir]».
   // Es peor que transcribirla y muchisimo mejor que el silencio de antes.
-  GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
-  GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite',
+  // SE LIMPIAN LOS DOS, y no es por pulcritud. Un espacio invisible al final del nombre
+  // del modelo -de copiar y pegar en Coolify- se convierte en «%20» al montar la URL y
+  // Google devuelve un 404 identico al de un modelo que no existe. Con la clave es peor:
+  // un salto de linea pegado la invalida y el error dice «clave rechazada», que manda a
+  // buscar el problema a la consola de Google en vez de al campo del formulario.
+  //
+  // Los dos fallos son invisibles: `echo "[$GEMINI_MODEL]"` imprime lo mismo con espacio
+  // que sin el si el espacio va justo antes del corchete de cierre.
+  GEMINI_API_KEY: (process.env.GEMINI_API_KEY || '').trim(),
+  GEMINI_MODEL: (process.env.GEMINI_MODEL || '').trim() || 'gemini-2.5-flash-lite',
 
   /**
    * Que nivel de la API de Gemini se esta usando. Lo DECLARA el operador, no se detecta:
