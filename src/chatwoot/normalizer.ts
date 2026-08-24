@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { config } from '../config.js';
+import { normalizarAdjuntos, type AdjuntoNormalizado } from './adjuntos.js';
 import { resolveChatwootAlias } from '../utils/normalizeProfilePatch.js';
 import { resolveTenantContext } from '../tenants/context.js';
 
@@ -21,6 +22,11 @@ export interface NormalizedMessage {
   message_id: string;
   source_id: string | null;
   text: string;
+  /**
+   * Los archivos que vinieron con el mensaje, ya clasificados y con su motivo de
+   * rechazo si lo hay. Vacío en la inmensa mayoría de mensajes.
+   */
+  adjuntos: AdjuntoNormalizado[];
   phone: string;
   patient_name: string | null;
   created_at: string;
@@ -148,6 +154,16 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
   // Extraer el texto del mensaje
   const text = (body.content || body.messages?.[0]?.content || '').trim();
 
+  // Y LOS ARCHIVOS. Hasta hoy no se miraban: `attachments` no aparecia en ninguna parte
+  // del codigo, asi que una nota de voz -que llega con el cuerpo VACIO y el archivo
+  // aqui- se descartaba como «mensaje de texto vacio». Un paciente con dolor mandando
+  // una foto de su muela se quedaba sin respuesta y nadie se enteraba.
+  //
+  // La base de Chatwoot se pasa para poder comprobar que la URL del archivo es SUYA
+  // antes de que nadie la descargue. Ver adjuntos.ts: es lo que evita que un webhook
+  // falsificado haga que nuestro propio servidor vaya a buscar una direccion interna.
+  const adjuntos = normalizarAdjuntos(body, config.CHATWOOT_BASE_URL || '');
+
   // Extraer IDs
   const message_id = String(body.id || body.messages?.[0]?.id || '');
   const source_id = body.source_id || body.messages?.[0]?.source_id || null;
@@ -185,9 +201,14 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
   } else if (isPrivate) {
     should_process = false;
     ignore_reason = 'Mensaje privado o nota interna';
-  } else if (!text) {
+  } else if (!text && adjuntos.length === 0) {
+    // AQUI ESTABA EL AGUJERO. La condicion era solo `!text`, y una nota de voz o una
+    // foto llegan SIN texto: se descartaban en silencio. Ahora un mensaje sin texto
+    // pero CON archivos sigue adelante; el archivo se convierte en texto marcado antes
+    // de llegar a Hermes, que es quien decide si continua, deriva o pide que se lo
+    // escriban.
     should_process = false;
-    ignore_reason = 'El cuerpo del mensaje de texto está vacío';
+    ignore_reason = 'El mensaje no tiene texto ni archivos';
   } else if (!conversation_id) {
     should_process = false;
     ignore_reason = 'conversation_id no presente en el webhook';
@@ -240,6 +261,7 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
     created_at: body.created_at || body.messages?.[0]?.created_at || new Date().toISOString(),
     trace_id,
     should_process,
+    adjuntos,
     ignore_reason,
     human_agent_candidate,
     is_private: isPrivate,
