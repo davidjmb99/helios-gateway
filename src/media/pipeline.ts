@@ -46,6 +46,58 @@ export interface MensajeConMedia {
 }
 
 /**
+ * El prefijo de todo lo que escribimos NOSOTROS dentro del mensaje.
+ *
+ * SIRVE PARA DOS COSAS, y la segunda es la que importa:
+ *
+ *   1. Que Hermes sepa que esa frase no la dijo el paciente. Es lo mismo que hace el
+ *      bloque delimitado con el contenido de los archivos, pero al contrario: ahi se marca
+ *      lo que NO son instrucciones, y aqui lo que SI lo son.
+ *
+ *   2. QUE EL GATEWAY NO LEA SUS PROPIAS NOTAS COMO INTENCION DEL PACIENTE. Esto no es
+ *      teorico: paso. La nota de una imagen clinica decia «tiene que verlo el PERSONAL de
+ *      la clinica», y `detectSignals` busca /persona/ para saber si alguien pide hablar con
+ *      un humano. Resultado: cada foto de una muela levantaba `asks_for_human` sin que el
+ *      paciente lo pidiera. Salio bien por casualidad -una foto clinica SI la tiene que ver
+ *      alguien- pero era un acierto accidental, y con un comprobante de pago tambien
+ *      disparaba. Lo vio David en el payload del 24 de agosto.
+ */
+export const PREFIJO_NOTA = 'Nota del sistema: ';
+
+const notaDelSistema = (texto: string) => `[${PREFIJO_NOTA}${texto}]`;
+
+/**
+ * Lo que `sinNotasDelSistema` borra.
+ *
+ * Va escrita a mano y no construida a partir de PREFIJO_NOTA a propósito: una expresión
+ * regular armada con concatenación de cadenas es donde se cuelan los escapes mal puestos,
+ * y ya me pasó al escribir esto. El riesgo de que las dos se separen lo cubre una prueba
+ * que comprueba que esta expresión reconoce una nota hecha por `notaDelSistema`.
+ */
+const NOTA_DEL_SISTEMA = /\[Nota del sistema: [^\]]*\]/g;
+
+/**
+ * Quita nuestras notas y deja SOLO lo que dijo el paciente.
+ *
+ * SE USA ANTES DE DETECTAR SEÑALES, y hay que ser preciso en lo que quita:
+ *
+ *   SE VA la nota del sistema, porque la escribimos nosotros.
+ *
+ *   SE QUEDA lo que hay dentro del bloque delimitado -la transcripcion de una nota de
+ *   voz, el texto de un PDF- porque ESO SI lo dijo el paciente. Una nota de voz que diga
+ *   «quiero hablar con una persona» TIENE que levantar la señal. Confundir las dos cosas
+ *   dejaria a un paciente pidiendo ayuda sin que nadie se enterara, que es peor que el
+ *   fallo que esto viene a arreglar.
+ */
+export function sinNotasDelSistema(texto: unknown): string {
+  return String(texto ?? '')
+    .replace(NOTA_DEL_SISTEMA, ' ')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .trim();
+}
+
+/**
  * El texto de un archivo derivado.
  *
  * SON NUESTRAS PALABRAS, NO LAS DEL MODELO, y van FUERA del bloque delimitado. Esa es la
@@ -57,12 +109,20 @@ function textoDeDerivacion(adjunto: AdjuntoNormalizado, categoria: string | null
   const que = adjunto.tipo === 'video' ? 'un vídeo' : 'una imagen';
 
   if (categoria === 'pago') {
-    return `[El paciente ha enviado ${que} con lo que parece un comprobante de pago. ` +
-      `No se ha leído su contenido a propósito. Tiene que verlo una persona del equipo.]`;
+    return notaDelSistema(
+      `el paciente ha enviado ${que} que se ha reconocido como un comprobante de pago. ` +
+      `Su contenido NO se ha leído a propósito. Tiene que revisarlo el equipo de la clínica.`
+    );
   }
-  return `[El paciente ha enviado ${que} de contenido clínico. NO se ha analizado, y no ` +
-    `debes opinar sobre ello ni preguntar por síntomas. Tiene que verlo el personal ` +
-    `de la clínica.]`;
+  // «SE HA RECONOCIDO» Y NO «NO SE HA ANALIZADO». Lo señaló David al ver la primera foto
+  // de una muela: «dice que Gemini no analizó la foto». Y no era verdad -si no la hubiera
+  // mirado no sabría que es clínica-, pero mi texto lo daba a entender. La diferencia
+  // importa: lo que NO se hace es DESCRIBIRLA, y es deliberado, no un fallo.
+  return notaDelSistema(
+    `el paciente ha enviado ${que} que se ha reconocido como contenido clínico. Su ` +
+    `contenido NO se describe a propósito. No opines sobre ella ni preguntes por ` +
+    `síntomas: tiene que verla el equipo de la clínica.`
+  );
 }
 
 /** El texto de un archivo que no se pudo procesar. Dice qué pasó, sin detalle técnico. */
@@ -70,8 +130,10 @@ function textoDeFallo(adjunto: AdjuntoNormalizado, error: string): string {
   // El códec de WhatsApp es el único fallo con nombre propio, porque si aparece no es un
   // caso aislado: fallarían TODAS las notas de voz.
   if (error === 'gemini_rechaza_el_codec' || adjunto.tipo === 'audio') {
-    return '[El paciente ha enviado una nota de voz que no se ha podido transcribir. ' +
-      'Pídele con amabilidad que te lo escriba.]';
+    return notaDelSistema(
+      'el paciente ha enviado una nota de voz que no se ha podido transcribir. Pídele ' +
+      'con amabilidad que te lo escriba.'
+    );
   }
   return textoDelAdjunto({ ...adjunto, rechazo: adjunto.rechazo ?? error }, null);
 }
@@ -89,8 +151,10 @@ export function textoDeMedia(
   // genérico de «sin contenido legible», Hermes creería que algo falló y se pondría a
   // disculparse por un meme.
   if (resultado.categoria === 'irrelevante') {
-    return '[El paciente ha enviado un archivo sin relación con la clínica. No hace falta ' +
-      'comentarlo ni disculparse por ello.]';
+    return notaDelSistema(
+      'el paciente ha enviado un archivo sin relación con la clínica. No hace falta ' +
+      'comentarlo ni disculparse por ello.'
+    );
   }
 
   if (resultado.error && !resultado.texto) return textoDeFallo(adjunto, resultado.error);

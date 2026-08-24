@@ -23,6 +23,7 @@ import { resolveTenantContextByTenantId } from './tenants/context.js';
 import { maskPhoneForLog } from './utils/sanitizeForLog.js';
 import { createBatchIdentity, createOutboxIdentity } from './durable/identity.js';
 import { detectSignals } from './chatwoot/normalizer.js';
+import { sinNotasDelSistema } from './media/pipeline.js';
 import { markEligibleIfAppointment, markExcluded } from './csat/service.js';
 import { decidirCierre } from './csat/cierre.js';
 import { fraseDeDisponibilidad } from './handoff/disponibilidad.js';
@@ -454,7 +455,16 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     // operativa» con prioridad alta en vez del motivo verdadero.
     // Se mantiene el OR con la fila para no romper los tests que construyen
     // mensajes en memoria con signals ya puestas.
-    const batchSignals = detectSignals(consolidatedText);
+    // SIN NUESTRAS PROPIAS NOTAS. Esto no es precaucion, es un fallo que ocurrio: la nota
+    // de una imagen clinica decia «tiene que verlo el PERSONAL de la clinica», y
+    // detectSignals busca /persona/ para saber si alguien pide hablar con un humano.
+    // Resultado: cada foto de una muela levantaba `asks_for_human` sin que el paciente lo
+    // pidiera. Lo vio David en el payload del 24 de agosto.
+    //
+    // LO QUE SE QUEDA es lo que hay dentro del bloque delimitado -la transcripcion de una
+    // nota de voz-, porque eso SI lo dijo el paciente: una nota de voz que diga «quiero
+    // hablar con una persona» tiene que levantar la señal.
+    const batchSignals = detectSignals(sinNotasDelSistema(consolidatedText));
     const possibleFrustration =
       rawMessages.some(m => m.signals?.possible_frustration || false) || batchSignals.possible_frustration;
     const possibleEmergency =

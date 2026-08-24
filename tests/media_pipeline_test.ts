@@ -23,6 +23,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 const CHATWOOT = 'https://chatwoot.app.escala365.com';
 process.env.CHATWOOT_BASE_URL = CHATWOOT;
@@ -32,7 +33,10 @@ process.env.CHATWOOT_TENANT_CONTEXTS_JSON = JSON.stringify({
 process.env.GEMINI_API_KEY = 'clave-de-prueba';
 process.env.GEMINI_MODEL = 'gemini-2.5-flash-lite';
 
-const { procesarMediaDelMensaje } = await import('../src/media/pipeline.js');
+const {
+  procesarMediaDelMensaje, sinNotasDelSistema, PREFIJO_NOTA
+} = await import('../src/media/pipeline.js');
+const { detectSignals } = await import('../src/chatwoot/normalizer.js');
 const { normalizarAdjuntos } = await import('../src/chatwoot/adjuntos.js');
 
 /** Adjuntos ya normalizados, como los que produce el webhook. */
@@ -142,7 +146,17 @@ const clasif = (categoria: string, descripcion = '', seguridad = 'alta') =>
   assert.equal(r.derivar, true, 'lo clinico lo ve una persona');
   assert.equal(r.ignorarMensaje, false, 'y NUNCA se ignora');
   assert.match(r.texto, /contenido cl[ií]nico/i);
-  assert.match(r.texto, /no debes opinar/i, 'se le dice explicitamente que no opine');
+  assert.match(r.texto, /No opines sobre ella/i, 'se le dice explicitamente que no opine');
+
+  // «SE HA RECONOCIDO» Y NO «NO SE HA ANALIZADO». Lo señalo David al ver la primera foto de
+  // una muela: «dice que Gemini no analizo la foto». No era verdad -si no la hubiera mirado
+  // no sabria que es clinica- pero el texto lo daba a entender. Lo que NO se hace es
+  // DESCRIBIRLA, y es deliberado, no un fallo.
+  assert.match(r.texto, /se ha reconocido como contenido cl[ií]nico/i);
+  assert.doesNotMatch(
+    r.texto, /no se ha analizado/i,
+    'el texto no puede dar a entender que el analisis fallo: se hizo, y a proposito no se describe'
+  );
 
   // LA PARTE QUE IMPORTA: la nota del sistema NO va envuelta en el bloque de contenido no
   // fiable. Si fuera dentro, un paciente podria escribir esa misma frase y provocar una
@@ -250,6 +264,7 @@ const clasif = (categoria: string, descripcion = '', seguridad = 'alta') =>
   assert.match(r.texto, /¿es normal\?/, 'y su pregunta llega intacta');
   // El archivo se menciona en una linea, para que no parezca que se perdio.
   assert.match(r.texto, /sin relaci[oó]n con la cl[ií]nica/i);
+  assert.match(r.texto, /Nota del sistema/, 'y va marcada como nuestra');
 }
 
 {
@@ -330,6 +345,119 @@ const clasif = (categoria: string, descripcion = '', seguridad = 'alta') =>
   assert.equal(r.ignorarMensaje, false);
   assert.ok(r.texto.length > 0);
   assert.equal(llamadas.length, 0, 'un formato no soportado no se descarga');
+}
+
+// --- 5. EL GATEWAY NO PUEDE LEER SUS PROPIAS NOTAS COMO INTENCION DEL PACIENTE ---
+//
+// ESTO PASO. LO VIO DAVID EN EL PAYLOAD DEL 24 DE AGOSTO. La nota de una imagen clinica
+// decia «tiene que verlo el PERSONAL de la clinica», y `detectSignals` busca /persona/
+// para saber si alguien pide hablar con un humano. Resultado: cada foto de una muela
+// levantaba `asks_for_human` sin que el paciente lo pidiera.
+//
+// Salio bien por casualidad -una foto clinica SI la tiene que ver alguien- pero era un
+// acierto accidental, y con un comprobante de pago disparaba igual. Es la misma clase de
+// problema que el bloque delimitado viene a evitar, solo que el que se confundia no era
+// Hermes: era el propio Gateway leyendo su propio texto.
+
+{
+  // TODAS las notas llevan el prefijo. Si una se escapa, vuelve el fallo por esa via.
+  const { impl } = fakeRed([clasif('clinica')]);
+  const clinica = await procesarMediaDelMensaje(
+    { texto: '', adjuntos: adjuntos(IMAGEN) }, { fetchImpl: impl }
+  );
+  assert.match(clinica.texto, new RegExp(PREFIJO_NOTA));
+
+  const { impl: i2 } = fakeRed([clasif('pago')]);
+  const pago = await procesarMediaDelMensaje(
+    { texto: '', adjuntos: adjuntos(IMAGEN) }, { fetchImpl: i2 }
+  );
+  assert.match(pago.texto, new RegExp(PREFIJO_NOTA));
+
+  const { impl: i3 } = fakeRed([], { falla: true });
+  const fallo = await procesarMediaDelMensaje(
+    { texto: '', adjuntos: adjuntos(AUDIO) }, { fetchImpl: i3 }
+  );
+  assert.match(fallo.texto, new RegExp(PREFIJO_NOTA), 'tambien la de un fallo');
+}
+
+{
+  // LA EXPRESION Y EL PREFIJO NO PUEDEN SEPARARSE. La expresion esta escrita a mano -una
+  // regex armada por concatenacion es donde se cuelan los escapes mal puestos- asi que
+  // esto es lo que impide que se queden desincronizados.
+  const inventada = '[' + PREFIJO_NOTA + 'cualquier cosa que se nos ocurra escribir aqui.]';
+  assert.equal(
+    sinNotasDelSistema('hola ' + inventada), 'hola',
+    'la expresion tiene que reconocer cualquier nota hecha con el prefijo'
+  );
+}
+
+{
+  // EL TEXTO EXACTO QUE FALLO, con «personal» dentro. Se prueba con el texto viejo a
+  // proposito: la nota nueva dice «el equipo» y ya no dispara, pero el filtro tiene que
+  // funcionar igual sin depender de que las palabras esten bien elegidas. Son dos
+  // cinturones, y este es el que no se rompe al reescribir una frase.
+  const comoFallo = [
+    'Creo que tengo carie',
+    '[' + PREFIJO_NOTA + 'el paciente ha enviado una imagen. Tiene que verlo el personal de la clínica.]'
+  ].join('\n');
+
+  assert.equal(
+    detectSignals(comoFallo).asks_for_human, true,
+    'sin filtrar, la nota levanta la señal: ESTE es el fallo que se arregla'
+  );
+  assert.equal(
+    detectSignals(sinNotasDelSistema(comoFallo)).asks_for_human, false,
+    'filtrado, NO la levanta: el paciente no pidio hablar con nadie'
+  );
+  assert.equal(
+    sinNotasDelSistema(comoFallo), 'Creo que tengo carie',
+    'y lo que queda es exactamente lo que escribio el paciente'
+  );
+}
+
+{
+  // Y LO QUE NO SE PUEDE PERDER: una nota de voz que pide hablar con una persona. Eso lo
+  // dijo el paciente, viaja dentro del bloque delimitado, y TIENE que levantar la señal.
+  // Confundirlo con nuestras notas dejaria a alguien pidiendo ayuda sin que nadie se
+  // enterara, que es peor que el fallo que esto arregla.
+  const { impl } = fakeRed(['quiero hablar con una persona del equipo por favor']);
+  const r = await procesarMediaDelMensaje(
+    { texto: '', adjuntos: adjuntos(AUDIO) }, { fetchImpl: impl }
+  );
+  assert.equal(
+    detectSignals(sinNotasDelSistema(r.texto)).asks_for_human, true,
+    'lo que dice el paciente EN UNA NOTA DE VOZ si cuenta: el filtro no puede comerselo'
+  );
+
+  // Y lo mismo con una urgencia dicha en voz alta.
+  const { impl: i2 } = fakeRed(['tengo mucha hinchazon y no puedo respirar bien']);
+  const r2 = await procesarMediaDelMensaje(
+    { texto: '', adjuntos: adjuntos(AUDIO) }, { fetchImpl: i2 }
+  );
+  assert.equal(
+    detectSignals(sinNotasDelSistema(r2.texto)).possible_emergency, true,
+    'una urgencia dicha en una nota de voz tiene que detectarse igual'
+  );
+}
+
+{
+  // Y LA COSTURA, que es donde estaba el fallo de verdad. Las comprobaciones de arriba
+  // prueban que `sinNotasDelSistema` funciona; esta prueba que ALGUIEN LA USA.
+  //
+  // Es una comprobacion sobre el texto del archivo, y eso es debil -no ejecuta nada- pero
+  // la alternativa era montar el orquestador entero con Supabase de mentira para
+  // comprobar una linea. Se deja anotado: si algun dia hay una prueba que ejecute
+  // processBufferEvent de verdad, esta se cambia por una de esas.
+  const orquestador = readFileSync(new URL('../src/orchestrator.ts', import.meta.url), 'utf8');
+  assert.match(
+    orquestador, /detectSignals\(\s*sinNotasDelSistema\(/,
+    'el orquestador tiene que limpiar sus propias notas ANTES de detectar señales, o cada ' +
+    'foto clinica vuelve a levantar asks_for_human sin que el paciente lo pida'
+  );
+  assert.doesNotMatch(
+    orquestador, /detectSignals\(consolidatedText\)/,
+    'y no puede quedar ninguna llamada sobre el texto crudo del lote'
+  );
 }
 
 console.log('media_pipeline_test: OK');
