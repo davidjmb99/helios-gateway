@@ -325,3 +325,105 @@ export function normalizarDireccion(valor: unknown): string | null {
 }
 
 export const MAX_LARGO_DIRECCION = MAX_DIRECCION;
+
+// --- SERVICIOS Y PRECIOS ---------------------------------------------------
+//
+// LOS PRECIOS VIAJAN COMO DATO, NO COMO DOCUMENTO. Es la lección de la dirección
+// (HEL-085): Hermes se NEGÓ a decir una dirección que estaba en su prompt -«no quiero
+// darte una dirección de memoria por si no es exacta»- y contestó el horario sin dudar,
+// porque el horario llegaba en la petición. Con un precio ese recelo es todavía más sano:
+// un número mal recordado es una discusión con un paciente en el mostrador.
+//
+// Y POR ESO NO VAN POR RAG aunque la clínica tenga el PDF. Lo que llega en la petición es
+// un hecho; lo que hay que ir a buscar a un documento es un recuerdo, y el SOUL le enseña
+// a desconfiar de sus recuerdos -y bien, que es lo que evita que invente citas-.
+//
+// CADA SERVICIO LLEVA SUS OTROS NOMBRES, y esa es la mitad que de verdad importa. Lo
+// señaló David: «el agente debe saber los otros términos a cada uno de esos servicios».
+// Un paciente en Venezuela no pide una «exodoncia simple»: dice que le van a SACAR LA
+// MUELA. Sin los sinónimos el precio está en el sistema y el paciente no lo alcanza, que
+// es igual de inútil que no tenerlo.
+
+const MAX_SERVICIOS = 40;
+const MAX_LARGO_SERVICIOS = 4000;
+const MAX_SINONIMOS = 12;
+
+export interface ServicioDeClinica {
+  nombre: string;
+  precio: string;
+  /** Cómo lo llama la gente. Para RECONOCER lo que pide el paciente, no para hablar así. */
+  tambien: string[];
+}
+
+/**
+ * Lee la lista de servicios tal como la escribe la clínica en Ajustes.
+ *
+ * UNA LÍNEA POR SERVICIO, en el formato:
+ *
+ *     Nombre del servicio: precio (otro nombre, otro nombre)
+ *
+ * TEXTO LIBRE Y NO UN FORMULARIO POR CAMPOS, por lo mismo que la dirección: «Acarigua, CC
+ * Mamánico local 27, tiene estacionamiento» es una dirección útil, y partirla en
+ * calle/número/ciudad la habría empeorado. Aquí igual: «150$ hasta 250$ por unidad» y
+ * «entrada 100$ + 40$ al mes» son precios reales que ningún campo numérico admite.
+ *
+ * EL PRECIO NO SE VALIDA COMO NÚMERO A PROPÓSITO. Un rango, un «desde», un «por diente» o
+ * un «consultar» son respuestas legítimas de una clínica, y forzar un número obligaría a
+ * mentir o a dejarlo vacío.
+ *
+ * Devuelve null si no hay nada aprovechable, y entonces no se guarda: sin servicios
+ * configurados Helios no inventa precios, deriva.
+ */
+export function normalizarServicios(valor: unknown): string | null {
+  const bruto = String(valor ?? '');
+  if (!bruto.trim()) return null;
+  if (bruto.length > MAX_LARGO_SERVICIOS) return null;
+
+  const lineas = bruto.split('\n').map(l => l.trim()).filter(Boolean);
+  if (lineas.length === 0 || lineas.length > MAX_SERVICIOS) return null;
+
+  // Se exige que TODAS las líneas se puedan leer. Guardar una lista con la mitad
+  // entendida sería peor que rechazarla: la clínica creería que puso doce precios y
+  // Helios solo sabría seis, sin que nadie se entere hasta que un paciente pregunte.
+  for (const linea of lineas) {
+    if (!leerLineaDeServicio(linea)) return null;
+  }
+
+  return lineas.join('\n');
+}
+
+/** Una línea suelta. Devuelve null si no se entiende. */
+export function leerLineaDeServicio(linea: string): ServicioDeClinica | null {
+  // El paréntesis del final es el de los otros nombres, y se toma el ÚLTIMO: el precio
+  // puede llevar paréntesis dentro -«40$ a 80$ (por sesión)»- y partir por el primero
+  // convertiría parte del precio en un sinónimo.
+  const m = String(linea ?? '').trim().match(/^([^:]+):\s*(.+?)(?:\s*\(([^()]*)\))?\s*$/);
+  if (!m) return null;
+
+  const nombre = m[1].trim().replace(/\s+/g, ' ');
+  const precio = m[2].trim().replace(/\s+/g, ' ');
+  if (!nombre || !precio || nombre.length > 80 || precio.length > 80) return null;
+
+  const tambien = (m[3] ?? '')
+    .split(',')
+    .map(s => s.trim().replace(/\s+/g, ' ').toLowerCase())
+    .filter(Boolean)
+    .slice(0, MAX_SINONIMOS);
+
+  return { nombre, precio, tambien };
+}
+
+/** La lista ya leída, para mandarla en clinic_context. */
+export function serviciosDeTexto(texto: string | null): ServicioDeClinica[] {
+  if (!texto) return [];
+  return texto
+    .split('\n')
+    .map(l => leerLineaDeServicio(l))
+    .filter((s): s is ServicioDeClinica => s !== null);
+}
+
+export const LIMITES_DE_SERVICIOS = {
+  servicios: MAX_SERVICIOS,
+  caracteres: MAX_LARGO_SERVICIOS,
+  sinonimos: MAX_SINONIMOS
+};

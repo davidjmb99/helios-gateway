@@ -564,4 +564,131 @@ console.log('clinic_settings_test: direccion OK');
   );
 }
 
+// --- SERVICIOS Y PRECIOS, CON LOS OTROS NOMBRES ---------------------------
+//
+// LO PIDIO DAVID: «el agente debe saber los otros terminos a cada uno de esos servicios».
+// Y es la mitad que de verdad importa: un paciente en Venezuela no pide una «exodoncia
+// simple», dice que le van a SACAR LA MUELA. Sin los sinonimos el precio esta en el
+// sistema y el paciente no lo alcanza, que es igual de inutil que no tenerlo.
+//
+// Lo que se protege, por orden de daño:
+//
+//  1. QUE UNA LISTA A MEDIAS NO SE GUARDE. Si una sola linea no se entiende, no se guarda
+//     NINGUNA. La clinica creeria que puso doce precios y Helios sabria seis, y nadie se
+//     enteraria hasta que un paciente preguntara por el que falta.
+//
+//  2. QUE SIN PRECIOS NO SE MANDE NADA. Un precio inventado acaba en una discusion en el
+//     mostrador con Helios de testigo por escrito.
+//
+//  3. Que el precio admita rangos y frases. «150$ a 250$ por unidad» es un precio real.
+
+{
+  const { normalizarServicios, serviciosDeTexto, leerLineaDeServicio } = esquema;
+
+  // El caso real de COI, tal como lo va a pegar David.
+  const listaDeCoi = [
+    'Consulta de valoración: 20$ (consulta, valoración, revisión, chequeo)',
+    'Exodoncia simple: 30$ (extracción, sacar una muela, sacar un diente)',
+    'Cirugía de cordal: 100$ por diente (cordales, muela del juicio)',
+    'Implantología: 150$ a 250$ por unidad (implante, poner un diente, tornillo)'
+  ].join('\n');
+
+  const guardado = normalizarServicios(listaDeCoi);
+  assert.ok(guardado, 'la lista de COI se guarda');
+
+  const leidos = serviciosDeTexto(guardado);
+  assert.equal(leidos.length, 4);
+
+  // 3. EL PRECIO ES TEXTO LIBRE. Forzar un numero obligaria a la clinica a mentir o a
+  // dejarlo vacio: un rango, un «desde» y un «por diente» son respuestas legitimas.
+  assert.equal(leidos[2].precio, '100$ por diente');
+  assert.equal(leidos[3].precio, '150$ a 250$ por unidad', 'un rango con frase detras');
+
+  // LOS OTROS NOMBRES, que es lo que hace que el paciente alcance el precio.
+  assert.deepEqual(
+    leidos[1].tambien, ['extracción', 'sacar una muela', 'sacar un diente'],
+    'los otros nombres se separan por comas y van en minusculas'
+  );
+  assert.ok(
+    leidos[1].tambien.includes('sacar una muela'),
+    'LO QUE DE VERDAD DICE UN PACIENTE tiene que estar ahi'
+  );
+}
+
+{
+  const { normalizarServicios } = esquema;
+
+  // 1. UNA LINEA MALA TIRA LA LISTA ENTERA. Es deliberado y es lo contrario de lo
+  // permisivo: guardar la mitad entendida es el fallo que no se ve.
+  const conUnaMala = [
+    'Higiene dental completa: 25$ (limpieza, sarro)',
+    'esta linea no tiene el formato y no hay forma de leerla',
+    'Blanqueamiento: 60$ (blanquear los dientes)'
+  ].join('\n');
+  assert.equal(
+    normalizarServicios(conUnaMala), null,
+    'con una sola linea ilegible NO se guarda ninguna: la clinica creeria tener tres ' +
+    'precios y Helios sabria dos'
+  );
+
+  // 2. SIN NADA, NADA. No se guarda una lista vacia ni de espacios.
+  assert.equal(normalizarServicios(''), null);
+  assert.equal(normalizarServicios('   \n  \n '), null);
+  assert.equal(normalizarServicios(null), null);
+  assert.equal(normalizarServicios(undefined), null);
+
+  // Los topes: 40 servicios y 4000 caracteres.
+  const demasiados = Array.from({ length: 41 }, (_, i) => `Servicio ${i}: 10$`).join('\n');
+  assert.equal(normalizarServicios(demasiados), null, 'mas de 40 servicios no se guarda');
+  assert.equal(
+    normalizarServicios('Servicio: ' + 'x'.repeat(4100)), null,
+    'y tampoco un texto de 4000 caracteres para arriba'
+  );
+
+  // Un servicio SIN otros nombres es valido: el parentesis es opcional.
+  const sinSinonimos = normalizarServicios('Radiografía panorámica: 15$');
+  assert.ok(sinSinonimos, 'el parentesis de los otros nombres es opcional');
+}
+
+{
+  const { leerLineaDeServicio } = esquema;
+
+  // Un nombre sin precio no vale: seria un servicio del que Helios no sabe decir nada.
+  assert.equal(leerLineaDeServicio('Blanqueamiento'), null, 'sin precio no es un servicio');
+  assert.equal(leerLineaDeServicio('Blanqueamiento:'), null, 'ni con los dos puntos vacios');
+  assert.equal(leerLineaDeServicio(': 60$'), null, 'ni un precio sin nombre');
+
+  // Y los nombres larguisimos se rechazan en vez de recortarse: recortar un nombre de
+  // servicio a mitad de palabra es peor que decir que la linea esta mal.
+  assert.equal(leerLineaDeServicio('X'.repeat(90) + ': 10$'), null);
+  assert.equal(leerLineaDeServicio('Blanqueamiento: ' + '9'.repeat(90)), null);
+}
+
+{
+  // Y LA COSTURA. Sin servicios configurados el campo NO se manda, igual que la
+  // direccion: un `services: []` en clinic_context es distinto de que el campo no exista.
+  // Lo primero le dice a Hermes «esta clinica no tiene servicios», que es falso; lo
+  // segundo, «no lo se», que es la verdad y le hace derivar.
+  const orquestador = readFileSync(new URL('../src/orchestrator.ts', import.meta.url), 'utf8');
+
+  assert.match(
+    orquestador, /servicios\.length > 0[\s\S]{0,120}?services: contextoDeClinica\.servicios/,
+    'los servicios solo se mandan si la clinica los configuro'
+  );
+  assert.doesNotMatch(
+    orquestador, /^\s*services: contextoDeClinica\.servicios,/m,
+    'y NO incondicionalmente: una lista vacia le dice a Hermes que la clinica no tiene ' +
+    'servicios, que es falso, en vez de que no lo sabemos'
+  );
+
+  // La rama de fallo -sin poder leer los ajustes- tambien va vacia: antes de inventar un
+  // precio, derivar.
+  assert.match(
+    orquestador, /servicios: \[\]/,
+    'si los ajustes no se pueden leer, no hay precios: Helios deriva antes que inventar'
+  );
+}
+
+console.log('clinic_settings_test: servicios y precios OK');
+
 console.log('clinic_settings_test: primera visita OK');

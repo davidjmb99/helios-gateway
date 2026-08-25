@@ -52,6 +52,10 @@ import {
   normalizarTono,
   normalizarDireccion,
   normalizarPrimeraVisita,
+  normalizarServicios,
+  serviciosDeTexto,
+  LIMITES_DE_SERVICIOS,
+  type ServicioDeClinica,
   normalizarVentanaEnvio,
   normalizarZona,
   type EquiposClinica,
@@ -92,6 +96,7 @@ export interface AjustesClinica {
   /** Donde esta la clinica. Viaja en clinic_context, no en el prompt. */
   clinic_address: string | null;
   first_visit_free: boolean;
+  clinic_services: string | null;
   /** Qué campos los eligió la clínica y cuáles vienen de lo de siempre. */
   origen: Record<string, Origen>;
 }
@@ -113,7 +118,8 @@ const CAMPOS = {
   clinic_timezone: { normalizar: normalizarZona, error: 'ZONA_INVALIDA' },
   clinic_tone: { normalizar: normalizarTono, error: 'TONO_INVALIDO' },
   clinic_address: { normalizar: normalizarDireccion, error: 'DIRECCION_INVALIDA' },
-  first_visit_free: { normalizar: normalizarPrimeraVisita, error: 'PRIMERA_VISITA_INVALIDA' }
+  first_visit_free: { normalizar: normalizarPrimeraVisita, error: 'PRIMERA_VISITA_INVALIDA' },
+  clinic_services: { normalizar: normalizarServicios, error: 'SERVICIOS_INVALIDOS' }
 } as const;
 
 type CampoAjuste = keyof typeof CAMPOS;
@@ -166,6 +172,9 @@ function porDefecto(): AjustesClinica {
     // lo prometia sin que nadie lo hubiera confirmado. Prometer algo gratis que luego se
     // cobra es una discusion en el mostrador; lo contrario se arregla hablando.
     first_visit_free: false,
+    // SIN PRECIOS POR DEFECTO. Un precio inventado acaba en una discusion en el mostrador
+    // con Helios de testigo por escrito. Sin servicios, Helios no dice ninguno y deriva.
+    clinic_services: null,
     origen: {}
   };
 }
@@ -346,6 +355,7 @@ export async function leerContextoDeClinica(tenantId: string): Promise<{
   zona: string;
   direccion: string | null;
   primeraVisitaGratis: boolean;
+  servicios: ServicioDeClinica[];
 }> {
   const ajustes = await ajustesDe(tenantId);
   return {
@@ -353,6 +363,7 @@ export async function leerContextoDeClinica(tenantId: string): Promise<{
     // colarse como si fuera real, porque el defecto es null.
     direccion: ajustes.clinic_address,
     primeraVisitaGratis: ajustes.first_visit_free,
+    servicios: serviciosDeTexto(ajustes.clinic_services),
     // Solo se manda si la clínica lo configuró: mandar el horario por defecto haría
     // creer a Hermes que es el de verdad cuando nadie lo ha confirmado.
     horario: ajustes.origen.clinic_hours === 'clinica'
@@ -399,6 +410,8 @@ export async function leerAjustes(tenantId: string): Promise<Record<string, unkn
     clinic_tone_max: MAX_LARGO_TONO,
     clinic_address: ajustes.clinic_address,
     first_visit_free: ajustes.first_visit_free,
+    clinic_services: ajustes.clinic_services,
+    clinic_services_limites: LIMITES_DE_SERVICIOS,
     clinic_address_max: MAX_LARGO_DIRECCION,
 
     // De dónde sale cada valor. El panel lo necesita para no decir «elegido por la

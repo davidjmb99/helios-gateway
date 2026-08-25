@@ -493,7 +493,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       // SIN PODER LEER LOS AJUSTES, NO SE PROMETE NADA GRATIS. Es la misma razon que el
       // defecto: prometer algo gratis que luego se cobra acaba en una discusion en el
       // mostrador, y aqui encima no sabriamos ni por que se prometio.
-      primeraVisitaGratis: false
+      primeraVisitaGratis: false,
+      // Sin poder leer los ajustes, tampoco hay precios: Helios deriva antes que inventar.
+      servicios: []
     }));
 
     // 6. Preparar el payload limpio para Hermes con identidad real desde Supabase
@@ -599,6 +601,18 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         // para COI-. Mismo fallo que «Acarigua» en el SOUL: un dato de UNA clinica en un
         // sitio que sirve a TODAS.
         first_visit_free: contextoDeClinica.primeraVisitaGratis,
+        // LOS PRECIOS VIAJAN COMO DATO, igual que la direccion y por el mismo motivo: lo
+        // que llega en la peticion es un hecho, y lo que hay que ir a buscar a un
+        // documento es un recuerdo del que el SOUL le enseña a desconfiar.
+        //
+        // `tambien` son los otros nombres por los que la gente pide cada cosa, y estan
+        // para RECONOCER lo que dice el paciente, no para que Helios hable asi. Un
+        // paciente no pide una «exodoncia simple»: dice que le van a sacar la muela.
+        //
+        // Solo se manda si la clinica los configuro. Sin precios, Helios no dice ninguno.
+        ...(contextoDeClinica.servicios.length > 0
+          ? { services: contextoDeClinica.servicios }
+          : {}),
         no_diagnosis: true,
         no_medication: true,
         prices_are_orientative: true

@@ -2548,6 +2548,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
       document.getElementById('clinica-tono').value = valorEnPantalla('clinic_tone') || '';
       document.getElementById('clinica-direccion').value = valorEnPantalla('clinic_address') || '';
       document.getElementById('clinica-primera-visita').checked = valorEnPantalla('first_visit_free') === true;
+      document.getElementById('clinica-servicios').value = valorEnPantalla('clinic_services') || '';
 
       document.getElementById('horario-estado').innerHTML = textoDeOrigen(
         ajustesActuales.origen.clinic_hours,
@@ -3064,6 +3065,28 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
                      class="rounded border-slate-700 bg-slate-950">
               La primera visita es gratuita
             </label>
+          </div>
+          <div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Servicios y precios</h3>
+            <p class="text-[11px] text-slate-400 mb-2">
+              <b class="text-slate-300">Una línea por servicio</b>, así:
+              <code class="text-amber-400">Nombre: precio (otro nombre, otro nombre)</code>.
+              Los otros nombres son para que Helios <b class="text-slate-300">reconozca</b>
+              lo que pide el paciente: nadie pide una «exodoncia simple», dicen que les
+              van a sacar la muela. El precio va libre —«desde 30$», «100$ por diente»,
+              «150$ a 250$»— porque un rango es una respuesta legítima.
+              <b class="text-slate-300">Si lo dejas vacío, Helios no inventa precios:
+              deriva.</b> Y siempre los dice como orientativos, sujetos a valoración.
+            </p>
+            <textarea id="clinica-servicios" rows="8"
+                      placeholder="Higiene dental completa: 25$ (limpieza, profilaxis, sarro, tártaro)&#10;Exodoncia simple: 30$ (extracción, sacar una muela, sacar un diente)"
+                      onchange="cambiarTexto('clinic_services', this.value)"
+                      class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
+            <p class="text-[11px] text-slate-500 mt-1">
+              Si alguna línea no se entiende <b class="text-slate-400">no se guarda
+              ninguna</b>: es peor que la clínica crea que puso doce precios y Helios solo
+              sepa seis.
+            </p>
           </div>
           <div>
             <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Tono</h3>
