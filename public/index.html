@@ -3046,7 +3046,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
             </p>
             <input id="clinica-direccion" type="text" maxlength="200"
                    placeholder="Acarigua, CC Mamánico local 27. Tiene estacionamiento."
-                   onchange="cambiarTexto('clinic_address', this.value)"
+                   oninput="cambiarTexto('clinic_address', this.value)"
                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none">
           </div>
           <div>
@@ -3080,7 +3080,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
             </p>
             <textarea id="clinica-servicios" rows="8"
                       placeholder="Higiene dental completa: 25$ (limpieza, profilaxis, sarro, tártaro)&#10;Exodoncia simple: 30$ (extracción, sacar una muela, sacar un diente)"
-                      onchange="cambiarTexto('clinic_services', this.value)"
+                      oninput="cambiarTexto('clinic_services', this.value)"
                       class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
             <p class="text-[11px] text-slate-500 mt-1">
               Si alguna línea no se entiende <b class="text-slate-400">no se guarda
@@ -3098,7 +3098,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
             </p>
             <textarea id="clinica-tono" rows="2" maxlength="400"
                       placeholder="Cercano y claro, de tú, sin tecnicismos."
-                      onchange="cambiarTexto('clinic_tone', this.value)"
+                      oninput="cambiarTexto('clinic_tone', this.value)"
                       class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"></textarea>
           </div>
         </div>

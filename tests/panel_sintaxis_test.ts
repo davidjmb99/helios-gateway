@@ -72,3 +72,44 @@ for (const [i, fuente] of bloques.entries()) {
 // El compilador ya caza el caso exacto que nos mordio, y sin adivinar.
 
 console.log(`panel_sintaxis_test: OK (${bloques.length} bloque(s) de script compilan)`);
+
+// --- LOS CAMPOS DE TEXTO LIBRE REGISTRAN EL CAMBIO AL ESCRIBIR -------------
+//
+// ESTO LO ENCONTRO DAVID pegando los precios: «no me da la opción para guardar los
+// cambios». El textarea tenia el texto dentro y el boton seguia apagado.
+//
+// LA CAUSA: `onchange` en un textarea NO dispara al escribir ni al pegar, solo AL PERDER
+// EL FOCO. Pegas la lista, vas directo al boton, y en ese momento el boton todavia esta
+// deshabilitado: el clic no hace nada. El sintoma -«el panel no me deja guardar»- no se
+// parece en nada a la causa.
+//
+// En un campo de una linea se disimula porque uno tabula o hace clic fuera sin darse
+// cuenta. En un textarea grande, pegar e ir al boton es exactamente lo que hace todo el
+// mundo.
+//
+// LOS SELECTS, LAS HORAS Y LAS CASILLAS SE QUEDAN EN `onchange`, que para ellos es lo
+// correcto: no se escriben, se eligen, y ahi el evento dispara al elegir.
+
+{
+  const camposDeTextoLibre = ['clinic_address', 'clinic_services', 'clinic_tone'];
+
+  for (const campo of camposDeTextoLibre) {
+    assert.ok(
+      html.includes(`oninput="cambiarTexto('${campo}', this.value)"`),
+      `${campo} tiene que usar oninput: con onchange, pegar el texto y darle a Guardar no ` +
+      `hace nada porque el boton sigue apagado hasta que el campo pierde el foco`
+    );
+    assert.ok(
+      !html.includes(`onchange="cambiarTexto('${campo}', this.value)"`),
+      `${campo} no puede quedarse con onchange`
+    );
+  }
+
+  // Y el que NO debe cambiar: la zona es un desplegable.
+  assert.ok(
+    html.includes(`onchange="cambiarTexto('clinic_timezone', this.value)"`),
+    'la zona es un select y con onchange esta bien: no se escribe, se elige'
+  );
+}
+
+console.log('panel_sintaxis_test: los campos de texto registran al escribir');
