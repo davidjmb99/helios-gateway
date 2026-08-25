@@ -113,3 +113,76 @@ console.log(`panel_sintaxis_test: OK (${bloques.length} bloque(s) de script comp
 }
 
 console.log('panel_sintaxis_test: los campos de texto registran al escribir');
+
+// --- EL PANEL TIENE QUE SABER DESCRIBIR TODO LO QUE PUEDE ESCRIBIR --------
+//
+// ESTO LO PAGO DAVID CON DOS RONDAS. Pego los precios, el boton de guardar no se encendia,
+// y el sintoma -«no me da para guardar»- no se parecia nada a la causa. Yo culpe primero
+// al `onchange` del textarea, que era un fallo real pero NO era este.
+//
+// LA CAUSA DE VERDAD: `pintarResumen` construye la linea de «vas a cambiar esto» leyendo
+// `CAMPOS_AJUSTE[campo].nombre`. Yo añadi `clinic_services` y `first_visit_free` a los
+// ajustes del servidor y al formulario, pero NO a ese diccionario. Asi que
+// `CAMPOS_AJUSTE['clinic_services']` era `undefined`, leerle `.nombre` lanzaba un
+// TypeError, y la excepcion ocurria ANTES de `boton.disabled = false`.
+//
+// O sea: el cambio SI se registraba, y el boton se quedaba apagado por una excepcion en
+// el repintado. Nada en la pantalla lo decia.
+//
+// LA COMPROBACION NO ES «ESTOS DOS CAMPOS ESTAN», es la invariante entera: los campos que
+// el servidor acepta y los que el panel sabe describir tienen que ser EXACTAMENTE los
+// mismos. Asi el proximo ajuste que se añada sin su etiqueta falla aqui y no en las manos
+// de quien lo use.
+
+{
+  const settings = readFileSync(new URL('../src/tenants/settings.ts', import.meta.url), 'utf8');
+
+  /**
+   * Las claves de primer nivel de un objeto literal, contando llaves.
+   *
+   * Se cuentan las llaves en vez de buscar el cierre con una expresion regular porque los
+   * dos bloques tienen objetos anidados dentro, y un `};` cualquiera no es el final: mi
+   * primer intento se paso de largo y leyo medio archivo como si fueran campos.
+   */
+  const clavesDe = (texto: string, inicio: RegExp): Set<string> => {
+    const arranca = texto.search(inicio);
+    assert.ok(arranca >= 0, `no se encuentra ${inicio}: la prueba dejo de mirar donde debia`);
+    let i = texto.indexOf('{', arranca);
+    let nivel = 0;
+    const claves = new Set<string>();
+    let clave = '';
+    for (; i < texto.length; i++) {
+      const c = texto[i];
+      if (c === '{') { nivel++; continue; }
+      if (c === '}') { nivel--; if (nivel === 0) break; continue; }
+      if (nivel !== 1) continue;
+      if (/[A-Za-z0-9_]/.test(c)) { clave += c; continue; }
+      if (c === ':' && clave) { claves.add(clave); clave = ''; continue; }
+      clave = '';
+    }
+    return claves;
+  };
+
+  const delServidor = clavesDe(settings, /const CAMPOS = \{/);
+  const delPanel = clavesDe(html, /const CAMPOS_AJUSTE = \{/);
+
+  assert.ok(delServidor.size >= 10, `se leyeron pocos campos del servidor: ${delServidor.size}`);
+  assert.ok(delPanel.size >= 10, `se leyeron pocos campos del panel: ${delPanel.size}`);
+
+  const sinEtiqueta = [...delServidor].filter(c => !delPanel.has(c));
+  assert.deepEqual(
+    sinEtiqueta, [],
+    'estos ajustes se pueden guardar pero el panel no sabe describirlos, y al intentar ' +
+    'cambiarlos `pintarResumen` lanza un TypeError que deja el boton de guardar apagado ' +
+    'sin decir por que: ' + sinEtiqueta.join(', ')
+  );
+
+  const sobran = [...delPanel].filter(c => !delServidor.has(c));
+  assert.deepEqual(
+    sobran, [],
+    'y estos los describe el panel pero el servidor no los acepta, asi que guardarlos ' +
+    'fallaria: ' + sobran.join(', ')
+  );
+}
+
+console.log('panel_sintaxis_test: el panel describe todos los ajustes del servidor');

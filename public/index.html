@@ -2371,6 +2371,18 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
       clinic_address: {
         nombre: 'La dirección',
         texto: d => d ? '«' + d + '»' : 'sin definir (Helios derivará a una persona)'
+      },
+      first_visit_free: {
+        nombre: 'La primera visita gratis',
+        texto: v => v === true ? 'sí' : 'no'
+      },
+      clinic_services: {
+        nombre: 'Los servicios y precios',
+        texto: t => {
+          if (!t) return 'sin definir (Helios no dirá precios)';
+          const lineas = String(t).split(/\r?\n/).filter(l => l.trim());
+          return lineas.length === 1 ? '1 servicio' : lineas.length + ' servicios';
+        }
       }
     };
 
