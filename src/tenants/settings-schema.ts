@@ -299,6 +299,24 @@ const MAX_DIRECCION = 200;
  *
  * Se limita el largo porque viaja en CADA turno, igual que el tono.
  */
+/**
+ * Si la primera visita es gratis: si, no, o «no lo ha dicho nadie».
+ *
+ * DEVUELVE `false` ANTE CUALQUIER COSA RARA, y no es indiferente. Los dos fallos posibles
+ * no cuestan lo mismo:
+ *
+ *   prometer gratis y luego cobrar   -> una discusion con el paciente en el mostrador,
+ *                                       con Helios de testigo por escrito
+ *   no prometer algo que si es gratis -> una oportunidad perdida que el equipo corrige
+ *                                       hablando, en la misma llamada
+ *
+ * Asi que el defecto no puede estar en medio: cae del lado del que se arregla hablando.
+ */
+export function normalizarPrimeraVisita(valor: unknown): boolean {
+  if (valor === true || valor === 'true' || valor === 1 || valor === '1') return true;
+  return false;
+}
+
 export function normalizarDireccion(valor: unknown): string | null {
   const limpio = String(valor ?? '').trim().replace(/\s+/g, ' ');
   if (!limpio) return null;

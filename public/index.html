@@ -2547,6 +2547,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
       document.getElementById('clinica-zona').value = valorEnPantalla('clinic_timezone') || '';
       document.getElementById('clinica-tono').value = valorEnPantalla('clinic_tone') || '';
       document.getElementById('clinica-direccion').value = valorEnPantalla('clinic_address') || '';
+      document.getElementById('clinica-primera-visita').checked = valorEnPantalla('first_visit_free') === true;
 
       document.getElementById('horario-estado').innerHTML = textoDeOrigen(
         ajustesActuales.origen.clinic_hours,
@@ -2608,6 +2609,15 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
 
     function cambiarTexto(campo, valor) {
       elegirAjuste(campo, valor.trim() === '' ? null : valor);
+      pintarResumen();
+    }
+
+    // Un booleano NO puede pasar por cambiarTexto: `false` es un valor legitimo y
+    // `valor.trim()` reventaria. Y mandar `null` al desmarcar dejaria el campo «sin
+    // configurar» en vez de «no», que para «la primera visita es gratis» no es lo mismo:
+    // sin configurar cae al defecto, y el defecto podria cambiar algun dia.
+    function cambiarBooleano(campo, marcado) {
+      elegirAjuste(campo, marcado === true);
       pintarResumen();
     }
 
@@ -3037,6 +3047,23 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
                    placeholder="Acarigua, CC Mamánico local 27. Tiene estacionamiento."
                    onchange="cambiarTexto('clinic_address', this.value)"
                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none">
+          </div>
+          <div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Primera visita</h3>
+            <p class="text-[11px] text-slate-400 mb-2">
+              Marca esto <b class="text-slate-300">solo si de verdad no cobras la primera
+              visita</b>. Si lo marcas, Helios se lo dice a los pacientes. Estuvo activado
+              para todas las cuentas sin que nadie lo hubiera confirmado, y por eso ahora
+              viene apagado: <b class="text-slate-300">prometer algo gratis que luego se
+              cobra acaba en una discusión en el mostrador</b>, con Helios de testigo por
+              escrito.
+            </p>
+            <label class="flex items-center gap-2 text-xs text-slate-200 cursor-pointer">
+              <input id="clinica-primera-visita" type="checkbox"
+                     onchange="cambiarBooleano('first_visit_free', this.checked)"
+                     class="rounded border-slate-700 bg-slate-950">
+              La primera visita es gratuita
+            </label>
           </div>
           <div>
             <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Tono</h3>

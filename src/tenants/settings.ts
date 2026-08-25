@@ -51,6 +51,7 @@ import {
   normalizarModo,
   normalizarTono,
   normalizarDireccion,
+  normalizarPrimeraVisita,
   normalizarVentanaEnvio,
   normalizarZona,
   type EquiposClinica,
@@ -90,6 +91,7 @@ export interface AjustesClinica {
   clinic_tone: string | null;
   /** Donde esta la clinica. Viaja en clinic_context, no en el prompt. */
   clinic_address: string | null;
+  first_visit_free: boolean;
   /** Qué campos los eligió la clínica y cuáles vienen de lo de siempre. */
   origen: Record<string, Origen>;
 }
@@ -110,7 +112,8 @@ const CAMPOS = {
   chatwoot_teams: { normalizar: normalizarEquipos, error: 'EQUIPOS_INVALIDOS' },
   clinic_timezone: { normalizar: normalizarZona, error: 'ZONA_INVALIDA' },
   clinic_tone: { normalizar: normalizarTono, error: 'TONO_INVALIDO' },
-  clinic_address: { normalizar: normalizarDireccion, error: 'DIRECCION_INVALIDA' }
+  clinic_address: { normalizar: normalizarDireccion, error: 'DIRECCION_INVALIDA' },
+  first_visit_free: { normalizar: normalizarPrimeraVisita, error: 'PRIMERA_VISITA_INVALIDA' }
 } as const;
 
 type CampoAjuste = keyof typeof CAMPOS;
@@ -159,6 +162,10 @@ function porDefecto(): AjustesClinica {
     // SIN DIRECCION POR DEFECTO. Inventar una es peor que no tenerla: el paciente se
     // presentaria en un sitio equivocado. Si no esta configurada, Helios deriva.
     clinic_address: null,
+    // POR DEFECTO NO ES GRATIS. Estuvo cableado a `true` para todas las cuentas y Helios
+    // lo prometia sin que nadie lo hubiera confirmado. Prometer algo gratis que luego se
+    // cobra es una discusion en el mostrador; lo contrario se arregla hablando.
+    first_visit_free: false,
     origen: {}
   };
 }
@@ -338,12 +345,14 @@ export async function leerContextoDeClinica(tenantId: string): Promise<{
   tono: string | null;
   zona: string;
   direccion: string | null;
+  primeraVisitaGratis: boolean;
 }> {
   const ajustes = await ajustesDe(tenantId);
   return {
     // La direccion SI se manda tal cual esté: no hay valor por defecto que pudiera
     // colarse como si fuera real, porque el defecto es null.
     direccion: ajustes.clinic_address,
+    primeraVisitaGratis: ajustes.first_visit_free,
     // Solo se manda si la clínica lo configuró: mandar el horario por defecto haría
     // creer a Hermes que es el de verdad cuando nadie lo ha confirmado.
     horario: ajustes.origen.clinic_hours === 'clinica'
@@ -389,6 +398,7 @@ export async function leerAjustes(tenantId: string): Promise<Record<string, unkn
     clinic_tone: ajustes.clinic_tone,
     clinic_tone_max: MAX_LARGO_TONO,
     clinic_address: ajustes.clinic_address,
+    first_visit_free: ajustes.first_visit_free,
     clinic_address_max: MAX_LARGO_DIRECCION,
 
     // De dónde sale cada valor. El panel lo necesita para no decir «elegido por la

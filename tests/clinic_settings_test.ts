@@ -493,3 +493,75 @@ console.log('  minutos de la semana en que se puede escribir: ' + permitidos + '
 }
 
 console.log('clinic_settings_test: direccion OK');
+
+// --- LA PRIMERA VISITA LA DECIDE LA CLINICA, NO EL CODIGO ------------------
+//
+// ESTUVO CABLEADO A `true` EN EL ORQUESTADOR para todas las cuentas, asi que Helios
+// llevaba semanas cerrando mensajes con «le recuerdo que su primera visita es gratuita»
+// sin que nadie lo hubiera confirmado.
+//
+// Y NO ERA CIERTO NI PARA COI, la clinica para la que se escribio. Lo dijo David el
+// 25-ago-2026: «quitaremos lo de la primera valoracion gratuita, porque en Venezuela casi
+// no se ve eso».
+//
+// Es el mismo fallo que «Acarigua» escrito en el SOUL (HEL-085): un dato de UNA clinica
+// puesto en un sitio que sirve a TODAS.
+
+{
+  const { normalizarPrimeraVisita } = esquema;
+
+  // EL DEFECTO ES `false`, y es la comprobacion que mas importa de este bloque. Los dos
+  // fallos posibles no cuestan lo mismo: prometer algo gratis que luego se cobra es una
+  // discusion con el paciente en el mostrador, con Helios de testigo por escrito; no
+  // prometer algo que si es gratis se arregla hablando en la misma llamada.
+  assert.equal(
+    normalizarPrimeraVisita(undefined), false,
+    'sin configurar NO es gratis: el defecto cae del lado del fallo que se arregla hablando'
+  );
+  assert.equal(normalizarPrimeraVisita(null), false);
+  assert.equal(normalizarPrimeraVisita(''), false);
+
+  // Y cualquier cosa rara tambien cae en false, no en true.
+  for (const raro of ['si', 'yes', 'gratis', 'SI', {}, [], 'false', 0, '0', -1, NaN]) {
+    assert.equal(
+      normalizarPrimeraVisita(raro), false,
+      `${JSON.stringify(raro)}: solo un si explicito activa una promesa que cuesta dinero`
+    );
+  }
+
+  // Lo que SI la activa, en las formas en que puede llegar de un formulario o del JSON.
+  for (const si of [true, 'true', 1, '1']) {
+    assert.equal(normalizarPrimeraVisita(si), true, `${JSON.stringify(si)} activa la promesa`);
+  }
+}
+
+{
+  // Y LA COSTURA, que es donde vivia el fallo: un `first_visit_free: true` escrito a mano
+  // en el orquestador. Las comprobaciones de arriba prueban el normalizador; esta prueba
+  // que el orquestador USA el ajuste y no una constante.
+  //
+  // Es una comprobacion sobre el texto del archivo, y eso es debil -no ejecuta nada- pero
+  // la alternativa era montar el orquestador entero con Supabase de mentira para
+  // comprobar una linea. Queda anotado: si algun dia hay una prueba que ejecute
+  // processBufferEvent de verdad, esta se cambia por una de esas.
+  const orquestador = readFileSync(new URL('../src/orchestrator.ts', import.meta.url), 'utf8');
+
+  assert.match(
+    orquestador, /first_visit_free:\s*contextoDeClinica\.primeraVisitaGratis/,
+    'el orquestador tiene que leer el ajuste de la clinica'
+  );
+  assert.doesNotMatch(
+    orquestador, /first_visit_free:\s*(true|false)/,
+    'y NO puede quedar ningun valor fijo: es un dato de cada clinica, y cableado a `true` ' +
+    'hizo que Helios prometiera visitas gratis durante semanas sin que nadie lo confirmara'
+  );
+
+  // Y la rama de fallo -cuando no se pueden leer los ajustes- tambien tiene que decir que
+  // NO. Sin saberlo, no se promete nada gratis.
+  assert.match(
+    orquestador, /primeraVisitaGratis:\s*false/,
+    'si los ajustes no se pueden leer, no es gratis: no sabriamos ni por que se prometio'
+  );
+}
+
+console.log('clinic_settings_test: primera visita OK');

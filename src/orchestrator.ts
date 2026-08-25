@@ -489,7 +489,11 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       horario: null,
       tono: null,
       zona: config.CLINIC_TIMEZONE || 'Europe/Madrid',
-      direccion: null
+      direccion: null,
+      // SIN PODER LEER LOS AJUSTES, NO SE PROMETE NADA GRATIS. Es la misma razon que el
+      // defecto: prometer algo gratis que luego se cobra acaba en una discusion en el
+      // mostrador, y aqui encima no sabriamos ni por que se prometio.
+      primeraVisitaGratis: false
     }));
 
     // 6. Preparar el payload limpio para Hermes con identidad real desde Supabase
@@ -588,7 +592,13 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         // Solo se manda si la clinica la configuro. Sin direccion, Helios deriva; una
         // direccion inventada manda al paciente a otro sitio.
         ...(contextoDeClinica.direccion ? { clinic_address: contextoDeClinica.direccion } : {}),
-        first_visit_free: true,
+        // LO DICE LA CLINICA, NO EL CODIGO. Estuvo aqui cableado a `true` y Helios
+        // cerraba mensajes con «le recuerdo que su primera visita es gratuita» sin que
+        // nadie lo hubiera confirmado. David: «quitaremos lo de la primera valoracion
+        // gratuita, porque en Venezuela casi no se ve eso» -o sea que no era cierto ni
+        // para COI-. Mismo fallo que «Acarigua» en el SOUL: un dato de UNA clinica en un
+        // sitio que sirve a TODAS.
+        first_visit_free: contextoDeClinica.primeraVisitaGratis,
         no_diagnosis: true,
         no_medication: true,
         prices_are_orientative: true
