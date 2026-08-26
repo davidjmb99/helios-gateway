@@ -103,6 +103,13 @@
           <div>
             <h1 class="text-base font-bold tracking-tight bg-gradient-to-r from-amber-400 to-orange-500 bg-clip-text text-transparent">Helios Gateway <span class="text-xs font-semibold text-slate-400 font-sans ml-2">Debugger</span></h1>
             <div id="clinic-name-header" class="text-[10px] text-slate-400 font-mono mt-0.5">Clínica: Cargando...</div>
+            <!--
+              EL SELECTOR SOLO APARECE PARA UNA SESION DE OPERADOR, y no porque se esconda:
+              /admin/cuentas responde 403 a una sesion de clinica, asi que la lista nunca
+              llega y el desplegable no se pinta. Ocultar un boton no es un permiso.
+            -->
+            <select id="selector-cuenta" onchange="cambiarDeCuenta(this.value)"
+                    class="hidden mt-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-slate-200 font-mono focus:border-amber-500 focus:outline-none"></select>
           </div>
         </div>
         <div class="flex items-center gap-4">
@@ -317,6 +324,7 @@
         document.getElementById('login-container').style.display = 'none';
         document.getElementById('dashboard-container').style.display = 'flex';
         document.getElementById('clinic-name-header').innerText = `Clínica: ${clinicName || 'Demo'}`;
+        cargarCuentas();
         return true;
       }
     }
@@ -361,6 +369,73 @@
     }
 
     // AUTH LOGOUT FLOW
+    /**
+     * Carga las cuentas entre las que puede moverse un operador.
+     *
+     * SI LA RESPUESTA NO ES 200 NO SE PINTA NADA Y NO SE DICE NADA. Una sesion de clinica
+     * recibe un 403 y para ella el selector sencillamente no existe: no hay un mensaje de
+     * «no tienes permiso» que le cuente que hay mas cuentas.
+     */
+    async function cargarCuentas() {
+      const caja = document.getElementById('selector-cuenta');
+      if (!caja) return;
+      try {
+        const res = await fetch('/admin/cuentas', {
+          headers: { 'Authorization': 'Bearer ' + getSessionToken() },
+          cache: 'no-store'
+        });
+        if (!res.ok) return;
+        const datos = await res.json();
+        if (!datos.cuentas || datos.cuentas.length < 2) return;
+
+        caja.innerHTML = datos.cuentas.map(c =>
+          '<option value="' + escapeHtml(c.tenant_id) + '"'
+          + (c.tenant_id === datos.actual ? ' selected' : '') + '>'
+          + escapeHtml(c.name || c.tenant_id) + '</option>'
+        ).join('');
+        caja.classList.remove('hidden');
+      } catch (err) {
+        /* sin selector se sigue trabajando en la cuenta actual */
+      }
+    }
+
+    /**
+     * Cambia de clinica pidiendo un TOKEN NUEVO al servidor.
+     *
+     * NO se guarda «la cuenta que estoy viendo» en el navegador ni se manda un tenant_id
+     * en cada peticion. El token apunta a UNA clinica y todos los endpoints sacan el
+     * tenant de ahi, asi que cambiar de cuenta es cambiar de token y eso solo lo puede
+     * hacer el servidor. Si el navegador pudiera elegir el tenant, cualquiera con una
+     * sesion de clinica podria pedir los datos de otra.
+     *
+     * Y SE RECARGA LA PAGINA ENTERA a proposito: quedan datos de la cuenta anterior en
+     * media pantalla -trazas, ajustes, metricas- y repintarlos uno a uno es justo la clase
+     * de cosa donde se cuela un resto de la clinica de al lado.
+     */
+    async function cambiarDeCuenta(tenantId) {
+      if (!tenantId) return;
+      try {
+        const res = await fetch('/admin/cambiar-cuenta', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + getSessionToken(),
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ tenant_id: tenantId })
+        });
+        if (!res.ok) {
+          alert('No se pudo cambiar de cuenta.');
+          return;
+        }
+        const datos = await res.json();
+        localStorage.setItem('helios_session_token', datos.token);
+        localStorage.setItem('helios_clinic_name', datos.tenant.name || datos.tenant.tenant_id);
+        window.location.reload();
+      } catch (err) {
+        alert('No se pudo cambiar de cuenta.');
+      }
+    }
+
     function handleLogout() {
       localStorage.removeItem('helios_session_token');
       localStorage.removeItem('helios_clinic_name');

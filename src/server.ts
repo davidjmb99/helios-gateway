@@ -57,6 +57,7 @@ import {
   ConversationHistoryError,
   loadAdminConversationHistory
 } from './admin/conversation-history.js';
+import { puedeCambiarDeCuenta, estadoHttpDe } from './admin/operador.js';
 import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -101,9 +102,21 @@ function getHermesStatus(): string {
   return componentHealth.hermes.state === 'OK' ? 'HERMES_OK' : componentHealth.hermes.state;
 }
 
-function createAdminSessionToken(tenantId: string): string {
+/**
+ * El token de la sesion del panel.
+ *
+ * `operador` NO es un si/no: es el tenant_id de la cuenta de operador que abrio la sesion.
+ * Guardar QUIEN es y no solo QUE puede permite volver a comprobarlo contra la base de
+ * datos al cambiar de cuenta, asi que quitarle el permiso a alguien surte efecto en el
+ * momento y no cuando le caduque la sesion.
+ *
+ * El token va firmado con HMAC, asi que el navegador no puede inventarse este campo: solo
+ * existe en un token que hayamos emitido nosotros.
+ */
+function createAdminSessionToken(tenantId: string, operador: string | null = null): string {
   const payload = Buffer.from(JSON.stringify({
     tenant_id: tenantId,
+    ...(operador ? { operador } : {}),
     exp: Date.now() + config.HELIOS_ADMIN_SESSION_TTL_MS
   })).toString('base64url');
   const secret = config.HELIOS_ADMIN_SESSION_SECRET || config.SUPABASE_SERVICE_ROLE_KEY;
@@ -111,7 +124,14 @@ function createAdminSessionToken(tenantId: string): string {
   return `${payload}.${signature}`;
 }
 
-function verifyAdminSessionToken(token: string): string | null {
+interface SesionDelPanel {
+  /** La clinica que se esta viendo AHORA. Es de donde sale el tenant de cada endpoint. */
+  tenant_id: string;
+  /** El operador que abrio la sesion, si lo era. null en una sesion de clinica. */
+  operador: string | null;
+}
+
+function verifyAdminSessionToken(token: string): SesionDelPanel | null {
   const [payload, signature] = token.split('.');
   if (!payload || !signature) return null;
   const secret = config.HELIOS_ADMIN_SESSION_SECRET || config.SUPABASE_SERVICE_ROLE_KEY;
@@ -125,7 +145,10 @@ function verifyAdminSessionToken(token: string): string | null {
   try {
     const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
     if (!decoded.tenant_id || !decoded.exp || decoded.exp <= Date.now()) return null;
-    return String(decoded.tenant_id);
+    return {
+      tenant_id: String(decoded.tenant_id),
+      operador: decoded.operador ? String(decoded.operador) : null
+    };
   } catch {
     return null;
   }
@@ -293,10 +316,14 @@ server.post('/api/auth/login', async (request, reply) => {
         });
     }
 
-    // Retornamos el token (usamos el tenant_id como token para simplicidad en la demo)
+    // SI ESTA CUENTA ES DE OPERADOR, la sesion lo lleva dentro. Se lee de la fila y no
+    // de nada que mande el navegador; el token va firmado, asi que nadie puede añadirselo.
+    const esOperador = tenant.es_operador === true;
+
     return {
       ok: true,
-      token: createAdminSessionToken(tenant.tenant_id),
+      token: createAdminSessionToken(tenant.tenant_id, esOperador ? tenant.tenant_id : null),
+      operador: esOperador,
       tenant: {
         tenant_id: tenant.tenant_id,
         name: tenant.name,
@@ -317,7 +344,8 @@ async function checkAuth(request: any, reply: any) {
   }
 
   const token = authHeader.replace('Bearer ', '').trim();
-  const tenantId = verifyAdminSessionToken(token);
+  const sesion = verifyAdminSessionToken(token);
+  const tenantId = sesion?.tenant_id;
   if (!tenantId) {
     reply.status(401).send({ error: 'Token inválido o expirado.' });
     throw new Error('Unauthorized');
@@ -342,6 +370,109 @@ async function checkAuth(request: any, reply: any) {
   }));
   return tenant.tenant_id; // Retorna el tenant_id validado
 }
+
+/**
+ * La sesion completa, con el rol. Solo la usan los dos endpoints del selector de cuentas.
+ *
+ * VA APARTE DE `checkAuth` A PROPOSITO. checkAuth sigue devolviendo un tenant_id y nada
+ * mas, asi que NINGUN endpoint existente cambia: todos siguen sacando el tenant del token
+ * y ninguno acepta un tenant como parametro. Esa es la propiedad que hace que el selector
+ * no toque el aislamiento entre clinicas.
+ */
+function sesionDelPanel(request: any): SesionDelPanel | null {
+  const authHeader = request.headers?.authorization;
+  if (!authHeader) return null;
+  return verifyAdminSessionToken(String(authHeader).replace('Bearer ', '').trim());
+}
+
+/**
+ * Comprueba que la sesion es de operador, CONTRA LA BASE DE DATOS y no solo contra el
+ * token.
+ *
+ * El token va firmado, asi que su `operador` es de fiar. Pero se vuelve a mirar la fila
+ * igualmente: asi quitarle el permiso a alguien surte efecto EN EL MOMENTO, y no cuando le
+ * caduque la sesion. Para un permiso que deja ver los datos de todas las clinicas, esperar
+ * a que caduque una sesion no es aceptable.
+ */
+async function exigirOperador(request: any, reply: any): Promise<string | null> {
+  const sesion = sesionDelPanel(request);
+
+  // La fila SOLO se consulta si la sesion dice ser de operador. Preguntar por una fila
+  // nula seria pedirle a la base de datos algo sin sentido, y ademas dejaria la decision
+  // dependiendo de como reaccione Supabase a un id vacio en vez de de una regla nuestra.
+  let fila: { es_operador?: unknown } | null = null;
+  if (sesion?.operador) {
+    const { data } = await supabase
+      .from('helios_tenants')
+      .select('tenant_id, es_operador')
+      .eq('tenant_id', sesion.operador)
+      .single();
+    fila = data ?? null;
+  }
+
+  const motivo = puedeCambiarDeCuenta(sesion, fila);
+  if (motivo !== 'permitido') {
+    reply.status(estadoHttpDe(motivo)).send({ error: 'No autorizado.', motivo });
+    return null;
+  }
+  return sesion!.operador!;
+}
+
+// GET /admin/cuentas — las clinicas entre las que puede moverse un operador.
+//
+// DEVUELVE LO MINIMO: identificador y nombre. Es una lista para un desplegable, no una
+// ventana a los datos de nadie; para ver una cuenta hay que cambiarse a ella y entonces
+// el token apunta ahi.
+server.get('/admin/cuentas', async (request, reply) => {
+  const operador = await exigirOperador(request, reply);
+  if (!operador) return;
+
+  const { data, error } = await supabase
+    .from('helios_tenants')
+    .select('tenant_id, name')
+    .order('name', { ascending: true });
+
+  if (error) return reply.status(500).send({ error: 'No se pudieron leer las cuentas.' });
+
+  const actual = sesionDelPanel(request)?.tenant_id ?? null;
+  return { ok: true, actual, cuentas: data ?? [] };
+});
+
+// POST /admin/cambiar-cuenta — un token nuevo apuntando a otra clinica.
+//
+// ESTO ES TODO LO QUE HACE EL SELECTOR: pedir un token distinto. No abre una segunda
+// sesion ni deja ver dos cuentas a la vez, y no hay ningun endpoint al que se le pueda
+// pasar un tenant. Cambiar de cuenta es cambiar de token, y el token lo emite el servidor.
+server.post('/admin/cambiar-cuenta', async (request, reply) => {
+  const operador = await exigirOperador(request, reply);
+  if (!operador) return;
+
+  const destino = String((request.body as any)?.tenant_id ?? '').trim();
+  if (!destino) return reply.status(400).send({ error: 'Falta la cuenta.' });
+
+  // La cuenta de destino tiene que EXISTIR. Sin esto se emitiria un token para un
+  // tenant inventado, y aunque no daria acceso a nada, dejaria el panel en un estado
+  // sin explicacion.
+  const { data, error } = await supabase
+    .from('helios_tenants')
+    .select('tenant_id, name')
+    .eq('tenant_id', destino)
+    .single();
+
+  if (error || !data) return reply.status(404).send({ error: 'Esa cuenta no existe.' });
+
+  console.log(JSON.stringify({
+    event: 'operador_cambio_de_cuenta',
+    operador_fingerprint: crypto.createHash('sha256').update(operador).digest('hex').slice(0, 12),
+    destino: data.tenant_id
+  }));
+
+  return {
+    ok: true,
+    token: createAdminSessionToken(data.tenant_id, operador),
+    tenant: { tenant_id: data.tenant_id, name: data.name }
+  };
+});
 
 async function getAdministrativeObservability(request: any, reply: any) {
   const tenantId = await checkAuth(request, reply);
