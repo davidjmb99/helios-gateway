@@ -253,4 +253,87 @@ const consulta = (over: Record<string, any> = {}) => huecosDisponibles({
   assert.equal(enorme.length, 5, 'el tope de huecos corta antes de recorrer cuatro años');
 }
 
+// --- LOS HUECOS EMPIEZAN CUANDO ABRE LA CLINICA ---------------------------
+//
+// LO DESTAPO UNA PREGUNTA DE DAVID: «agendo una cita con Martinez a las 2 del sabado, y
+// mañana otra persona pregunta por las 2 con Martinez, ¿que pasa?». Al ejecutar su caso
+// salio bien -las 14:00 no se ofrecian- pero el primer hueco del dia era LAS 10:30, con la
+// clinica abierta desde las 10:00.
+//
+// La causa: los huecos se alineaban a multiplos del paso desde MEDIANOCHE. Con paso de 45
+// eso da 10:30; con 90, tambien. Se perdia el primer hueco del dia entero, todos los dias,
+// y nadie lo habria notado hasta que una recepcionista preguntara por que nunca se llena
+// la primera hora.
+
+{
+  // Paso de 90 minutos y apertura a las 10:00. Desde medianoche, 90 no cae en 10:00.
+  const r = consulta({
+    doctores: [doctor('a')], duracionMin: 60, margenMin: 30, desde: t(9), hasta: t(20), maximo: 10
+  });
+  const horas = r.map(h => hhmm(h.inicio));
+  assert.equal(
+    horas[0], '10:00',
+    `el primer hueco es cuando ABRE la clinica, no cuando cuadra el paso desde medianoche. ` +
+    `Salio ${horas[0]}`
+  );
+  assert.deepEqual(
+    horas.slice(0, 4), ['10:00', '11:30', '13:00', '14:30'],
+    'y a partir de ahi se cuenta desde la apertura: 10:00 + 90 minutos cada vez'
+  );
+}
+
+{
+  // EL PASO POR DEFECTO ES DURACION + MARGEN. Lo pidio David: «bajemos la duracion a 45
+  // minutos, para que asi con los 15 minutos mas sean 1 hora». Lo que ocupa a un doctor no
+  // son los 45 de la cita: son 45 mas los 15 de limpiar la sala y escribir la nota.
+  const r = consulta({ duracionMin: 45, margenMin: 15, desde: t(9), hasta: t(15), maximo: 5 });
+  assert.deepEqual(
+    r.map(h => hhmm(h.inicio)), ['10:00', '11:00', '12:00', '13:00', '14:00'],
+    'con 45 + 15 los huecos van cada hora en punto'
+  );
+  assert.deepEqual(
+    r.map(h => hhmm(h.fin)), ['10:45', '11:45', '12:45', '13:45', '14:45'],
+    'y cada cita dura 45: los 15 restantes son el margen, no cita'
+  );
+
+  // Si el paso fuera solo la duracion, saldrian pegados y el margen no separaria nada.
+  const pegados = consulta({ duracionMin: 45, margenMin: 15, pasoMin: 45, desde: t(9), hasta: t(15), maximo: 3 });
+  assert.deepEqual(
+    pegados.map(h => hhmm(h.inicio)), ['10:00', '10:45', '11:30'],
+    'con paso igual a la duracion los huecos van pegados: por eso NO es el defecto'
+  );
+}
+
+{
+  // EL CASO DE DAVID, ENTERO. Martinez trabaja los sabados de 10:00 a 15:00 y ya tiene una
+  // cita de 14:00 a 15:00. Otro paciente pregunta por las 14:00.
+  const sabado = { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [{ desde: 10 * 60, hasta: 15 * 60 }] } as any;
+  const sab = (h: number) => new Date(Date.UTC(2026, 7, 29, h + 4));   // sabado 29-ago-2026
+  const viernes = new Date(Date.UTC(2026, 7, 28, 12));
+
+  const soloElla = huecosDisponibles({
+    zona: CARACAS, desde: sab(0), hasta: sab(23), ahora: viernes,
+    duracionMin: 45, margenMin: 15,
+    doctores: [{ id: 'martinez', nombre: 'Dra. Ana Martinez', horario: sabado, ocupado: [{ desde: sab(14), hasta: sab(15) }] }]
+  });
+  assert.deepEqual(
+    soloElla.map(h => hhmm(h.inicio)), ['10:00', '11:00', '12:00', '13:00'],
+    'con Martinez ocupada a las 14:00 se ofrece lo de antes, no esa hora'
+  );
+
+  // Y CON LOS CUATRO, esas 14:00 SI existen: las coge otro. Es exactamente lo que una
+  // cuenta gratuita de Cal.com no permite, porque ahi una reserva te ocupa en todo.
+  const conLosCuatro = huecosDisponibles({
+    zona: CARACAS, desde: sab(13), hasta: sab(15), ahora: viernes,
+    duracionMin: 45, margenMin: 15,
+    doctores: ['martinez', 'ruiz', 'lemur', 'velez'].map((id, i) => ({
+      id, nombre: id, horario: sabado,
+      ocupado: i === 0 ? [{ desde: sab(14), hasta: sab(15) }] : []
+    }))
+  });
+  const aLas14 = conLosCuatro.find(h => hhmm(h.inicio) === '14:00');
+  assert.ok(aLas14, 'con cuatro doctores, las 14:00 del sabado SI estan disponibles');
+  assert.notEqual(aLas14!.doctor_id, 'martinez', 'y con otro doctor, no con la que esta ocupada');
+}
+
 console.log('agenda_huecos_test: OK');

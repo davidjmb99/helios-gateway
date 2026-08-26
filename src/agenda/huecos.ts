@@ -31,7 +31,34 @@
  *     propuesta, no una reserva.
  */
 
-import { momentoLocal, type HorarioClinica } from '../leads/policy.js';
+import { type HorarioClinica } from '../leads/policy.js';
+
+/**
+ * La hora local de un instante, con el formateador guardado.
+ *
+ * Es lo mismo que `momentoLocal` de leads/policy.ts, pero SIN crear un
+ * `Intl.DateTimeFormat` en cada llamada. Aquí se recorre la ventana en pasos de cinco
+ * minutos -para poder alinear los huecos a la hora de apertura y no a medianoche-, así que
+ * son miles de conversiones por consulta y crear el formateador cada vez costaba más que
+ * todo lo demás junto.
+ */
+const FORMATEADORES = new Map<string, Intl.DateTimeFormat>();
+const DIAS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+function horaLocal(fecha: Date, zona: string): { dia: number; minuto: number } {
+  let f = FORMATEADORES.get(zona);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: zona, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false
+    });
+    FORMATEADORES.set(zona, f);
+  }
+  const partes = f.formatToParts(fecha);
+  const valor = (tipo: string) => partes.find(p => p.type === tipo)?.value ?? '';
+  // Intl devuelve "24" para medianoche en algunos entornos.
+  const hora = Number(valor('hour')) % 24;
+  return { dia: DIAS.indexOf(valor('weekday').toLowerCase()), minuto: hora * 60 + Number(valor('minute')) };
+}
 
 /** Un bloque ocupado, tal como lo devuelve `freebusy.query`. */
 export interface FranjaOcupada {
@@ -57,14 +84,21 @@ export interface HuecoOfrecido {
 }
 
 /**
- * Cada cuántos minutos se prueba un hueco. POR DEFECTO, LA DURACIÓN DE LA CITA.
+ * Cada cuántos minutos se prueba un hueco. POR DEFECTO, LA DURACIÓN MÁS EL MARGEN.
+ *
+ * ES LO QUE PIDIÓ DAVID, y su razonamiento es el correcto: «bajemos la duración a 45
+ * minutos, para que así con los 15 minutos más sean 1 hora». Lo que ocupa a un doctor no
+ * son los 45 minutos de la cita: son 45 más los 15 de limpiar la sala y escribir la nota.
+ * Si el paso fuera solo la duración, los huecos saldrían pegados -10:00, 10:45, 11:30- y
+ * el margen no separaría una cita de la siguiente.
+ *
+ * Y CON PASO DE UNA HORA LOS HUECOS CAEN EN PUNTO, que es como los ofrece una clínica. El
+ * alineado es a múltiplos del paso desde medianoche en hora local, así que 60 da las en
+ * punto, 30 las y media, y 45 daría las «10:30, 11:15» -por eso el paso no es la duración-.
  *
  * Con un paso más fino los huecos se solapan: para una cita de una hora, ofrecer 10:00,
- * 10:15 y 10:30 son tres formas de decir lo mismo, y encima estropea el reparto -cada
- * oferta suma carga a un doctor que en realidad solo va a atender una-.
- *
- * Una clínica ofrece «10:00, 11:00 o 12:00», no una lista cada cuarto de hora. Quien
- * quiera huecos solapados puede pedirlos pasando `pasoMin`, pero no es lo natural.
+ * 10:15 y 10:30 son tres formas de decir lo mismo, y encima estropea el reparto. Quien
+ * quiera solapes puede pedirlos pasando `pasoMin`, pero no es lo natural.
  */
 const PASO_MINIMO = 5;
 
@@ -74,9 +108,10 @@ const MAXIMO_POR_DEFECTO = 20;
 /**
  * Tope de candidatos que se recorren. No es una regla de negocio: es el seguro para que
  * una ventana corrupta -un `hasta` del año 3000 por un dato mal escrito- no deje esto
- * dando vueltas. 4000 pasos de 15 minutos son mas de cuarenta dias.
+ * dando vueltas. 20.000 pasos de cinco minutos son unos setenta dias, mas de lo que
+ * cualquier clinica ofrece.
  */
-const MAXIMO_CANDIDATOS = 4000;
+const MAXIMO_CANDIDATOS = 20000;
 
 const MINUTOS_POR_DIA = 1440;
 
@@ -142,7 +177,7 @@ export function huecosDisponibles(entrada: {
   margenMin?: number;
   /** Cuánto hay que avisar como mínimo. Nadie reserva para dentro de diez minutos. */
   antelacionMin?: number;
-  /** Cada cuántos minutos se prueba un hueco. Por defecto, la duración: sin solapes. */
+  /** Cada cuántos minutos se prueba un hueco. Por defecto, duración + margen. */
   pasoMin?: number;
   maximo?: number;
   ahora?: Date;
@@ -153,7 +188,7 @@ export function huecosDisponibles(entrada: {
 
   const margen = Math.max(0, Math.round(Number(entrada.margenMin ?? 0)) || 0);
   const antelacion = Math.max(0, Math.round(Number(entrada.antelacionMin ?? 0)) || 0);
-  const paso = Math.max(PASO_MINIMO, Math.round(Number(entrada.pasoMin ?? duracion)) || duracion);
+  const paso = Math.max(PASO_MINIMO, Math.round(Number(entrada.pasoMin ?? (duracion + margen))) || duracion);
   const maximo = Math.max(1, Math.round(Number(entrada.maximo ?? MAXIMO_POR_DEFECTO)) || MAXIMO_POR_DEFECTO);
 
   const ahora = entrada.ahora instanceof Date ? entrada.ahora.getTime() : Date.now();
@@ -165,17 +200,26 @@ export function huecosDisponibles(entrada: {
   const sinAlinear = Math.max(new Date(entrada.desde).getTime(), ahora + antelacion * 60000);
   if (!Number.isFinite(sinAlinear) || sinAlinear >= finVentana) return [];
 
-  // Y LOS HUECOS CAEN EN HORA REDONDA. Sin esto, una consulta a las 10:05 con dos horas de
-  // antelación ofrecía «las 12:05», y ninguna clínica cita a y cinco: se lee como un error
-  // del sistema aunque la hora sea correcta.
+  const inicioVentana = sinAlinear;
+
+  // A QUE HORA ABRE CADA DIA. Es el ancla del alineado, y tiene que ser la apertura y no
+  // medianoche: con citas de 45 minutos mas 15 de margen -paso de 60- da igual, pero con
+  // un paso de 90 los huecos caian a las 10:30 aunque la clinica abriera a las 10:00, y se
+  // perdia el primer hueco del dia entero. Lo encontro la prueba del margen.
   //
-  // Se alinea al múltiplo del paso EN HORA LOCAL, que es la que ve el paciente. Con citas
-  // de una hora salen las en punto; con paso de 30, las y media también.
-  const localInicio = momentoLocal(new Date(sinAlinear), entrada.zona);
-  const inicioVentana = localInicio.dia < 0
-    ? sinAlinear
-    : sinAlinear + ((paso - (localInicio.minuto % paso)) % paso) * 60000;
-  if (inicioVentana >= finVentana) return [];
+  // Se toma la apertura MAS TEMPRANA de todos los doctores, para no dejar fuera al que
+  // entra antes.
+  const apertura: number[] = [];
+  for (let d = 0; d < 7; d++) {
+    let min = Infinity;
+    for (const doc of doctores) {
+      for (const tramo of (doc.horario?.[d] ?? [])) {
+        if (tramo && Number.isFinite(tramo.desde)) min = Math.min(min, tramo.desde);
+      }
+    }
+    apertura[d] = min;
+  }
+  if (apertura.every(a => a === Infinity)) return [];
 
   // Carga de partida de cada doctor: todo lo que ya tiene ocupado.
   const carga = new Map<string, number>();
@@ -184,14 +228,27 @@ export function huecosDisponibles(entrada: {
   const huecos: HuecoOfrecido[] = [];
   let candidatos = 0;
 
-  for (let t = inicioVentana; t + duracion * 60000 <= finVentana; t += paso * 60000) {
+  // SE RECORRE CADA CINCO MINUTOS Y SE FILTRA, en vez de saltar de paso en paso. Saltando
+  // habria que saber de antemano el instante exacto de la apertura de cada dia, y eso
+  // obliga a convertir de hora local a instante -la direccion dificil, la que se rompe con
+  // los cambios de hora-. Recorriendo fino solo se convierte instante -> hora local, que es
+  // la direccion fiable, y el formateador guardado hace que salga barato.
+  for (let t = inicioVentana; t + duracion * 60000 <= finVentana; t += PASO_MINIMO * 60000) {
     if (huecos.length >= maximo || ++candidatos > MAXIMO_CANDIDATOS) break;
 
     const inicio = new Date(t);
     const fin = new Date(t + duracion * 60000);
-    const local = momentoLocal(inicio, entrada.zona);
-    const localFin = momentoLocal(fin, entrada.zona);
+    const local = horaLocal(inicio, entrada.zona);
     if (local.dia < 0) continue;
+
+    // EL ALINEADO: solo valen las horas que caen en un multiplo del paso contando DESDE LA
+    // APERTURA. Con apertura a las 10:00 y paso de 60 salen las 10:00, 11:00, 12:00; con
+    // paso de 90, las 10:00, 11:30, 13:00. Nunca se pierde el primer hueco del dia.
+    const abre = apertura[local.dia];
+    if (!Number.isFinite(abre) || local.minuto < abre) continue;
+    if ((local.minuto - abre) % paso !== 0) continue;
+
+    const localFin = horaLocal(fin, entrada.zona);
 
     // UNA CITA QUE CRUZA UN CAMBIO DE HORA NO SE OFRECE. Si al pasar de invierno a verano
     // el reloj salta, la hora local del final no cuadra con la del principio más la
