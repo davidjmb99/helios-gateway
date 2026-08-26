@@ -1,3 +1,5 @@
+import { leerDoctores } from '../agenda/doctores.js';
+import { leerCierres } from '../agenda/cierres.js';
 /**
  * Forma y validación de los ajustes de una clínica. PURO: sin base y sin red.
  *
@@ -427,3 +429,32 @@ export const LIMITES_DE_SERVICIOS = {
   caracteres: MAX_LARGO_SERVICIOS,
   sinonimos: MAX_SINONIMOS
 };
+
+// --- DOCTORES Y CIERRES ----------------------------------------------------
+//
+// Los dos guardan TEXTO tal como lo escribe quien da de alta la clinica, y se validan
+// enteros: si una linea no se entiende, no se guarda ninguna. Ver src/agenda/doctores.ts y
+// src/agenda/cierres.ts para el porque de cada formato.
+//
+// EL HORARIO DE LA CLINICA HACE FALTA PARA VALIDAR LOS DOCTORES, porque «horario: L, J, V»
+// significa «esos dias, con el horario de la clinica». Aqui no se tiene a mano, asi que se
+// valida contra una semana completa: lo que se comprueba al guardar es que el TEXTO se
+// entienda, y el horario de verdad se resuelve al leerlo, ya con el de la clinica delante.
+
+const SEMANA_COMPLETA = {
+  0: [{ desde: 0, hasta: 1440 }], 1: [{ desde: 0, hasta: 1440 }], 2: [{ desde: 0, hasta: 1440 }],
+  3: [{ desde: 0, hasta: 1440 }], 4: [{ desde: 0, hasta: 1440 }], 5: [{ desde: 0, hasta: 1440 }],
+  6: [{ desde: 0, hasta: 1440 }]
+} as any;
+
+export function normalizarDoctores(valor: unknown): string | null {
+  const texto = String(valor ?? '');
+  if (!texto.trim()) return null;
+  return leerDoctores(texto, SEMANA_COMPLETA) ? texto.trim() : null;
+}
+
+export function normalizarCierres(valor: unknown): string | null {
+  const texto = String(valor ?? '');
+  if (!texto.trim()) return null;
+  return leerCierres(texto) ? texto.trim() : null;
+}

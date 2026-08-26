@@ -53,6 +53,8 @@ import {
   normalizarDireccion,
   normalizarPrimeraVisita,
   normalizarServicios,
+  normalizarDoctores,
+  normalizarCierres,
   serviciosDeTexto,
   LIMITES_DE_SERVICIOS,
   type ServicioDeClinica,
@@ -97,6 +99,8 @@ export interface AjustesClinica {
   clinic_address: string | null;
   first_visit_free: boolean;
   clinic_services: string | null;
+  clinic_doctors: string | null;
+  clinic_closures: string | null;
   /** Qué campos los eligió la clínica y cuáles vienen de lo de siempre. */
   origen: Record<string, Origen>;
 }
@@ -119,7 +123,9 @@ const CAMPOS = {
   clinic_tone: { normalizar: normalizarTono, error: 'TONO_INVALIDO' },
   clinic_address: { normalizar: normalizarDireccion, error: 'DIRECCION_INVALIDA' },
   first_visit_free: { normalizar: normalizarPrimeraVisita, error: 'PRIMERA_VISITA_INVALIDA' },
-  clinic_services: { normalizar: normalizarServicios, error: 'SERVICIOS_INVALIDOS' }
+  clinic_services: { normalizar: normalizarServicios, error: 'SERVICIOS_INVALIDOS' },
+  clinic_doctors: { normalizar: normalizarDoctores, error: 'DOCTORES_INVALIDOS' },
+  clinic_closures: { normalizar: normalizarCierres, error: 'CIERRES_INVALIDOS' }
 } as const;
 
 type CampoAjuste = keyof typeof CAMPOS;
@@ -175,6 +181,10 @@ function porDefecto(): AjustesClinica {
     // SIN PRECIOS POR DEFECTO. Un precio inventado acaba en una discusion en el mostrador
     // con Helios de testigo por escrito. Sin servicios, Helios no dice ninguno y deriva.
     clinic_services: null,
+    // SIN DOCTORES NI CIERRES POR DEFECTO. Sin doctores no hay agenda propia y se sigue
+    // usando Cal.com; inventarse uno seria ofrecer citas con alguien que no existe.
+    clinic_doctors: null,
+    clinic_closures: null,
     origen: {}
   };
 }
@@ -412,6 +422,8 @@ export async function leerAjustes(tenantId: string): Promise<Record<string, unkn
     first_visit_free: ajustes.first_visit_free,
     clinic_services: ajustes.clinic_services,
     clinic_services_limites: LIMITES_DE_SERVICIOS,
+    clinic_doctors: ajustes.clinic_doctors,
+    clinic_closures: ajustes.clinic_closures,
     clinic_address_max: MAX_LARGO_DIRECCION,
 
     // De dónde sale cada valor. El panel lo necesita para no decir «elegido por la

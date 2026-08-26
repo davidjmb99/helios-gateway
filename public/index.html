@@ -2458,6 +2458,22 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
         nombre: 'La primera visita gratis',
         texto: v => v === true ? 'sí' : 'no'
       },
+      clinic_doctors: {
+        nombre: 'Los doctores',
+        texto: t => {
+          if (!t) return 'sin definir';
+          const fichas = String(t).split(/\r?\n/).filter(l => l.trim() && !/^\s*(calendario|horario|hace)\s*:/i.test(l));
+          return fichas.length === 1 ? '1 doctor' : fichas.length + ' doctores';
+        }
+      },
+      clinic_closures: {
+        nombre: 'Los días cerrados',
+        texto: t => {
+          if (!t) return 'ninguno';
+          const n = String(t).split(/\r?\n/).filter(l => l.trim()).length;
+          return n === 1 ? '1 cierre' : n + ' cierres';
+        }
+      },
       clinic_services: {
         nombre: 'Los servicios y precios',
         texto: t => {
@@ -2643,6 +2659,8 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
       document.getElementById('clinica-direccion').value = valorEnPantalla('clinic_address') || '';
       document.getElementById('clinica-primera-visita').checked = valorEnPantalla('first_visit_free') === true;
       document.getElementById('clinica-servicios').value = valorEnPantalla('clinic_services') || '';
+      document.getElementById('clinica-doctores').value = valorEnPantalla('clinic_doctors') || '';
+      document.getElementById('clinica-cierres').value = valorEnPantalla('clinic_closures') || '';
 
       document.getElementById('horario-estado').innerHTML = textoDeOrigen(
         ajustesActuales.origen.clinic_hours,
@@ -3181,6 +3199,40 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
               ninguna</b>: es peor que la clínica crea que puso doce precios y Helios solo
               sepa seis.
             </p>
+          </div>
+          <div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Doctores</h3>
+            <p class="text-[11px] text-slate-400 mb-2">
+              Una ficha por doctor. <b class="text-slate-300">Si no pones «horario:»
+              trabaja el de la clínica</b>, que es lo normal. Con
+              <code class="text-amber-400">horario: L, J, V, S</code> son esos días con el
+              horario de la clínica; para algo distinto,
+              <code class="text-amber-400">horario: L-V 10:00-18:00</code>.
+              Un <b class="text-amber-400">*</b> detrás de un servicio significa
+              <b class="text-slate-300">«este lo hace preferentemente, pero si está ocupado
+              lo cogen los demás»</b>. Sin estrella, ese servicio lo hace solo quien lo
+              declara.
+            </p>
+            <textarea id="clinica-doctores" rows="10"
+                      placeholder="Dra. Ana Martínez&#10;  calendario: c-ana@group.calendar.google.com&#10;  hace: valoración, higiene, blanqueamiento&#10;&#10;Dra. Sofía Lemur&#10;  calendario: c-sofia@group.calendar.google.com&#10;  horario: L, J, V, S&#10;  hace: valoración, odontopediatría"
+                      oninput="cambiarTexto('clinic_doctors', this.value)"
+                      class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
+          </div>
+          <div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Días cerrados</h3>
+            <p class="text-[11px] text-slate-400 mb-2">
+              Festivos, vacaciones y puentes, uno por línea:
+              <code class="text-amber-400">25/12/2026 Navidad</code> o
+              <code class="text-amber-400">15/08/2026 - 22/08/2026 vacaciones</code>.
+              Va aquí y no en el calendario de cada doctor porque
+              <b class="text-slate-300">un cierre de la clínica lo son todos a la vez</b>, y
+              esperar a que cuatro personas se acuerden de bloquear su agenda es garantizar
+              que una se olvide.
+            </p>
+            <textarea id="clinica-cierres" rows="4"
+                      placeholder="25/12/2026   Navidad&#10;15/08/2026 - 22/08/2026   vacaciones"
+                      oninput="cambiarTexto('clinic_closures', this.value)"
+                      class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
           </div>
           <div>
             <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Tono</h3>
