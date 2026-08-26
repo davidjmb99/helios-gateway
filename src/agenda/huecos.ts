@@ -74,6 +74,18 @@ export interface DoctorConAgenda {
   horario: HorarioClinica;
   /** Lo que ya tiene ocupado en la ventana consultada. */
   ocupado: FranjaOcupada[];
+  /**
+   * A quién se le da antes. Número más bajo, antes.
+   *
+   * NO ES UNA RESTRICCIÓN, ES UNA PREFERENCIA, y esa diferencia la pidió David con la
+   * urgencia dental: «principalmente la ve Vélez, pero si está ocupado la puede tomar
+   * cualquier doctor». Con una lista plana habría que elegir entre dejarle la urgencia solo
+   * a él -y perder la cita cuando esté ocupado- o repartirla entre los cuatro por igual
+   * -y que una urgencia acabe con quien no es cirujano teniendo al cirujano libre-.
+   *
+   * Quien no lo diga va con 0, así que sin prioridades esto se comporta como antes.
+   */
+  prioridad?: number;
 }
 
 export interface HuecoOfrecido {
@@ -262,13 +274,23 @@ export function huecosDisponibles(entrada: {
     );
     if (libres.length === 0) continue;
 
-    // EL REPARTO: el menos cargado. Y se cuenta también lo que se le ha ido asignando EN
-    // ESTA MISMA consulta, para que los huecos seguidos no caigan todos en el mismo doctor
-    // solo porque empezó la mañana más libre. Es el «load balancing» del round-robin.
+    // EL REPARTO, EN TRES ESCALONES Y EN ESTE ORDEN:
     //
-    // El desempate es por `id` y no al azar a propósito: dos consultas seguidas tienen que
-    // dar la misma respuesta, o el paciente ve un doctor distinto cada vez que refresca.
+    //   1. LA PRIORIDAD MANDA SOBRE LA CARGA. Si el cirujano puede coger la urgencia, la
+    //      coge él aunque venga más cargado: para eso es el preferente. Solo cuando NINGÚN
+    //      preferente está libre entran los demás, y entonces la cita se hace igual en vez
+    //      de perderse.
+    //
+    //   2. Entre los de la misma prioridad, el menos cargado. Se cuenta también lo que se
+    //      le ha ido asignando EN ESTA MISMA consulta, para que los huecos seguidos no
+    //      caigan todos en el mismo doctor solo porque empezó la mañana más libre.
+    //
+    //   3. Y el desempate final por `id`, no al azar: dos consultas seguidas tienen que dar
+    //      la misma respuesta, o el paciente ve un doctor distinto cada vez que refresca.
     const elegido = libres.reduce((mejor, d) => {
+      const pa = d.prioridad ?? 0;
+      const pb = mejor.prioridad ?? 0;
+      if (pa !== pb) return pa < pb ? d : mejor;
       const a = carga.get(d.id) ?? 0;
       const b = carga.get(mejor.id) ?? 0;
       if (a !== b) return a < b ? d : mejor;

@@ -336,4 +336,49 @@ const consulta = (over: Record<string, any> = {}) => huecosDisponibles({
   assert.notEqual(aLas14!.doctor_id, 'martinez', 'y con otro doctor, no con la que esta ocupada');
 }
 
+// --- LA PRIORIDAD MANDA SOBRE LA CARGA -------------------------------------
+//
+// LO PIDIO DAVID con la urgencia dental: «principalmente la ve Velez, pero si esta ocupado
+// la puede tomar cualquier doctor».
+//
+// Es una PREFERENCIA, no una restriccion, y esa diferencia importa. Con una lista plana
+// habria que elegir entre dos cosas malas: dejarle la urgencia solo a el -y perder la cita
+// cuando este ocupado- o repartirla entre los cuatro por igual -y que una urgencia acabe
+// con quien no es cirujano teniendo al cirujano libre-.
+
+{
+  const urgencia = (velezOcupado: boolean) => consulta({
+    desde: t(10), hasta: t(13), duracionMin: 45, margenMin: 15, maximo: 3,
+    doctores: [
+      doctor('velez', { prioridad: 0, ocupado: velezOcupado ? [{ desde: t(10), hasta: t(12) }] : [] }),
+      doctor('martinez', { prioridad: 1 }),
+      doctor('ruiz', { prioridad: 1 })
+    ]
+  });
+
+  // Con el preferente libre, se lo lleva TODO. Aunque venga mas cargado: para eso es el
+  // preferente, y la carga no puede ganarle a «esto lo hace el cirujano».
+  assert.deepEqual(
+    urgencia(false).map(h => h.doctor_id), ['velez', 'velez', 'velez'],
+    'con el preferente libre, la urgencia es suya'
+  );
+
+  // Y con el preferente ocupado, la cita NO SE PIERDE: la cogen los demas, y entre ellos se
+  // reparte por carga como siempre.
+  const sinVelez = urgencia(true).map(h => h.doctor_id);
+  assert.ok(!sinVelez.includes('velez'), 'ocupado, no se le asigna nada');
+  assert.equal(new Set(sinVelez).size, 2, 'y entre los otros dos se reparte, no se lo lleva uno');
+
+  // SIN PRIORIDADES SE COMPORTA COMO ANTES. Quien no la declare va con 0, asi que todo lo
+  // que ya funcionaba sigue igual.
+  const sinPrioridad = consulta({
+    desde: t(10), hasta: t(13), duracionMin: 45, margenMin: 15, maximo: 3,
+    doctores: [doctor('a'), doctor('b'), doctor('c')]
+  });
+  assert.equal(
+    new Set(sinPrioridad.map(h => h.doctor_id)).size, 3,
+    'sin prioridades, reparto plano entre los tres'
+  );
+}
+
 console.log('agenda_huecos_test: OK');
