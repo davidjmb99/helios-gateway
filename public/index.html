@@ -386,9 +386,16 @@
         });
         if (!res.ok) return;
         const datos = await res.json();
-        if (!datos.cuentas || datos.cuentas.length < 2) return;
+        if (!datos.cuentas || datos.cuentas.length === 0) return;
 
-        caja.innerHTML = datos.cuentas.map(c =>
+        // AL ENTRAR COMO OPERADOR NO SE ESTA EN NINGUNA CLINICA: se esta en la fila del
+        // equipo, que no tiene pacientes ni citas. Se pide elegir una en vez de mostrar
+        // seleccionada la primera, que seria mentira sobre lo que hay en pantalla.
+        const pedirQueElija = datos.actual_es_clinica === false
+          ? '<option value="" selected>— elige una clínica —</option>'
+          : '';
+
+        caja.innerHTML = pedirQueElija + datos.cuentas.map(c =>
           '<option value="' + escapeHtml(c.tenant_id) + '"'
           + (c.tenant_id === datos.actual ? ' selected' : '') + '>'
           + escapeHtml(c.name || c.tenant_id) + '</option>'

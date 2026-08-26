@@ -235,8 +235,10 @@ const verificar = (t: string): { tenant_id: string; operador: string | null } | 
   // llega. Aqui se comprueba que el panel se comporte asi y no al reves.
   const panel = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 
+  // La ventana es amplia a proposito: lo que importa es el ORDEN -primero el corte, y
+  // solo despues mostrar-, no cuantas lineas haya en medio.
   assert.match(
-    panel, /if \(!res\.ok\) return;[\s\S]{0,400}?classList\.remove\('hidden'\)/,
+    panel, /if \(!res\.ok\) return;[\s\S]{0,1200}?classList\.remove\('hidden'\)/,
     'el selector solo se muestra DESPUES de una respuesta buena: si el servidor dice que ' +
     'no, no se pinta nada'
   );

@@ -427,15 +427,25 @@ server.get('/admin/cuentas', async (request, reply) => {
   const operador = await exigirOperador(request, reply);
   if (!operador) return;
 
+  // LAS CUENTAS DE OPERADOR NO SON CLINICAS Y NO SE LISTAN. La fila del equipo que opera
+  // no tiene pacientes, ni horario, ni citas: cambiarse «a ella» dejaria el panel vacio
+  // sin que nada explicara por que. Se listan las clinicas, que es lo que hay que mirar.
   const { data, error } = await supabase
     .from('helios_tenants')
     .select('tenant_id, name')
+    .or('es_operador.is.null,es_operador.eq.false')
     .order('name', { ascending: true });
 
   if (error) return reply.status(500).send({ error: 'No se pudieron leer las cuentas.' });
 
   const actual = sesionDelPanel(request)?.tenant_id ?? null;
-  return { ok: true, actual, cuentas: data ?? [] };
+
+  // Y SE DICE SI LA CUENTA ACTUAL ESTA EN LA LISTA. Al entrar como operador se esta en la
+  // fila de operador, que no es ninguna clinica: el panel lo usa para pedir que se elija
+  // una en vez de mostrar seleccionada la primera, que seria mentira.
+  const enLaLista = (data ?? []).some((c: any) => c.tenant_id === actual);
+
+  return { ok: true, actual, actual_es_clinica: enLaLista, cuentas: data ?? [] };
 });
 
 // POST /admin/cambiar-cuenta — un token nuevo apuntando a otra clinica.
