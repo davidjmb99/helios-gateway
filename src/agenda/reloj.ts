@@ -1,0 +1,115 @@
+/**
+ * «Mañana a las 2 de la tarde» convertido en un instante.
+ *
+ * ES LA DIRECCIÓN DIFÍCIL, la que `huecos.ts` evita a propósito. Allí solo se convierte
+ * instante -> hora local, que es exacta siempre. Aquí hay que hacer lo contrario -hora local
+ * -> instante-, y eso no tiene solución única: la noche en que el reloj retrasa, «las 2:30»
+ * ocurre DOS veces, y la noche en que adelanta no ocurre NINGUNA.
+ *
+ * Se hace aquí, en un solo sitio, porque alguien tiene que hacerlo: Helios dice «las dos» y
+ * Google quiere un instante. Concentrarlo en una función con pruebas es mejor que tenerlo
+ * repartido por donde haga falta.
+ *
+ * Y SIN ZONA NO SE ADIVINA. Un `new Date('2026-09-07T14:00')` sin huso lo interpreta el
+ * servidor en SU hora -que en el contenedor es UTC-, así que «las 2 de la tarde» de una
+ * clínica de Caracas se convertiría en las 10 de la mañana. No falla, no avisa: da una cita
+ * cuatro horas antes.
+ */
+
+const FORMATEADORES = new Map<string, Intl.DateTimeFormat>();
+
+function partesEn(fecha: Date, zona: string): Record<string, number> {
+  let f = FORMATEADORES.get(zona);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: zona, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+    FORMATEADORES.set(zona, f);
+  }
+  const salida: Record<string, number> = {};
+  for (const p of f.formatToParts(fecha)) {
+    if (p.type !== 'literal') salida[p.type] = Number(p.value);
+  }
+  // Intl devuelve «24» para medianoche en algunos entornos.
+  if (salida.hour === 24) salida.hour = 0;
+  return salida;
+}
+
+/** Cuánto se separa esa zona de UTC en ese instante, en milisegundos. */
+function desfase(instante: Date, zona: string): number {
+  const p = partesEn(instante, zona);
+  const comoSiFueraUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  return comoSiFueraUtc - instante.getTime();
+}
+
+/**
+ * El instante en que, en esa zona, el reloj marca esa fecha y esa hora.
+ *
+ * SE HACE EN DOS PASADAS y no en una. La primera trata la hora local como si fuera UTC y
+ * corrige por el desfase de ese momento; la segunda vuelve a mirar el desfase YA en el
+ * instante corregido. Sin la segunda, una cita a las 3 de la madrugada del día que cambia
+ * la hora se calcula con el desfase del día anterior y queda una hora movida.
+ */
+function instanteDe(
+  y: number, mes: number, d: number, hh: number, mm: number, zona: string
+): Date | null {
+  const comoUtc = Date.UTC(y, mes - 1, d, hh, mm, 0);
+  if (!Number.isFinite(comoUtc)) return null;
+
+  let t = comoUtc - desfase(new Date(comoUtc), zona);
+  t = comoUtc - desfase(new Date(t), zona);
+
+  const f = new Date(t);
+  if (!Number.isFinite(f.getTime())) return null;
+
+  // SE COMPRUEBA QUE LA VUELTA CUADRE. Si esa hora local NO EXISTE -la madrugada en que el
+  // reloj adelanta se salta de 2:00 a 3:00- las dos pasadas convergen en un instante cuya
+  // hora local es otra. Antes que devolver una cita a una hora distinta de la pedida, se
+  // devuelve null y quien llame decide: preguntar, o derivar.
+  const v = partesEn(f, zona);
+  if (v.year !== y || v.month !== mes || v.day !== d || v.hour !== hh || v.minute !== mm) return null;
+
+  return f;
+}
+
+/**
+ * Lee la fecha y hora que manda Helios.
+ *
+ * SE ADMITEN DOS FORMAS, y la diferencia importa:
+ *
+ *     2026-09-07T14:00:00-04:00   lleva huso: es un instante, la zona sobra
+ *     2026-09-07T14:00           no lo lleva: es hora de la CLÍNICA
+ *     2026-09-07 14:00           igual, con espacio en vez de T
+ *
+ * Lo segundo es lo que va a mandar un modelo casi siempre, porque es lo que se lee en la
+ * conversación. Interpretarlo en la hora del servidor -UTC en el contenedor- daría una cita
+ * cuatro horas antes en Caracas, sin error y sin aviso.
+ */
+export function leerMomento(texto: unknown, zona: string): Date | null {
+  const bruto = String(texto ?? '').trim();
+  if (!bruto) return null;
+
+  // Con huso explícito -o con Z- ya es un instante y no hay nada que interpretar.
+  if (/[Zz]$/.test(bruto) || /[+-]\d{2}:?\d{2}$/.test(bruto)) {
+    const f = new Date(bruto);
+    return Number.isFinite(f.getTime()) ? f : null;
+  }
+
+  const m = bruto.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+
+  const [, y, mes, d, hh, mm] = m;
+  const hora = Number(hh);
+  const minuto = Number(mm);
+  if (hora > 23 || minuto > 59) return null;
+
+  return instanteDe(Number(y), Number(mes), Number(d), hora, minuto, zona);
+}
+
+/** El día de hoy en la zona de la clínica, «2026-09-07». Para hablar de «hoy» sin liarse. */
+export function hoyEn(zona: string, ahora: Date = new Date()): string {
+  const p = partesEn(ahora, zona);
+  return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+}

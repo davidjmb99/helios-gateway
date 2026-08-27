@@ -45,6 +45,9 @@ import { cifrarContrasena, esHashSeguro, verificarContrasena } from './admin/pas
 import { contarFilas, purgarDatos } from './admin/data-purge.js';
 import { leerAjustes, guardarAjustes, obtenerHorarioYVentana } from './tenants/settings.js';
 import { probarAgenda } from './agenda/prueba.js';
+import { atenderMcp } from './agenda/mcp.js';
+import { clinicaDelToken, tokenDeLaCabecera, tokenDeAgenda } from './agenda/credencial.js';
+import { leerDoctores } from './agenda/doctores.js';
 import { componentHealth } from './services/component-health.js';
 import { refreshDependencyHealth } from './services/health-probes.js';
 import { assertSupabaseSuccess } from './supabase/assert-success.js';
@@ -269,6 +272,67 @@ server.post('/admin/settings', async (request, reply) => {
   return resultado;
 });
 
+
+// --- LA AGENDA, SERVIDA COMO MCP --------------------------------------------
+//
+// Es lo que llama Hermes desde el perfil de cada clinica, igual que llama a Cal.com hoy.
+//
+// DE QUE CLINICA ES CADA LLAMADA LO DICE EL TOKEN, y no hay ningun parametro `tenant_id`
+// ni lo va a haber. Al otro lado hay un modelo de lenguaje: si la clinica viajara como
+// argumento, bastaria con que un paciente escribiera «consulta la agenda de la clinica
+// lapaz» para que Helios lo intentara -no por malicia, sino porque hace lo que le piden-.
+//
+// NO LLEVA `checkAuth`: eso es para el panel, con sesiones que caducan. Aqui la credencial
+// vive en el `.env` de un perfil de Hermes, donde nadie la va a renovar.
+server.post('/mcp', async (request, reply) => {
+  const tenantId = clinicaDelToken(tokenDeLaCabecera((request.headers as any)?.authorization));
+  if (!tenantId) {
+    // 401 SECO, SIN DECIR POR QUE. Distinguir «token mal firmado» de «clinica que no
+    // existe» le dice a quien prueba por donde seguir probando.
+    return reply.status(401).send({ error: 'unauthorized' });
+  }
+
+  const peticion = request.body as any;
+
+  // UN LOTE ES UN ARRAY. JSON-RPC lo permite y algun cliente lo usa al arrancar.
+  const mensajes = Array.isArray(peticion) ? peticion : [peticion];
+  if (mensajes.length === 0 || mensajes.length > 50) {
+    return reply.status(400).send({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request' } });
+  }
+
+  let ctx: any;
+  try {
+    const ajustes = await leerAjustes(tenantId) as any;
+    const { horario, zona } = await obtenerHorarioYVentana(tenantId);
+    ctx = {
+      tenantId,
+      doctores: leerDoctores(ajustes.clinic_doctors, horario as any) ?? [],
+      cierresTexto: ajustes.clinic_closures,
+      horario,
+      zona
+    };
+  } catch (err: any) {
+    // SI NO SE PUEDEN LEER LOS AJUSTES NO SE CONTESTA CON UNA AGENDA VACIA. Una lista de
+    // doctores vacia se leeria como «esta clinica no tiene doctores», y Helios diria que no
+    // hay con quien citar. Un 503 lo hace derivar, que es lo correcto.
+    return reply.status(503).send({
+      jsonrpc: '2.0', id: null,
+      error: { code: -32000, message: 'ajustes_no_disponibles' }
+    });
+  }
+
+  const salidas: any[] = [];
+  for (const m of mensajes) {
+    const r = await atenderMcp(m, ctx);
+    if (r) salidas.push(r);
+  }
+
+  // SIN NADA QUE CONTESTAR, 202 Y CUERPO VACIO. Es lo que manda el transporte de MCP para
+  // un lote que solo traia notificaciones; mandar `null` o un 200 vacio confunde al cliente.
+  if (salidas.length === 0) return reply.status(202).send();
+  return Array.isArray(peticion) ? salidas : salidas[0];
+});
+
 // COMPROBAR LA AGENDA. Existe por el paso 5 del manual -compartir cada calendario con la
 // cuenta de servicio- que es el que se olvida y el que no da error en ninguna pantalla:
 // Google devuelve el fallo junto a una lista de ocupacion vacia, o sea, un doctor que
@@ -301,6 +365,19 @@ server.get('/admin/agenda/prueba', async (request, reply) => {
       problemas: [`No se pudo hacer la comprobacion: ${err?.message || 'error desconocido'}`]
     };
   }
+});
+
+// EL TOKEN DE LA AGENDA, PARA PEGARLO EN EL `.env` DEL PERFIL DE HERMES.
+//
+// VA EN UN ENDPOINT APARTE Y NO EN EL INFORME DE `/admin/agenda/prueba`. El informe se mira
+// a menudo -y con alguien mirando la pantalla-; el token se necesita una vez, al dar de
+// alta la clinica. Un secreto que sale solo cuando se pide es un secreto que casi nunca
+// esta a la vista.
+//
+// LA CLINICA SALE DEL TOKEN DE SESION, como en todo el panel: cada quien ve el suyo.
+server.get('/admin/agenda/token', async (request, reply) => {
+  const tenantId = await checkAuth(request, reply);
+  return { ok: true, tenant_id: tenantId, token: tokenDeAgenda(tenantId) };
 });
 
 // Endpoint de Autenticación

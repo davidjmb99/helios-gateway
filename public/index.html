@@ -2860,6 +2860,30 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
     // error en ninguna pantalla -devuelve el fallo junto a una agenda vacia, o sea, un
     // doctor que parece libre-, asi que la primera senal seria un paciente citado a una
     // hora ya cogida.
+    // EL TOKEN SOLO SALE CUANDO SE PIDE. Se necesita una vez, al dar de alta la clinica, y
+    // el panel se mira a menudo con alguien delante. Un secreto que hay que pedir es un
+    // secreto que casi nunca esta a la vista.
+    async function verTokenDeAgenda() {
+      const caja = document.getElementById('agenda-token');
+      caja.classList.remove('hidden');
+      caja.innerHTML = '<p class="text-slate-400">Un momento…</p>';
+      try {
+        const res = await fetch('/admin/agenda/token', {
+          headers: { 'Authorization': 'Bearer ' + getSessionToken() }
+        });
+        const data = await res.json();
+        if (!res.ok || !data.token) throw new Error('HTTP ' + res.status);
+        caja.innerHTML =
+          '<div class="rounded-lg border border-slate-700 bg-slate-950 p-3 space-y-2">'
+          + '<p class="text-[11px] text-slate-400">Va en <code class="text-amber-400">.env</code> del perfil de Hermes de esta clinica, NO en el <code class="text-amber-400">config.yaml</code>:</p>'
+          + '<pre class="text-[10px] text-slate-300 whitespace-pre-wrap break-all bg-black/40 rounded p-2">HELIOS_AGENDA_TOKEN=' + escapeHtml(data.token) + '</pre>'
+          + '<p class="text-[11px] text-slate-500">Es un secreto. No lo pegues en un chat ni en el repositorio.</p>'
+          + '</div>';
+      } catch (e) {
+        caja.innerHTML = '<p class="text-red-400">No se pudo obtener: ' + escapeHtml(String(e.message || e)) + '</p>';
+      }
+    }
+
     async function comprobarAgenda() {
       const boton = document.getElementById('agenda-boton');
       const caja = document.getElementById('agenda-resultado');
@@ -3344,10 +3368,16 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
           <div>
             <div class="flex items-center justify-between mb-1">
               <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300">Comprobar la agenda</h3>
-              <button id="agenda-boton" onclick="comprobarAgenda()"
-                      class="rounded-lg border border-amber-500 bg-amber-500/10 px-3 py-1.5 text-[11px] font-bold text-amber-300 hover:bg-amber-500/20 disabled:opacity-50">
-                Comprobar
-              </button>
+              <div class="flex items-center gap-2">
+                <button id="agenda-token-boton" onclick="verTokenDeAgenda()"
+                        class="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-[11px] font-bold text-slate-300 hover:border-amber-500">
+                  Ver el token
+                </button>
+                <button id="agenda-boton" onclick="comprobarAgenda()"
+                        class="rounded-lg border border-amber-500 bg-amber-500/10 px-3 py-1.5 text-[11px] font-bold text-amber-300 hover:bg-amber-500/20 disabled:opacity-50">
+                  Comprobar
+                </button>
+              </div>
             </div>
             <p class="text-[11px] text-slate-400 mb-2">
               Le pregunta a Google por los calendarios de arriba y enseña qué contesta.
@@ -3357,6 +3387,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
               el fallo junto a una agenda vacía, o sea, un doctor que parece libre.
               <b class="text-slate-300">Solo lee</b>: no crea ninguna cita de prueba.
             </p>
+            <div id="agenda-token" class="hidden text-xs"></div>
             <div id="agenda-resultado" class="hidden text-xs space-y-1"></div>
           </div>
           <div>
