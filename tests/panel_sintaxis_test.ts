@@ -186,3 +186,37 @@ console.log('panel_sintaxis_test: los campos de texto registran al escribir');
 }
 
 console.log('panel_sintaxis_test: el panel describe todos los ajustes del servidor');
+
+// --- RECORDAR EL USUARIO: SOLO EL USUARIO ----------------------------------
+//
+// Lo que se comprueba aquí NO es que la casilla funcione -eso se ve al usarla- sino que NO
+// SE GUARDE LA CONTRASEÑA. localStorage está al alcance de cualquier JavaScript de la
+// página: es exactamente lo que leería un XSS. Una contraseña ahí es una contraseña
+// regalada, y el gestor del navegador ya hace esto bien.
+
+{
+  assert.ok(
+    html.includes("localStorage.setItem('helios_usuario_recordado'"),
+    'tiene que guardar el usuario recordado'
+  );
+  assert.ok(
+    !/localStorage\.setItem\([^)]*(password|contrasena|contraseña|clave)/i.test(html),
+    'y NUNCA la contraseña: localStorage lo lee cualquier script de la página'
+  );
+
+  // SE GUARDA DESPUÉS DE QUE EL LOGIN VAYA BIEN. Recordar el usuario de un intento fallido
+  // solo sirve para que la próxima vez tampoco funcione.
+  assert.match(
+    html, /if \(res\.ok\)[\s\S]{0,300}?helios_usuario_recordado/,
+    'el usuario se recuerda solo si el login funcionó'
+  );
+
+  // Y al desmarcar la casilla se OLVIDA: sin eso, quitar la marca no quitaría nada y el
+  // usuario seguiría apareciendo en un equipo compartido.
+  assert.ok(
+    html.includes("localStorage.removeItem('helios_usuario_recordado')"),
+    'al desmarcar la casilla se olvida'
+  );
+}
+
+console.log('panel_sintaxis_test: recordar usuario, nunca contraseña');

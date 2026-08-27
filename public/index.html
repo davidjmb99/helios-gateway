@@ -85,6 +85,15 @@
             </button>
           </div>
         </div>
+        <!--
+          SOLO EL USUARIO, NUNCA LA CONTRASEÑA. Guardar una contraseña en localStorage es
+          dejarla al alcance de cualquier JavaScript de la página; para eso ya está el
+          gestor del navegador, que la cifra y la protege como es debido.
+        -->
+        <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none">
+          <input type="checkbox" id="login-recordar" class="rounded border-slate-700 bg-slate-950">
+          Recordar mi usuario en este equipo
+        </label>
         <div id="login-error" class="text-xs text-red-400 font-semibold hidden bg-red-500/10 border border-red-500/25 p-3 rounded-xl"></div>
         <button type="submit" class="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-slate-950 font-bold text-sm tracking-wide shadow-lg shadow-orange-500/10 active:scale-[0.98] transition-all">
           Iniciar Sesión
@@ -312,6 +321,23 @@
       }
     }
 
+    /**
+     * Rellena el usuario recordado y deja el foco en la contraseña.
+     *
+     * El foco importa mas de lo que parece: si se recuerda el usuario y el cursor sigue
+     * cayendo en ese campo, hay que saltarlo a mano cada vez y lo recordado no ahorra nada.
+     */
+    function ponerUsuarioRecordado() {
+      const guardado = localStorage.getItem('helios_usuario_recordado');
+      if (!guardado) return;
+      const userEl = document.getElementById('login-username');
+      const recordar = document.getElementById('login-recordar');
+      const passEl = document.getElementById('login-password');
+      if (userEl) userEl.value = guardado;
+      if (recordar) recordar.checked = true;
+      if (passEl) passEl.focus();
+    }
+
     function checkSession() {
       const token = getSessionToken();
       const clinicName = localStorage.getItem('helios_clinic_name');
@@ -346,6 +372,17 @@
         });
         
         const data = await res.json();
+
+        // Se decide DESPUES de que el login vaya bien: recordar un usuario con el que no se
+        // ha podido entrar solo sirve para que la proxima vez tampoco funcione.
+        if (res.ok) {
+          const recordar = document.getElementById('login-recordar');
+          if (recordar && recordar.checked) {
+            localStorage.setItem('helios_usuario_recordado', userEl.value.trim());
+          } else {
+            localStorage.removeItem('helios_usuario_recordado');
+          }
+        }
         
         if (!res.ok) {
           throw new Error(data.error || 'Credenciales incorrectas');
@@ -2335,6 +2372,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
 
     // Inicializar sesión y arrancar
     const hasSession = checkSession();
+    if (!hasSession) ponerUsuarioRecordado();
     if (hasSession) {
       doRefreshCycle();
       startPolling();
