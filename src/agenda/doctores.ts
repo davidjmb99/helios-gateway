@@ -32,6 +32,9 @@
 
 import type { HorarioClinica } from '../leads/policy.js';
 
+/** Las estrellas del final de un servicio. Marcan el preferente y no son parte del nombre. */
+const SIN_ESTRELLA = /\*+$/;
+
 export interface DoctorDeClinica {
   nombre: string;
   /** El apellido, separado, para poder reconocerlo cuando el paciente diga solo eso. */
@@ -40,8 +43,17 @@ export interface DoctorDeClinica {
   calendario: string;
   /** Su horario ya resuelto: el de la clínica, el suyo, o el de la clínica en sus días. */
   horario: HorarioClinica;
-  /** Los servicios que hace, en minúsculas. */
+  /** Los servicios que hace, en minúsculas y sin tildes: sirven para EMPAREJAR. */
   hace: string[];
+  /**
+   * Los mismos, TAL COMO LOS ESCRIBIÓ LA CLÍNICA. Sirven para MOSTRAR.
+   *
+   * Es la misma distinción que los sinónimos de los precios: `hace` existe para reconocer
+   * lo que pide el paciente -«odontopediatria» tiene que emparejar con «odontopediatría»- y
+   * esto existe para que cuando Helios nombre un servicio lo diga con sus tildes y como lo
+   * llama la clínica, no en la forma aplanada que usamos por dentro.
+   */
+  haceTexto: string[];
   /** Los que hace de forma preferente -los marcados con `*`-. */
   preferente: string[];
 }
@@ -178,6 +190,7 @@ export function leerDoctores(texto: unknown, deLaClinica: HorarioClinica): Docto
       calendario: actual.calendario,
       horario: actual.horario ?? deLaClinica,
       hace: actual.hace ?? [],
+      haceTexto: actual.haceTexto ?? [],
       preferente: actual.preferente ?? []
     });
     actual = null;
@@ -223,12 +236,14 @@ export function leerDoctores(texto: unknown, deLaClinica: HorarioClinica): Docto
     const servicios = valor.split(',').map(s => s.trim()).filter(Boolean);
     if (servicios.length === 0) return null;
     actual.hace = [];
+    actual.haceTexto = [];
     actual.preferente = [];
     for (const s of servicios) {
       const esPreferente = s.endsWith('*');
       const nombre = sinTildes(s.replace(/\*+$/, ''));
       if (!nombre) return null;
       actual.hace.push(nombre);
+      actual.haceTexto.push(s.replace(SIN_ESTRELLA, '').trim());
       if (esPreferente) actual.preferente.push(nombre);
     }
   }

@@ -56,8 +56,10 @@ import {
   normalizarDoctores,
   normalizarCierres,
   serviciosDeTexto,
+  doctoresDeTexto,
   LIMITES_DE_SERVICIOS,
   type ServicioDeClinica,
+  type DoctorParaHermes,
   normalizarVentanaEnvio,
   normalizarZona,
   type EquiposClinica,
@@ -366,6 +368,7 @@ export async function leerContextoDeClinica(tenantId: string): Promise<{
   direccion: string | null;
   primeraVisitaGratis: boolean;
   servicios: ServicioDeClinica[];
+  doctores: DoctorParaHermes[];
 }> {
   const ajustes = await ajustesDe(tenantId);
   return {
@@ -374,6 +377,10 @@ export async function leerContextoDeClinica(tenantId: string): Promise<{
     direccion: ajustes.clinic_address,
     primeraVisitaGratis: ajustes.first_visit_free,
     servicios: serviciosDeTexto(ajustes.clinic_services),
+    // LOS DOCTORES VAN COMO IDENTIDAD, SIN HORARIOS Y SIN CALENDARIOS. El porque esta
+    // en `doctoresDeTexto`: es lo que impide que Helios conteste una disponibilidad de
+    // memoria en vez de consultarla.
+    doctores: doctoresDeTexto(ajustes.clinic_doctors),
     // Solo se manda si la clínica lo configuró: mandar el horario por defecto haría
     // creer a Hermes que es el de verdad cuando nadie lo ha confirmado.
     horario: ajustes.origen.clinic_hours === 'clinica'

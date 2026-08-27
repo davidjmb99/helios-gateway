@@ -453,6 +453,60 @@ export function normalizarDoctores(valor: unknown): string | null {
   return leerDoctores(texto, SEMANA_COMPLETA) ? texto.trim() : null;
 }
 
+
+/**
+ * Los doctores como IDENTIDAD, para mandarlos en `clinic_context`.
+ *
+ * LO QUE NO LLEVA ES LO IMPORTANTE: ni el horario de cada doctor, ni su ID de calendario.
+ *
+ * El horario se queda fuera A PROPOSITO, y lo pidio David: «no quiero que le llegue una
+ * informacion a hermes de que ana y maria trabajan horario corrido, pero ambas ya esten
+ * ocupadas, entonces hermes no consulte el calendario y ofrezca horarios que ya estan
+ * ocupados». La forma de garantizar que siempre pregunte no es una regla en el SOUL
+ * pidiendoselo: es NO DARLE CON QUE FINGIRLO. Sin horarios, para cualquier hora tiene que
+ * consultar, porque le falta el dato para inventarsela.
+ *
+ * Y EL ID DE CALENDARIO TAMPOCO LO NECESITA. Dice «Martinez» y el gateway resuelve cual es.
+ * Un ID en el contexto es una cosa mas que mantener sincronizada, y una cosa mas que puede
+ * acabar escrita en un mensaje a un paciente.
+ *
+ * Lo que si lleva -nombre, apellido y que hace cada uno- es lo que le permite contestar
+ * «las endodoncias las ve el Dr. Velez» sin consultar nada, y reconocer al paciente que
+ * dice solo «Ana» o solo «Velez».
+ */
+export interface DoctorParaHermes {
+  nombre: string;
+  apellido: string;
+  hace: string[];
+}
+
+/**
+ * NO RECIBE EL HORARIO DE LA CLINICA, y es a proposito: aqui no se necesita.
+ *
+ * `leerDoctores` lo pide para resolver el horario de cada doctor -«horario: L, J, V»
+ * significa «esos dias, con el de la clinica»-, pero de todo eso aqui se descarta justo el
+ * horario. Se valida contra una semana completa, igual que al guardar, y el resultado es el
+ * mismo para lo unico que se usa: nombre, apellido y servicios.
+ *
+ * La primera version si lo recibia, con un `as any` para que encajaran los dos tipos de
+ * horario que hay en el codigo. Compilaba y devolvia CERO doctores: `clinic_hours` viene
+ * como `{ mon: [['10:00','20:00']] }` y `leerDoctores` espera `{ 1: [{desde, hasta}] }`. El
+ * `as any` no convirtio nada, solo callo al compilador. Sin el parametro no hay cast, y sin
+ * cast no hay forma de equivocarse.
+ */
+export function doctoresDeTexto(texto: string | null): DoctorParaHermes[] {
+  if (!texto) return [];
+  const doctores = leerDoctores(texto, SEMANA_COMPLETA);
+  if (!doctores) return [];
+  return doctores.map(d => ({
+    nombre: d.nombre,
+    apellido: d.apellido,
+    // `haceTexto` y no `hace`: con sus tildes y como los llama la clinica. La forma
+    // aplanada es para emparejar por dentro, no para que Helios la diga en voz alta.
+    hace: d.haceTexto
+  }));
+}
+
 export function normalizarCierres(valor: unknown): string | null {
   const texto = String(valor ?? '');
   if (!texto.trim()) return null;

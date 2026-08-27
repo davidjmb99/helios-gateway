@@ -495,7 +495,10 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       // mostrador, y aqui encima no sabriamos ni por que se prometio.
       primeraVisitaGratis: false,
       // Sin poder leer los ajustes, tampoco hay precios: Helios deriva antes que inventar.
-      servicios: []
+      servicios: [],
+      // Ni doctores. Nombrar a alguien que quiza ya no trabaja alli es peor que decir que
+      // en este momento no se puede consultar.
+      doctores: []
     }));
 
     // 6. Preparar el payload limpio para Hermes con identidad real desde Supabase
@@ -612,6 +615,26 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         // Solo se manda si la clinica los configuro. Sin precios, Helios no dice ninguno.
         ...(contextoDeClinica.servicios.length > 0
           ? { services: contextoDeClinica.servicios }
+          : {}),
+        // LOS DOCTORES, COMO IDENTIDAD Y NADA MAS: nombre, apellido y que hace cada uno.
+        //
+        // NO VAN SUS HORARIOS NI SUS CALENDARIOS, y eso es el diseño, no un olvido. Lo
+        // pidio David asi: «no quiero que le llegue una informacion a hermes de que ana y
+        // maria trabajan horario corrido, pero ambas ya esten ocupadas, entonces hermes no
+        // consulte el calendario y ofrezca horarios que ya estan ocupados».
+        //
+        // La forma de garantizar que SIEMPRE consulte no es una regla en el SOUL pidiendolo
+        // -eso es una regla que se puede saltar-: es que le falte el dato. Sin horarios,
+        // para decir si alguien puede a las dos NO TIENE MAS REMEDIO que preguntar.
+        //
+        // Con esto si puede contestar sin consultar nada «las endodoncias las ve el Dr.
+        // Velez», que es informacion de la clinica y no cambia cada hora; y reconocer al
+        // paciente que dice solo «Ana» o solo «Velez».
+        //
+        // Solo se manda si la clinica los configuro. Una lista vacia le diria a Helios «esta
+        // clinica no tiene doctores», que es distinto de «todavia no me los han dicho».
+        ...(contextoDeClinica.doctores.length > 0
+          ? { doctors: contextoDeClinica.doctores }
           : {}),
         no_diagnosis: true,
         no_medication: true,
