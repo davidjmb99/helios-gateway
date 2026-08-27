@@ -43,7 +43,8 @@ import { startLeadFollowupWorker } from './services/lead-followup-worker.js';
 import { leadMetrics } from './leads/service.js';
 import { cifrarContrasena, esHashSeguro, verificarContrasena } from './admin/passwords.js';
 import { contarFilas, purgarDatos } from './admin/data-purge.js';
-import { leerAjustes, guardarAjustes } from './tenants/settings.js';
+import { leerAjustes, guardarAjustes, obtenerHorarioYVentana } from './tenants/settings.js';
+import { probarAgenda } from './agenda/prueba.js';
 import { componentHealth } from './services/component-health.js';
 import { refreshDependencyHealth } from './services/health-probes.js';
 import { assertSupabaseSuccess } from './supabase/assert-success.js';
@@ -266,6 +267,39 @@ server.post('/admin/settings', async (request, reply) => {
     return reply.status(400).send({ error: true, error_code: resultado.error });
   }
   return resultado;
+});
+
+// COMPROBAR LA AGENDA. Existe por el paso 5 del manual -compartir cada calendario con la
+// cuenta de servicio- que es el que se olvida y el que no da error en ninguna pantalla:
+// Google devuelve el fallo junto a una lista de ocupacion vacia, o sea, un doctor que
+// parece libre. Sin esto, la primera senal seria un paciente citado a una hora ya cogida.
+//
+// SOLO LEE. No crea ningun evento de prueba: dejar basura en el calendario de un doctor
+// para comprobar que se puede escribir es peor que no comprobarlo.
+server.get('/admin/agenda/prueba', async (request, reply) => {
+  const tenantId = await checkAuth(request, reply);
+  const consulta = (request.query || {}) as { servicio?: string; dias?: string };
+
+  try {
+    const ajustes = await leerAjustes(tenantId) as any;
+    const { horario, zona } = await obtenerHorarioYVentana(tenantId);
+    const informe = await probarAgenda({
+      doctoresTexto: ajustes.clinic_doctors,
+      cierresTexto: ajustes.clinic_closures,
+      horario,
+      zona,
+      servicio: consulta.servicio,
+      dias: consulta.dias ? Number(consulta.dias) : undefined
+    });
+    return { tenant_id: tenantId, ...informe };
+  } catch (err: any) {
+    // 200 CON EL PROBLEMA DENTRO, y no un 500. Esto es un diagnostico: quien lo abre
+    // quiere saber que pasa, y un 500 en el panel solo dice «algo fallo».
+    return {
+      tenant_id: tenantId, ok: false, zona: '', doctores: [], cierres: [], huecos: [],
+      problemas: [`No se pudo hacer la comprobacion: ${err?.message || 'error desconocido'}`]
+    };
+  }
 });
 
 // Endpoint de Autenticación

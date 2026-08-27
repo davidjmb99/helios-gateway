@@ -2854,6 +2854,66 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
       try { return localStorage.getItem('helios_tema') || 'dark'; } catch (e) { return 'dark'; }
     }
 
+
+    // COMPROBAR LA AGENDA. Existe por el paso que se olvida al montar una cuenta:
+    // compartir cada calendario con la cuenta de servicio. Sin compartir, Google NO da
+    // error en ninguna pantalla -devuelve el fallo junto a una agenda vacia, o sea, un
+    // doctor que parece libre-, asi que la primera senal seria un paciente citado a una
+    // hora ya cogida.
+    async function comprobarAgenda() {
+      const boton = document.getElementById('agenda-boton');
+      const caja = document.getElementById('agenda-resultado');
+      boton.disabled = true;
+      boton.textContent = 'Preguntando a Google…';
+      caja.classList.remove('hidden');
+      caja.innerHTML = '<p class="text-slate-400">Un momento…</p>';
+
+      try {
+        const res = await fetch('/admin/agenda/prueba', {
+          headers: { 'Authorization': 'Bearer ' + getSessionToken() }
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+
+        const filas = (data.doctores || []).map(function (d) {
+          const bien = d.permiso === 'ok';
+          return '<div class="flex items-start gap-2 py-1">'
+            + '<span class="' + (bien ? 'text-emerald-400' : 'text-red-400') + '">' + (bien ? '✓' : '✕') + '</span>'
+            + '<div><b class="text-slate-200">' + escapeHtml(d.nombre) + '</b>'
+            + ' <span class="text-slate-500 font-mono text-[10px]">' + escapeHtml(d.dias) + '</span>'
+            + (bien
+                ? '<span class="text-slate-400"> · ' + d.ocupado + ' franjas ocupadas</span>'
+                : '<span class="text-red-300"> · Google no deja leer su calendario</span>')
+            + '<div class="text-[10px] text-slate-500 font-mono">' + escapeHtml(d.calendario) + '</div>'
+            + '</div></div>';
+        }).join('');
+
+        const avisos = (data.problemas || []).map(function (p) {
+          return '<li>' + escapeHtml(p) + '</li>';
+        }).join('');
+
+        const huecos = (data.huecos || []).map(function (h) {
+          return '<li>' + escapeHtml(h.cuando) + ' — ' + escapeHtml(h.doctor) + '</li>';
+        }).join('');
+
+        caja.innerHTML =
+          (data.ok
+            ? '<p class="text-emerald-400 font-bold mb-2">La agenda esta bien montada.</p>'
+            : '<div class="rounded-lg border border-red-800 bg-red-950/40 p-3 mb-3">'
+              + '<p class="text-red-300 font-bold mb-1">Hay que arreglar esto:</p>'
+              + '<ul class="list-disc pl-4 space-y-1 text-red-200">' + avisos + '</ul></div>')
+          + (filas ? '<div class="mb-3">' + filas + '</div>' : '')
+          + (huecos
+              ? '<div><p class="text-slate-400 mb-1">Lo que se le ofreceria ahora mismo a un paciente:</p>'
+                + '<ul class="list-disc pl-4 space-y-0.5 text-slate-300">' + huecos + '</ul></div>'
+              : '');
+      } catch (e) {
+        caja.innerHTML = '<p class="text-red-400">No se pudo comprobar: ' + escapeHtml(String(e.message || e)) + '</p>';
+      } finally {
+        boton.disabled = false;
+        boton.textContent = 'Comprobar';
+      }
+    }
     function escribirTema(tema) {
       try { localStorage.setItem('helios_tema', tema); } catch (e) { /* sin memoria: dura esta visita */ }
     }
@@ -3271,6 +3331,24 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
                       placeholder="25/12/2026   Navidad&#10;15/08/2026 - 22/08/2026   vacaciones"
                       oninput="cambiarTexto('clinic_closures', this.value)"
                       class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
+          </div>
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300">Comprobar la agenda</h3>
+              <button id="agenda-boton" onclick="comprobarAgenda()"
+                      class="rounded-lg border border-amber-500 bg-amber-500/10 px-3 py-1.5 text-[11px] font-bold text-amber-300 hover:bg-amber-500/20 disabled:opacity-50">
+                Comprobar
+              </button>
+            </div>
+            <p class="text-[11px] text-slate-400 mb-2">
+              Le pregunta a Google por los calendarios de arriba y enseña qué contesta.
+              Sirve sobre todo para <b class="text-slate-300">el paso que se olvida</b>:
+              compartir cada calendario con la cuenta de servicio. Sin compartir,
+              <b class="text-slate-300">Google no da error en ninguna pantalla</b> — devuelve
+              el fallo junto a una agenda vacía, o sea, un doctor que parece libre.
+              <b class="text-slate-300">Solo lee</b>: no crea ninguna cita de prueba.
+            </p>
+            <div id="agenda-resultado" class="hidden text-xs space-y-1"></div>
           </div>
           <div>
             <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Tono</h3>
