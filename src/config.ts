@@ -172,6 +172,41 @@ export const config = {
   /** Tiempo maximo para descargar el archivo y para la llamada al modelo, por separado. */
   MEDIA_TIMEOUT_MS: envNumber(process.env.MEDIA_TIMEOUT_MS, 20000),
 
+  // --- La agenda: Google Calendar ---
+  //
+  // POR QUE EN EL GATEWAY. Es el mismo sitio que GEMINI_API_KEY y por el mismo motivo:
+  // quien habla con Google es el Gateway. Hermes pide huecos y reserva; no sabe que hay un
+  // Google detras, y asi el dia que la clinica use otra agenda no se toca ningun prompt.
+  //
+  // SIN ESTA VARIABLE NO SE ROMPE NADA: la agenda en produccion sigue siendo Cal.com y
+  // este bloque simplemente no se usa.
+  GOOGLE_SERVICE_ACCOUNT_JSON: (process.env.GOOGLE_SERVICE_ACCOUNT_JSON || '').trim(),
+
+  /**
+   * Los permisos que se piden al firmar el token.
+   *
+   * SE PIDEN LOS DOS ESTRECHOS Y NO EL AMPLIO. `calendar.events` deja crear, mover y
+   * cancelar; `calendar.freebusy` deja preguntar quien esta ocupado. El ambito amplio
+   * -.../auth/calendar- añade poder borrar calendarios enteros y cambiar sus permisos, que
+   * es justo lo que no se quiere que pueda hacer una credencial que vive en un servidor.
+   *
+   * ES CONFIGURABLE POR SI GOOGLE LO RECHAZA. Si el token vuelve con `invalid_scope` o el
+   * freeBusy da 403 con la credencial recien creada, poner aqui
+   * `https://www.googleapis.com/auth/calendar` desbloquea sin tocar codigo ni desplegar.
+   * El error lo dice con nombre: `agenda_token_rechazado_invalid_scope`.
+   */
+  GOOGLE_CALENDAR_SCOPE: (process.env.GOOGLE_CALENDAR_SCOPE || '').trim()
+    || 'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy',
+
+  /**
+   * Tiempo maximo de cada llamada a Google, por separado.
+   *
+   * MAS CORTO QUE EL DE LOS ARCHIVOS -20s- porque esto pasa DENTRO de un turno que el
+   * paciente esta esperando: consultar huecos son unos cientos de milisegundos, y si tarda
+   * quince segundos es que algo esta mal y hay que derivar, no seguir esperando.
+   */
+  AGENDA_TIMEOUT_MS: envNumber(process.env.AGENDA_TIMEOUT_MS, 15000),
+
   // --- Handoff humano ---
   // Con el flag apagado el comportamiento es exactamente el de antes del bloque
   // de handoff: la IA se bloquea con el booleano legacy, sin efectos en Chatwoot
