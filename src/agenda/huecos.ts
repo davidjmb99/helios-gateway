@@ -212,7 +212,23 @@ export function huecosDisponibles(entrada: {
   const sinAlinear = Math.max(new Date(entrada.desde).getTime(), ahora + antelacion * 60000);
   if (!Number.isFinite(sinAlinear) || sinAlinear >= finVentana) return [];
 
-  const inicioVentana = sinAlinear;
+  // LA REJILLA ES ABSOLUTA, NO EMPIEZA DONDE EMPIECE LA VENTANA. Se sube al siguiente
+  // múltiplo de cinco minutos del reloj, y esto no es cosmética: es el fallo que dejó a una
+  // clínica entera sin un solo hueco durante siete días.
+  //
+  // El bucle avanza de cinco en cinco DESDE `inicioVentana`. Si esa marca cae en un minuto
+  // que no es múltiplo de cinco -y `Date.now()` casi nunca lo es-, TODOS los candidatos
+  // heredan ese desfase: preguntando a las 13:54 salen las 13:54, 13:59, 14:04, 14:09... y
+  // ninguna cae nunca en punto. El filtro de alineado las rechaza una por una, durante toda
+  // la ventana, y la respuesta es «no hay ningún hueco» con las agendas vacías.
+  //
+  // ASÍ QUE FUNCIONABA SOLO SI PREGUNTABAS EN UN MINUTO MÚLTIPLO DE CINCO. Cuatro de cada
+  // cinco veces, cero. No lo encontró ninguna prueba porque todas usaban horas redondas
+  // -«T14:00:00Z»-, que es justo el caso que no falla. Lo encontró la primera consulta
+  // contra los calendarios de verdad, a las 13:54.
+  const PASO_MS = PASO_MINIMO * 60000;
+  const inicioVentana = Math.ceil(sinAlinear / PASO_MS) * PASO_MS;
+  if (inicioVentana >= finVentana) return [];
 
   // A QUE HORA ABRE CADA DIA. Es el ancla del alineado, y tiene que ser la apertura y no
   // medianoche: con citas de 45 minutos mas 15 de margen -paso de 60- da igual, pero con

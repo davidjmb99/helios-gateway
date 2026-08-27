@@ -381,4 +381,69 @@ const consulta = (over: Record<string, any> = {}) => huecosDisponibles({
   );
 }
 
+
+// --- LA HORA A LA QUE SE PREGUNTA NO PUEDE CAMBIAR LA RESPUESTA -------------
+//
+// ESTE ES EL FALLO QUE DEJO A COI SIN UN SOLO HUECO DURANTE SIETE DIAS, y no lo encontro
+// ninguna prueba: todas usaban horas redondas -«T14:00:00Z»-, que es justo el unico caso
+// que no falla.
+//
+// El bucle avanza de cinco en cinco minutos DESDE el instante en que se pregunta. Si esa
+// marca no cae en un multiplo de cinco -y `Date.now()` casi nunca cae- todos los candidatos
+// heredan el desfase: a las 13:54 salen 13:54, 13:59, 14:04... y ninguna en punto. El
+// filtro de alineado las rechaza una por una, toda la ventana, y sale «no hay ningun
+// hueco» con las agendas vacias.
+//
+// Funcionaba SOLO si preguntabas en un minuto multiplo de cinco. Cuatro de cada cinco
+// veces, cero.
+
+{
+  const JORNADA = [{ desde: 600, hasta: 1200 }];
+  const HORARIO = { 0: [], 1: JORNADA, 2: JORNADA, 3: JORNADA, 4: JORNADA, 5: JORNADA, 6: JORNADA } as any;
+  const doctor = {
+    id: 'c-ana@g.com', nombre: 'Dra. Ana', horario: HORARIO, ocupado: [] as any[], prioridad: 0
+  };
+
+  // El mismo jueves, la misma agenda vacia, preguntando a horas distintas. Se prueban los
+  // cinco restos posibles y los segundos sueltos, que es lo que trae un reloj de verdad.
+  const cuandoPregunto = [
+    '2026-08-27T17:25:00Z',   // 13:25 en Caracas: multiplo de 5, el caso que si funcionaba
+    '2026-08-27T17:54:00Z',   // 13:54: el de la primera consulta real
+    '2026-08-27T17:51:00Z',
+    '2026-08-27T17:52:00Z',
+    '2026-08-27T17:53:00Z',
+    '2026-08-27T17:54:37Z',   // con segundos
+    '2026-08-27T17:54:37.412Z' // y con milisegundos
+  ];
+
+  const salidas = cuandoPregunto.map(iso => {
+    const ahora = new Date(iso);
+    const h = huecosDisponibles({
+      doctores: [doctor], zona: 'America/Caracas',
+      desde: ahora, hasta: new Date(ahora.getTime() + 7 * 864e5),
+      duracionMin: 45, margenMin: 15, maximo: 3, ahora
+    });
+    return { iso, cuantos: h.length, primero: h[0]?.inicio.toISOString() ?? null };
+  });
+
+  for (const s of salidas) {
+    assert.ok(s.cuantos > 0, `preguntando a las ${s.iso} tiene que haber huecos, y salieron ${s.cuantos}`);
+  }
+
+  // Y ADEMAS SON LOS MISMOS. No basta con que salga alguno: la rejilla es de la clinica, no
+  // del reloj de quien pregunta, asi que dos pacientes que preguntan con un minuto de
+  // diferencia tienen que ver las mismas horas.
+  const primeros = new Set(salidas.map(s => s.primero));
+  assert.equal(
+    primeros.size, 1,
+    `todas las consultas deben ofrecer el mismo primer hueco, y salieron ${[...primeros].join(', ')}`
+  );
+
+  // Y ese primer hueco cae en punto, que es como cita esta clinica.
+  const enPunto = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Caracas', hour: '2-digit', minute: '2-digit', hour12: false
+  }).format(new Date(salidas[0].primero!));
+  assert.ok(enPunto.endsWith(':00'), `el primer hueco cae en punto, y salio ${enPunto}`);
+}
+
 console.log('agenda_huecos_test: OK');
