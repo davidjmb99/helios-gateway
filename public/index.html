@@ -2896,6 +2896,14 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
           return '<li>' + escapeHtml(h.cuando) + ' — ' + escapeHtml(h.doctor) + '</li>';
         }).join('');
 
+        const u = data.usando || {};
+        const conQue = '<div class="mt-3 pt-2 border-t border-slate-800 text-[10px] text-slate-500 font-mono">'
+          + '<div>zona: ' + escapeHtml(data.zona || '?') + '  ·  cita: ' + (u.duracion_min || '?') + '+' + (u.margen_min || '?') + ' min</div>'
+          + '<div>ventana: ' + escapeHtml(u.ventana || '?') + '</div>'
+          + '<div>huecos antes de descontar dias cerrados: ' + (u.huecos_sin_filtrar != null ? u.huecos_sin_filtrar : '?') + '</div>'
+          + '<div class="mt-1">' + (u.horario || []).map(function (l) { return escapeHtml(l); }).join(' · ') + '</div>'
+          + '</div>';
+
         caja.innerHTML =
           (data.ok
             ? '<p class="text-emerald-400 font-bold mb-2">La agenda esta bien montada.</p>'
@@ -2906,7 +2914,8 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
           + (huecos
               ? '<div><p class="text-slate-400 mb-1">Lo que se le ofreceria ahora mismo a un paciente:</p>'
                 + '<ul class="list-disc pl-4 space-y-0.5 text-slate-300">' + huecos + '</ul></div>'
-              : '');
+              : '')
+          + conQue;
       } catch (e) {
         caja.innerHTML = '<p class="text-red-400">No se pudo comprobar: ' + escapeHtml(String(e.message || e)) + '</p>';
       } finally {

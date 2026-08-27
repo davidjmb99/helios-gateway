@@ -46,6 +46,24 @@ export interface InformeDeAgenda {
   cierres: Cierre[];
   /** Los primeros huecos que se le ofrecerían a un paciente ahora mismo. */
   huecos: Array<{ cuando: string; doctor: string }>;
+  /**
+   * CON QUÉ ESTÁ TRABAJANDO, y esto no es un extra.
+   *
+   * La primera vez que este informe dijo «no hay ningún hueco» con las cuatro agendas
+   * vacías y en verde, no había forma de saber por qué: ni qué horario estaba usando, ni en
+   * qué zona, ni qué ventana miraba. Se estuvo adivinando un rato. Un diagnóstico que no
+   * enseña sus entradas es medio diagnóstico.
+   */
+  usando: {
+    /** El horario de la clínica, día por día, como lo entendió. */
+    horario: string[];
+    /** Desde cuándo y hasta cuándo se miró, en hora de la clínica. */
+    ventana: string;
+    /** Cuántos huecos salieron ANTES de descontar los días cerrados. */
+    huecos_sin_filtrar: number;
+    duracion_min: number;
+    margen_min: number;
+  };
 }
 
 /** «2026-09-05» en la zona de la clínica, para comparar con los cierres. */
@@ -75,7 +93,26 @@ export async function probarAgenda(
   const zona = entrada.zona;
   const problemas: string[] = [];
 
-  const vacio: InformeDeAgenda = { ok: false, problemas, zona, doctores: [], cierres: [], huecos: [] };
+  const duracion = entrada.duracionMin ?? 45;
+  const margen = entrada.margenMin ?? 15;
+  const LETRAS_DIA = ['dom', 'lun', 'mar', 'mie', 'jue', 'vie', 'sab'];
+  const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const horarioLegible = [0, 1, 2, 3, 4, 5, 6].map(d => {
+    const tramos = (entrada.horario as any)?.[d] ?? [];
+    return `${LETRAS_DIA[d]}: ` + (tramos.length === 0
+      ? 'cerrado'
+      : tramos.map((t: any) => `${hhmm(t.desde)}-${hhmm(t.hasta)}`).join(', '));
+  });
+
+  const usando = {
+    horario: horarioLegible,
+    ventana: '',
+    huecos_sin_filtrar: 0,
+    duracion_min: duracion,
+    margen_min: margen
+  };
+
+  const vacio: InformeDeAgenda = { ok: false, problemas, zona, doctores: [], cierres: [], huecos: [], usando };
 
   const doctores = leerDoctores(entrada.doctoresTexto, entrada.horario);
   if (!doctores) {
@@ -137,16 +174,27 @@ export async function probarAgenda(
     }
   }
 
-  const huecos = huecosDisponibles({
+  const sinFiltrar = huecosDisponibles({
     doctores: agenda,
     zona,
     desde,
     hasta,
-    duracionMin: entrada.duracionMin ?? 45,
-    margenMin: entrada.margenMin ?? 15,
+    duracionMin: duracion,
+    margenMin: margen,
     maximo: 5,
     ahora
-  })
+  });
+
+  // LO CRUDO SE APUNTA ANTES DE FILTRAR. Si salen huecos aquí y cero abajo, el problema son
+  // los días cerrados; si salen cero aquí, es el horario o la ocupación. Son dos sitios
+  // distintos y sin este número no se distinguen.
+  usando.huecos_sin_filtrar = sinFiltrar.length;
+  const cuandoTexto = (f: Date) => new Intl.DateTimeFormat('es', {
+    timeZone: zona, weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
+  }).format(f);
+  usando.ventana = `${cuandoTexto(desde)}  ->  ${cuandoTexto(hasta)}`;
+
+  const huecos = sinFiltrar
     // Los cierres NO los conoce el buscador de huecos: son de la clínica entera y se
     // aplican aquí, igual que los aplicará quien reserve.
     .filter(h => !estaCerrado(cierres, diaLocal(h.inicio, zona)))
@@ -166,5 +214,5 @@ export async function probarAgenda(
     );
   }
 
-  return { ok: problemas.length === 0, problemas, zona, doctores: revisados, cierres, huecos };
+  return { ok: problemas.length === 0, problemas, zona, doctores: revisados, cierres, huecos, usando };
 }

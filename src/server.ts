@@ -297,6 +297,7 @@ server.get('/admin/agenda/prueba', async (request, reply) => {
     // quiere saber que pasa, y un 500 en el panel solo dice «algo fallo».
     return {
       tenant_id: tenantId, ok: false, zona: '', doctores: [], cierres: [], huecos: [],
+      usando: { horario: [], ventana: '', huecos_sin_filtrar: 0, duracion_min: 0, margen_min: 0 },
       problemas: [`No se pudo hacer la comprobacion: ${err?.message || 'error desconocido'}`]
     };
   }
