@@ -429,4 +429,37 @@ const leer = (r: any) => JSON.parse(r.result.content[0].text);
   );
 }
 
+
+// --- NADIE MANDA UN CORREO DE CONFIRMACION, Y HAY QUE DECIRLO -------------
+//
+// Cal.com lo mandaba, y por eso el SOUL cierra las citas con «le enviaremos la confirmacion
+// por correo». Google Calendar NO lo manda: una cuenta de servicio no puede invitar
+// asistentes sin delegacion de dominio, asi que no hay a quien invitar y no sale correo.
+//
+// Se vio en la primera cita de verdad: «Si, quedo confirmada su cita... Le enviamos la
+// confirmacion por correo». Ese correo no existe. El paciente se queda esperandolo, no lo
+// ve, y duda de si tiene cita.
+
+{
+  olvidarTokens();
+  const { impl } = google(LIBRES, [{ ok: true, cuerpo: { id: 'ev-mail' } }]);
+  const r: any = await llamar('create_booking', {
+    doctor: 'Martinez', cuando: '2026-09-07T14:00', paciente: 'X'
+  }, impl);
+
+  assert.equal(
+    leer(r).email_confirmation, false,
+    'la herramienta DICE que no hay correo, para que Helios no lo prometa'
+  );
+}
+
+{
+  // Y al reprogramar tambien: el SOUL confirma la cita ahi igual que al crearla.
+  olvidarTokens();
+  const { impl } = google(LIBRES, [{ ok: true, cuerpo: {} }]);
+  const uid = Buffer.from('c-ana@g.com|ev-abc', 'utf8').toString('base64url');
+  const r: any = await llamar('reschedule_booking', { booking_uid: uid, cuando: '2026-09-08T15:00' }, impl);
+  assert.equal(leer(r).email_confirmation, false);
+}
+
 console.log('agenda_mcp_test: OK');

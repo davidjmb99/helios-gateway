@@ -277,6 +277,22 @@ async function ejecutar(
       // `location` es lo que el SOUL usa al confirmar la cita (linea 125). Cal.com lo
       // devolvia; aqui es la direccion de la clinica, que es la misma respuesta.
       ...(ctx.direccion ? { location: ctx.direccion } : {}),
+      // NADIE MANDA UN CORREO DE CONFIRMACION, y hay que decirlo.
+      //
+      // Cal.com lo mandaba, y por eso el SOUL cierra las citas con «le enviaremos la
+      // confirmacion por correo». Google Calendar NO lo manda: una cuenta de servicio no
+      // puede invitar asistentes sin delegacion de dominio, asi que no hay a quien
+      // invitar y no sale ningun correo.
+      //
+      // Prometer un correo que no llega es de las peores cosas que puede hacer una
+      // recepcion: el paciente se queda esperando una confirmacion, no la ve, y duda de si
+      // tiene cita. Mejor no mencionarlo.
+      //
+      // VIAJA COMO DATO Y NO SE ARREGLA EN EL PROMPT porque el dia que exista el flujo de
+      // n8n bastara con cambiar esto a `true`, sin volver a tocar el SOUL. Y si algun dia
+      // se vuelve a Cal.com, esa herramienta no devuelve el campo: ausente significa «como
+      // antes», que es lo correcto para ella.
+      email_confirmation: false,
       ya_existia: cita.yaExistia
     });
   }
@@ -327,6 +343,9 @@ async function ejecutar(
       booking_uid: uidDeCita(r.calendario, r.id),
       start_time: cuando.toISOString(),
       status: 'rescheduled',
+      // Igual que al crear: nadie manda un correo, y el SOUL tambien confirma aqui.
+      email_confirmation: false,
+      ...(ctx.direccion ? { location: ctx.direccion } : {}),
       ...(nombreDestino ? { doctor: nombreDestino } : {})
     });
   }
