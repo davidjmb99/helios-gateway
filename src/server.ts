@@ -309,7 +309,9 @@ server.post('/mcp', async (request, reply) => {
       doctores: leerDoctores(ajustes.clinic_doctors, horario as any) ?? [],
       cierresTexto: ajustes.clinic_closures,
       horario,
-      zona
+      zona,
+      // Para devolver `location` al confirmar, que es lo que hacia Cal.com (SOUL, linea 125).
+      direccion: ajustes.clinic_address
     };
   } catch (err: any) {
     // SI NO SE PUEDEN LEER LOS AJUSTES NO SE CONTESTA CON UNA AGENDA VACIA. Una lista de

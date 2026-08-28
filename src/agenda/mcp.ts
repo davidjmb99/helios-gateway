@@ -30,6 +30,33 @@ import {
 import type { DoctorDeClinica } from './doctores.js';
 import type { HorarioClinica } from '../leads/policy.js';
 
+/**
+ * EL `booking_uid`, IGUAL DE OPACO QUE EL DE CAL.COM.
+ *
+ * Cal.com devuelve un identificador y con ese identificador se reprograma y se cancela.
+ * Aqui hacen falta DOS datos -el calendario y el evento- porque cada doctor tiene el suyo,
+ * asi que van juntos dentro de un solo valor. El SOUL no tiene que enterarse: para el sigue
+ * siendo una cadena que guarda y devuelve, exactamente como antes.
+ *
+ * Si se devolvieran los dos por separado habria que cambiar el SOUL, el `booking_patch` y
+ * todo lo que ya esta escrito y probado alrededor de `booking_uid`. No merece la pena por
+ * un guion.
+ */
+const uidDeCita = (calendario: string, id: string) =>
+  Buffer.from(`${calendario}|${id}`, 'utf8').toString('base64url');
+
+function leerUid(uid: unknown): { calendario: string; id: string } | null {
+  const bruto = String(uid ?? '').trim();
+  if (!bruto) return null;
+  try {
+    const [calendario, ...resto] = Buffer.from(bruto, 'base64url').toString('utf8').split('|');
+    const id = resto.join('|');
+    return calendario && id ? { calendario, id } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Las versiones del protocolo que se saben hablar. Se devuelve la que pida el cliente. */
 const PROTOCOLOS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const PROTOCOLO_POR_DEFECTO = '2025-06-18';
@@ -69,7 +96,9 @@ const HERRAMIENTAS = [
         paciente: { type: 'string', description: 'Nombre del paciente.' },
         servicio: { type: 'string' },
         telefono: { type: 'string' },
-        notas: { type: 'string' }
+        notas: { type: 'string' },
+        tenant_id: { type: 'string', description: 'Se acepta y se ignora: la clinica sale del token.' },
+        contact_id: { type: 'string' }
       }
     }
   },
@@ -78,10 +107,9 @@ const HERRAMIENTAS = [
     description: 'Mueve una cita ya creada a otra hora, y si hace falta a otro doctor.',
     inputSchema: {
       type: 'object',
-      required: ['cita_id', 'calendario', 'cuando'],
+      required: ['booking_uid', 'cuando'],
       properties: {
-        cita_id: { type: 'string', description: 'El id que devolvio create_booking.' },
-        calendario: { type: 'string', description: 'El calendario que devolvio create_booking.' },
+        booking_uid: { type: 'string', description: 'El que devolvio create_booking.' },
         cuando: { type: 'string', description: 'La hora nueva, en hora de la clinica.' },
         doctor: { type: 'string', description: 'Solo si cambia de doctor.' }
       }
@@ -92,10 +120,9 @@ const HERRAMIENTAS = [
     description: 'Cancela una cita ya creada.',
     inputSchema: {
       type: 'object',
-      required: ['cita_id', 'calendario'],
+      required: ['booking_uid'],
       properties: {
-        cita_id: { type: 'string' },
-        calendario: { type: 'string' }
+        booking_uid: { type: 'string', description: 'El que devolvio create_booking.' }
       }
     }
   }
@@ -103,6 +130,8 @@ const HERRAMIENTAS = [
 
 export interface ContextoDeAgenda {
   tenantId: string;
+  /** Para devolver `location` al confirmar, que es lo que hacia Cal.com. */
+  direccion?: string | null;
   doctores: DoctorDeClinica[];
   cierresTexto: unknown;
   horario: HorarioClinica;
@@ -205,11 +234,21 @@ async function ejecutar(
     }, deps);
 
     if (esError(cita)) return malo(cita.error);
+
+    // LA MISMA FORMA QUE DEVOLVIA CAL.COM, campo por campo. El SOUL ya esta escrito contra
+    // este contrato -linea 21, 102, 110, 125- y probado con pacientes de verdad. Cambiar la
+    // herramienta para que hable como la que sustituye es mucho mas barato, y mucho menos
+    // arriesgado, que reescribir las reglas que ya funcionan.
     return texto({
-      cita_id: cita.id,
-      calendario: cita.calendario,
+      ok: true,
+      booking_uid: uidDeCita(cita.calendario, cita.id),
+      start_time: cita.inicio.toISOString(),
+      status: 'confirmed',
       doctor: quien.doctor.nombre,
       cuando: libre.pedido.cuando,
+      // `location` es lo que el SOUL usa al confirmar la cita (linea 125). Cal.com lo
+      // devolvia; aqui es la direccion de la clinica, que es la misma respuesta.
+      ...(ctx.direccion ? { location: ctx.direccion } : {}),
       ya_existia: cita.yaExistia
     });
   }
@@ -217,7 +256,20 @@ async function ejecutar(
   if (nombre === 'reschedule_booking') {
     const cuando = leerMomento(args.cuando, ctx.zona);
     if (!cuando) return malo('no_entiendo_la_fecha');
-    if (!args.cita_id || !args.calendario) return malo('falta_cita_id_o_calendario');
+
+    // Se acepta el `booking_uid` opaco -que es lo que guarda el SOUL- y tambien el par
+    // suelto, por si alguna cita vieja lo lleva asi.
+    const cita = leerUid(args.booking_uid)
+      ?? (args.cita_id && args.calendario ? { calendario: String(args.calendario), id: String(args.cita_id) } : null);
+    if (!cita) return malo('falta_booking_uid');
+
+    // UNA CITA QUE YA PASO NO SE REPROGRAMA, y se devuelve EL MISMO codigo que devolvia
+    // Cal.com. El SOUL ya sabe explicarlo en la linea 119 -«no puedo cambiar una cita cuya
+    // hora ya paso, pero le agendo una nueva»- y esa frase esta escrita y probada. Inventar
+    // un codigo nuevo obligaria a reescribir esa regla para no ganar nada.
+    if (cuando.getTime() < ahora.getTime()) {
+      return malo('calcom_reschedule_past_booking_forbidden');
+    }
 
     let destino: string | undefined;
     let nombreDestino: string | undefined;
@@ -233,8 +285,8 @@ async function ejecutar(
 
     const duracion = ctx.duracionMin ?? 45;
     const r = await moverCita({
-      calendario: String(args.calendario),
-      id: String(args.cita_id),
+      calendario: cita.calendario,
+      id: cita.id,
       inicio: cuando,
       fin: new Date(cuando.getTime() + duracion * 60_000),
       zona: ctx.zona,
@@ -242,13 +294,23 @@ async function ejecutar(
     }, deps);
 
     if (esError(r)) return malo(r.error);
-    return texto({ cita_id: r.id, calendario: r.calendario, ...(nombreDestino ? { doctor: nombreDestino } : {}) });
+    return texto({
+      ok: true,
+      booking_uid: uidDeCita(r.calendario, r.id),
+      start_time: cuando.toISOString(),
+      status: 'rescheduled',
+      ...(nombreDestino ? { doctor: nombreDestino } : {})
+    });
   }
 
   if (nombre === 'cancel_booking') {
-    if (!args.cita_id || !args.calendario) return malo('falta_cita_id_o_calendario');
-    const r = await cancelarCita({ calendario: String(args.calendario), id: String(args.cita_id) }, deps);
-    return esError(r) ? malo(r.error) : texto({ cancelada: true });
+    const cita = leerUid(args.booking_uid)
+      ?? (args.cita_id && args.calendario ? { calendario: String(args.calendario), id: String(args.cita_id) } : null);
+    if (!cita) return malo('falta_booking_uid');
+    const r = await cancelarCita(cita, deps);
+    return esError(r)
+      ? malo(r.error)
+      : texto({ ok: true, booking_uid: String(args.booking_uid || uidDeCita(cita.calendario, cita.id)), status: 'cancelled' });
   }
 
   return malo(`herramienta_desconocida_${nombre}`);

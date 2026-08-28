@@ -199,9 +199,22 @@ const leer = (r: any) => JSON.parse(r.result.content[0].text);
 
   const d = leer(r);
   assert.equal(r.result.isError, false);
-  assert.equal(d.cita_id, 'ev-abc');
-  assert.equal(d.calendario, 'c-ana@g.com');
+
+  // LA MISMA FORMA QUE DEVOLVIA CAL.COM, campo por campo. El SOUL esta escrito contra este
+  // contrato -lineas 21, 102, 110 y 125- y probado con pacientes de verdad. La herramienta
+  // nueva habla como la que sustituye; asi el prompt no se toca.
+  assert.equal(d.ok, true);
+  assert.ok(d.booking_uid, 'booking_uid, que es lo que el SOUL guarda en booking_patch');
+  assert.equal(d.start_time, '2026-09-07T18:00:00.000Z', 'start_time, el confirmado');
+  assert.equal(d.status, 'confirmed', 'nunca «accepted»: el SOUL solo admite tres valores');
   assert.equal(d.doctor, 'Dra. Ana Martínez');
+
+  // Y NO SE DEVUELVEN LOS DOS DATOS SUELTOS. El calendario va DENTRO del uid: para el SOUL
+  // sigue siendo una cadena que guarda y devuelve, igual que la de Cal.com.
+  assert.equal(d.cita_id, undefined);
+  assert.equal(d.calendario, undefined);
+  const dentro = Buffer.from(d.booking_uid, 'base64url').toString('utf8');
+  assert.equal(dentro, 'c-ana@g.com|ev-abc', 'el uid lleva calendario y evento');
 
   const creacion = llamadas.find(l => l.metodo === 'POST' && l.url.includes('/events'))!;
   assert.ok(creacion, 'se creó el evento');
@@ -276,13 +289,20 @@ const leer = (r: any) => JSON.parse(r.result.content[0].text);
 {
   olvidarTokens();
   const { impl, llamadas } = google(LIBRES, [{ ok: true, cuerpo: {} }, { ok: true, cuerpo: {} }]);
+  const uid = Buffer.from('c-ana@g.com|ev-abc', 'utf8').toString('base64url');
   const r: any = await llamar('reschedule_booking', {
-    cita_id: 'ev-abc', calendario: 'c-ana@g.com', cuando: '2026-09-08T15:00', doctor: 'López'
+    booking_uid: uid, cuando: '2026-09-08T15:00', doctor: 'López'
   }, impl);
 
   const d = leer(r);
-  assert.equal(d.calendario, 'c-maria@g.com', 'se movió al calendario del doctor nuevo');
+  assert.equal(d.status, 'rescheduled', 'el estado que el SOUL escribe en booking_patch');
+  assert.equal(d.start_time, '2026-09-08T19:00:00.000Z');
   assert.equal(d.doctor, 'Dra. María López');
+  assert.equal(
+    Buffer.from(d.booking_uid, 'base64url').toString('utf8'),
+    'c-maria@g.com|ev-abc',
+    'el uid nuevo apunta ya al calendario del doctor nuevo'
+  );
   // EL TRASLADO VA ANTES QUE LA HORA. Al revés, si el traslado falla, la cita se queda con
   // la hora nueva en el doctor viejo.
   const escrituras = llamadas.filter(l => !l.url.includes('oauth2') && !l.url.includes('freeBusy'));
@@ -294,14 +314,16 @@ const leer = (r: any) => JSON.parse(r.result.content[0].text);
 {
   olvidarTokens();
   const { impl } = google(LIBRES, [{ ok: true, status: 204 }]);
-  const r: any = await llamar('cancel_booking', { cita_id: 'ev-abc', calendario: 'c-ana@g.com' }, impl);
-  assert.equal(leer(r).cancelada, true);
+  const uid = Buffer.from('c-ana@g.com|ev-abc', 'utf8').toString('base64url');
+  const r: any = await llamar('cancel_booking', { booking_uid: uid }, impl);
+  assert.equal(leer(r).ok, true);
+  assert.equal(leer(r).status, 'cancelled', 'el estado que el SOUL escribe');
 
-  // Sin los datos de la cita no se inventa cuál cancelar.
+  // Sin el uid no se inventa cuál cancelar.
   olvidarTokens();
   const { impl: i2, llamadas } = google(LIBRES);
-  const r2: any = await llamar('cancel_booking', { cita_id: 'ev-abc' }, i2);
-  assert.equal(leer(r2).error, 'falta_cita_id_o_calendario');
+  const r2: any = await llamar('cancel_booking', {}, i2);
+  assert.equal(leer(r2).error, 'falta_booking_uid');
   assert.equal(llamadas.length, 0);
 }
 
@@ -339,6 +361,65 @@ const leer = (r: any) => JSON.parse(r.result.content[0].text);
   const r2: any = await llamar('borrar_todo', {}, impl);
   assert.equal(r2.error, undefined);
   assert.ok(leer(r2).error.includes('herramienta_desconocida'));
+}
+
+
+// --- LO QUE EL SOUL YA SABE MANEJAR Y NO HAY QUE REESCRIBIR ---------------
+
+{
+  // UNA CITA QUE YA PASO NO SE REPROGRAMA, y se devuelve EL MISMO codigo que devolvia
+  // Cal.com. El SOUL tiene escrita la explicacion en la linea 119 -«no puedo cambiar una
+  // cita cuya hora ya paso, pero le agendo una nueva»-, probada con pacientes. Inventar un
+  // codigo propio obligaria a reescribir esa regla para no ganar nada.
+  olvidarTokens();
+  const { impl, llamadas } = google(LIBRES);
+  const uid = Buffer.from('c-ana@g.com|ev-abc', 'utf8').toString('base64url');
+  const r: any = await llamar('reschedule_booking', { booking_uid: uid, cuando: '2026-09-01T10:00' }, impl);
+
+  assert.equal(r.result.isError, true);
+  assert.equal(
+    leer(r).error, 'calcom_reschedule_past_booking_forbidden',
+    'el codigo exacto que el SOUL ya sabe explicar'
+  );
+  assert.equal(llamadas.length, 0, 'y no se toca Google para algo que no se puede hacer');
+}
+
+{
+  // `location` AL CONFIRMAR. Lo usa la linea 125 del SOUL: «si Cal.com ya devolvio
+  // location, usa ese valor». Aqui es la direccion de la clinica, que es la misma respuesta
+  // que le daba Cal.com al paciente.
+  olvidarTokens();
+  const { impl } = google(LIBRES, [{ ok: true, cuerpo: { id: 'ev-loc' } }]);
+  const r: any = await llamar(
+    'create_booking', { doctor: 'Martinez', cuando: '2026-09-07T14:00', paciente: 'X' },
+    impl, { ...CTX, direccion: 'CC Mamanico local 27' }
+  );
+  assert.equal(leer(r).location, 'CC Mamanico local 27');
+
+  // Sin direccion configurada NO se inventa una. Es la misma regla que en clinic_context:
+  // una direccion inventada manda al paciente a otro sitio.
+  olvidarTokens();
+  const { impl: i2 } = google(LIBRES, [{ ok: true, cuerpo: { id: 'ev-sin' } }]);
+  const r2: any = await llamar('create_booking', { doctor: 'Martinez', cuando: '2026-09-07T14:00', paciente: 'X' }, i2);
+  assert.equal(leer(r2).location, undefined);
+}
+
+{
+  // EL SOUL LE PASA `tenant_id` A LA HERRAMIENTA (linea 21). Se acepta sin quejarse y NO SE
+  // MIRA: la clinica sale del token. Es justo el parametro que no debe decidir nada, y si
+  // rechazaramos la llamada por traerlo, el SOUL habria que cambiarlo.
+  olvidarTokens();
+  const { impl } = google(LIBRES, [{ ok: true, cuerpo: { id: 'ev-t' } }]);
+  const r: any = await llamar('create_booking', {
+    doctor: 'Martinez', cuando: '2026-09-07T14:00', paciente: 'X',
+    tenant_id: 'otra-clinica', contact_id: '123'
+  }, impl);
+  assert.equal(r.result.isError, false, 'no se rechaza por traer tenant_id');
+  assert.ok(leer(r).booking_uid);
+  assert.ok(
+    !JSON.stringify(leer(r)).includes('otra-clinica'),
+    'y ese tenant_id no aparece por ningun lado en la respuesta'
+  );
 }
 
 console.log('agenda_mcp_test: OK');
