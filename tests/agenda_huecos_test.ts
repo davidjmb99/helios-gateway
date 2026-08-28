@@ -446,4 +446,51 @@ const consulta = (over: Record<string, any> = {}) => huecosDisponibles({
   assert.ok(enPunto.endsWith(':00'), `el primer hueco cae en punto, y salio ${enPunto}`);
 }
 
+
+// --- ESCRIBIR EN DOMINGO SI; AGENDAR EN DOMINGO NUNCA ---------------------
+//
+// Es la condicion exacta que puso David al aprobar el seguimiento dominical: «me parece
+// bien que el seguimiento tambien lo haga un domingo, pero solo sabiendo ESTRICTAMENTE que
+// no se agenda para el dia domingo; es no laborable para la clinica, pero el bot si puede
+// atender ese dia».
+//
+// SON DOS COSAS DISTINTAS Y VIVEN EN SITIOS DISTINTOS: escribir lo decide la ventana de
+// envio -a que horas es decente-, y agendar lo decide el horario de cada doctor, que sale
+// de `clinic_hours` y tiene el domingo vacio. Esta prueba las mira JUNTAS porque el riesgo
+// es que alguien, al abrir el domingo para escribir, lo abra tambien para citar.
+
+{
+  const JORNADA = [{ desde: 600, hasta: 1200 }];
+  const SABADO = [{ desde: 600, hasta: 900 }];
+  // El horario de COI: domingo cerrado.
+  const CLINICA = { 0: [], 1: JORNADA, 2: JORNADA, 3: JORNADA, 4: JORNADA, 5: JORNADA, 6: SABADO } as any;
+
+  const doctor = {
+    id: 'c-ana@g.com', nombre: 'Dra. Ana', horario: CLINICA, ocupado: [] as any[], prioridad: 0
+  };
+
+  // Domingo 30 de agosto de 2026, de las 00:00 a las 23:59 en Caracas.
+  const desde = new Date('2026-08-30T04:00:00Z');   // 00:00 en Caracas
+  const hasta = new Date('2026-08-31T04:00:00Z');   // 00:00 del lunes
+
+  const huecos = huecosDisponibles({
+    doctores: [doctor], zona: 'America/Caracas',
+    desde, hasta, duracionMin: 45, margenMin: 15, maximo: 50, ahora: desde
+  });
+
+  assert.equal(
+    huecos.length, 0,
+    'EL DOMINGO NO SE AGENDA NUNCA, aunque el doctor tenga la agenda entera vacia'
+  );
+
+  // Y que la prueba sirva de algo: el lunes siguiente SI hay huecos. Sin esto, un fallo que
+  // dejara la agenda muda todos los dias tambien pasaria por aqui en verde.
+  const elLunes = huecosDisponibles({
+    doctores: [doctor], zona: 'America/Caracas',
+    desde: new Date('2026-08-31T04:00:00Z'), hasta: new Date('2026-09-01T04:00:00Z'),
+    duracionMin: 45, margenMin: 15, maximo: 50, ahora: new Date('2026-08-31T04:00:00Z')
+  });
+  assert.ok(elLunes.length > 0, 'y el lunes si, que si no esto no probaria nada');
+}
+
 console.log('agenda_huecos_test: OK');

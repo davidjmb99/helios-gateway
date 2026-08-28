@@ -106,12 +106,27 @@ assert.equal(
 const horasManana = ((manana as Date).getTime() - madrid(11, 9).getTime()) / 3600_000;
 assert.ok(horasManana <= 23, `y dentro del plazo de WhatsApp (${horasManana} h)`);
 
-// Sábado por la tarde: el plazo vence el domingo, que está cerrado todo el día.
-assert.equal(
-  calcularMomentoDeEnvio(madrid(15, 14), VENTANA_POR_DEFECTO),
-  null,
-  'el domingo cerrado deja sin seguimiento a los sábados por la tarde'
-);
+// SABADO POR LA TARDE: AHORA SI RECIBE SEGUIMIENTO, el domingo por la mañana.
+//
+// Esta asercion decia lo contrario hasta el 28-ago-2026, y daba por bueno un agujero: como
+// escribir exigia que el dia fuera laborable, TODO LO QUE PASABA EN SABADO se quedaba sin
+// seguimiento. El interes cumple las 12 horas ese mismo sabado -mismo dia, se salta-, el
+// domingo entero quedaba descartado, y el plazo de 23 horas de WhatsApp vencia antes del
+// lunes. Una sexta parte de la semana, y el sabado es dia fuerte en una clinica.
+//
+// La prueba estaba «bien»: describia el comportamiento real. Lo que estaba mal era el
+// comportamiento, y escribirlo como si fuera lo esperado lo dejo ahi meses.
+//
+// David: «el bot si puede atender ese dia, por si alguien escribe, y hacer seguimiento
+// tambien», con la condicion de que NO SE AGENDE en domingo -que lo garantiza el horario de
+// cada doctor, y se comprueba en agenda_huecos_test-.
+const elSabado = calcularMomentoDeEnvio(madrid(15, 14), VENTANA_POR_DEFECTO);
+assert.ok(elSabado, 'un sabado por la tarde ya no se queda sin seguimiento');
+const localSabado = momentoLocal(elSabado as Date, 'Europe/Madrid');
+assert.equal(localSabado.dia, 0, 'le llega el domingo');
+assert.ok(localSabado.minuto >= 8 * 60, 'y a partir de las 8:00, nunca de madrugada');
+const horasSabado = ((elSabado as Date).getTime() - madrid(15, 14).getTime()) / 3600_000;
+assert.ok(horasSabado <= 23, `dentro del plazo de WhatsApp (${horasSabado} h)`);
 
 // --- La decisión completa ----------------------------------------------------
 

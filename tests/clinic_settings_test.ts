@@ -55,33 +55,49 @@ let dentroDeVentana = 0;
 for (let minuto = 0; minuto < 7 * 24 * 60; minuto++) {
   const instante = new Date(LUNES.getTime() + minuto * 60_000);
   const { dia, minuto: minutoLocal } = momentoLocal(instante, ZONA);
-  const puede = sePuedeEscribir(instante, ZONA, horarioCOI, ventana);
+  const puede = sePuedeEscribir(instante, ZONA, ventana);
 
   if (puede) {
     permitidos++;
-    // LA COMPROBACIÓN QUE IMPORTA: si se permite, es dentro de la ventana y en un
-    // día que la clínica trabaja. Nunca de noche, nunca en domingo.
+    // LA COMPROBACIÓN QUE IMPORTA: si se permite, es dentro de la ventana. NUNCA DE
+    // NOCHE, ningún día. Lo que ya no se exige es que la clínica abra: escribir un
+    // mensaje no es atender, y el bot atiende todos los días.
     assert.ok(
       minutoLocal >= ventana.desde && minutoLocal < ventana.hasta,
       `se permitió escribir a las ${Math.floor(minutoLocal / 60)}:${String(minutoLocal % 60).padStart(2, '0')}, fuera de la ventana`
     );
-    assert.ok(dia !== 0, 'se permitió escribir en domingo');
   }
-  if (dia !== 0 && minutoLocal >= ventana.desde && minutoLocal < ventana.hasta) dentroDeVentana++;
+  if (minutoLocal >= ventana.desde && minutoLocal < ventana.hasta) dentroDeVentana++;
 }
 
-assert.equal(permitidos, dentroDeVentana, 'permite exactamente la ventana en días laborables');
-assert.equal(permitidos, 6 * 14 * 60, 'seis días por catorce horas');
+assert.equal(permitidos, dentroDeVentana, 'permite exactamente la ventana, todos los días');
+assert.equal(permitidos, 7 * 14 * 60, 'siete días por catorce horas: el domingo cuenta');
 
 // Y las horas concretas que preocupan, dichas de forma legible.
 const aLas = (dia: string, hora: string) => new Date(`2026-08-${dia}T${hora}:00+02:00`);
-assert.equal(sePuedeEscribir(aLas('17', '03:00'), ZONA, horarioCOI, ventana), false, 'a las 3 de la madrugada NO');
-assert.equal(sePuedeEscribir(aLas('17', '07:59'), ZONA, horarioCOI, ventana), false, 'a las 7:59 todavía no');
-assert.equal(sePuedeEscribir(aLas('17', '08:00'), ZONA, horarioCOI, ventana), true, 'a las 8:00 sí, aunque la clínica abra a las 10');
-assert.equal(sePuedeEscribir(aLas('17', '21:59'), ZONA, horarioCOI, ventana), true, 'a las 21:59 sí, aunque la clínica cerrara a las 20');
-assert.equal(sePuedeEscribir(aLas('17', '22:00'), ZONA, horarioCOI, ventana), false, 'a las 22:00 ya no');
-assert.equal(sePuedeEscribir(aLas('22', '11:00'), ZONA, horarioCOI, ventana), true, 'sábado por la mañana sí');
-assert.equal(sePuedeEscribir(aLas('23', '11:00'), ZONA, horarioCOI, ventana), false, 'DOMINGO no, aunque sean las 11');
+assert.equal(sePuedeEscribir(aLas('17', '03:00'), ZONA, ventana), false, 'a las 3 de la madrugada NO');
+assert.equal(sePuedeEscribir(aLas('17', '07:59'), ZONA, ventana), false, 'a las 7:59 todavía no');
+assert.equal(sePuedeEscribir(aLas('17', '08:00'), ZONA, ventana), true, 'a las 8:00 sí, aunque la clínica abra a las 10');
+assert.equal(sePuedeEscribir(aLas('17', '21:59'), ZONA, ventana), true, 'a las 21:59 sí, aunque la clínica cerrara a las 20');
+assert.equal(sePuedeEscribir(aLas('17', '22:00'), ZONA, ventana), false, 'a las 22:00 ya no');
+assert.equal(sePuedeEscribir(aLas('22', '11:00'), ZONA, ventana), true, 'sábado por la mañana sí');
+// EL DOMINGO SI SE PUEDE ESCRIBIR, y es un cambio del 28-ago-2026.
+//
+// Antes se exigia que el dia fuera laborable para la clinica, y eso dejaba SIN SEGUIMIENTO
+// TODO LO QUE PASABA EN SABADO: el interes cumple las 12 horas ese mismo sabado -mismo dia,
+// se salta-, el domingo entero quedaba descartado, y el plazo de 23 horas de WhatsApp vencia
+// antes del lunes. Una sexta parte de la semana, en silencio.
+//
+// David: «el bot si puede atender ese dia, por si alguien escribe, y hacer seguimiento
+// tambien». El bot atiende todos los dias; la clinica no abre todos. Son dos cosas.
+assert.equal(
+  sePuedeEscribir(aLas('23', '11:00'), ZONA, ventana), true,
+  'el DOMINGO se puede escribir: el bot atiende todos los dias aunque la clinica no abra'
+);
+assert.equal(
+  sePuedeEscribir(aLas('23', '03:00'), ZONA, ventana), false,
+  'pero el domingo de madrugada tampoco: la hora sigue mandando'
+);
 
 // Ninguna ventana puede colarse de madrugada, ni escrita a mano en la base.
 for (const imposible of [
@@ -126,8 +142,13 @@ assert.equal(
 // Jornada partida, que es lo normal en una clínica dental.
 const partido = esquema.normalizarHorario({ mon: [['09:00', '13:00'], ['16:00', '20:00']] })!;
 assert.equal(partido[1].length, 2);
-assert.equal(sePuedeEscribir(aLas('17', '14:00'), ZONA, partido, ventana), true,
-  'la ventana de ENVÍO no se corta a mediodía: el día es laborable y son horas decentes');
+
+// LA VENTANA DE ENVÍO NO SE CORTA A MEDIODÍA aunque la clínica cierre para comer. Son dos
+// cosas distintas: escribir un mensaje no es atender. Desde el 28-ago el horario de la
+// clínica ya no interviene aquí en absoluto —ni los días ni las horas—; solo manda la
+// ventana de envío, que es la que dice a qué horas es decente escribirle a alguien.
+assert.equal(sePuedeEscribir(aLas('17', '14:00'), ZONA, ventana), true,
+  'a las 2 de la tarde se escribe, aunque la clínica esté cerrada para comer');
 
 // Ida y vuelta sin perder nada: lo que se guarda es lo que se lee.
 assert.deepEqual(

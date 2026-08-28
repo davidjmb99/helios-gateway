@@ -215,13 +215,10 @@ export interface VentanaEnvioDiaria {
 export function sePuedeEscribir(
   fecha: Date,
   zona: string,
-  horario: HorarioClinica,
   envio: VentanaEnvioDiaria
 ): boolean {
   const { dia, minuto } = momentoLocal(fecha, zona);
   if (dia < 0) return false;
-  const esDiaLaborable = (horario[dia] ?? []).length > 0;
-  if (!esDiaLaborable) return false;
   return minuto >= envio.desde && minuto < envio.hasta;
 }
 
@@ -234,9 +231,24 @@ export interface VentanaSeguimiento {
    */
   horasMaximas: number;
   zona: string;
-  /** Qué días trabaja la clínica. Solo se usa para saber si el día cuenta. */
-  horario: HorarioClinica;
-  /** A qué horas se puede escribir. */
+  /**
+   * EL BOT ATIENDE TODOS LOS DIAS; LA CLINICA NO ABRE TODOS. Son dos cosas distintas y
+   * antes estaban confundidas: se exigia que el dia fuera laborable para poder escribir, y
+   * `horario` era el de la clinica.
+   *
+   * El resultado era que NADA DE LO QUE PASABA EN SABADO recibia seguimiento nunca. Un
+   * interes del sabado por la mañana cumple las 12 horas ese mismo sabado por la noche
+   * -mismo dia, se salta-, el domingo entero quedaba descartado por no ser laborable, y el
+   * plazo de 23 horas de WhatsApp vencia antes del lunes. Una sexta parte de la semana, y
+   * el sabado es dia fuerte en una clinica.
+   *
+   * David: «el bot si puede atender ese dia, por si alguien escribe, y hacer seguimiento
+   * tambien», con la condicion de que NO SE AGENDE en domingo. Lo segundo lo garantiza el
+   * horario de cada doctor, que sale de `clinic_hours` y tiene el domingo vacio; aqui solo
+   * se decide a que HORAS es decente escribir.
+   */
+  horario?: HorarioClinica;
+  /** A qué horas se puede escribir. Es la única condición horaria del seguimiento. */
   envio: VentanaEnvioDiaria;
 }
 
@@ -282,7 +294,7 @@ export function calcularMomentoDeEnvio(
   for (let t = pronto; t <= tarde; t += PASO) {
     const candidato = new Date(t);
     if (momentoLocal(candidato, ventana.zona).dia === diaDelInteres) continue;
-    if (sePuedeEscribir(candidato, ventana.zona, ventana.horario, ventana.envio)) return candidato;
+    if (sePuedeEscribir(candidato, ventana.zona, ventana.envio)) return candidato;
   }
   return null;
 }
