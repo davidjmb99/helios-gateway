@@ -373,7 +373,11 @@ export async function agendaDeDoctores(
  * Los IDs de Google admiten `[a-v0-9]`, y un hexadecimal sólo usa `0-9a-f`: cabe entero.
  */
 export function idDeEvento(...partes: Array<string | number>): string {
-  return 'h' + createHash('sha256').update(partes.join('|')).digest('hex');
+  // TREINTA Y DOS CARACTERES BASTAN, y el largo importa: este id acaba dentro del
+  // `booking_uid`, que se guarda en el estado de la conversacion y viaja en cada mensaje
+  // mientras la cita exista. Los 128 bits que quedan siguen haciendo imposible que dos
+  // citas distintas choquen: la entrada ya lleva clinica, calendario y hora.
+  return 'h' + createHash('sha256').update(partes.join('|')).digest('hex').slice(0, 31);
 }
 
 export interface DatosDeCita {

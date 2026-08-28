@@ -213,8 +213,15 @@ const leer = (r: any) => JSON.parse(r.result.content[0].text);
   // sigue siendo una cadena que guarda y devuelve, igual que la de Cal.com.
   assert.equal(d.cita_id, undefined);
   assert.equal(d.calendario, undefined);
-  const dentro = Buffer.from(d.booking_uid, 'base64url').toString('utf8');
-  assert.equal(dentro, 'c-ana@g.com|ev-abc', 'el uid lleva calendario y evento');
+
+  // Y ES CORTO. La primera version metia el ID de calendario entero y salian 235
+  // caracteres; el de Cal.com media 22. Ese valor se queda en `active_booking` y viaja en
+  // CADA mensaje de la conversacion mientras la cita exista.
+  assert.ok(
+    d.booking_uid.length <= 48,
+    `el booking_uid mide ${d.booking_uid.length} y viaja en cada mensaje`
+  );
+  assert.ok(d.booking_uid.endsWith('ev-abc'), 'lleva el id del evento');
 
   const creacion = llamadas.find(l => l.metodo === 'POST' && l.url.includes('/events'))!;
   assert.ok(creacion, 'se creó el evento');
@@ -289,20 +296,20 @@ const leer = (r: any) => JSON.parse(r.result.content[0].text);
 {
   olvidarTokens();
   const { impl, llamadas } = google(LIBRES, [{ ok: true, cuerpo: {} }, { ok: true, cuerpo: {} }]);
-  const uid = Buffer.from('c-ana@g.com|ev-abc', 'utf8').toString('base64url');
+  // EL FORMATO LARGO DE ANTES SIGUE VALIENDO. Las citas creadas antes de acortarlo lo
+  // llevan guardado en su `active_booking`, y esas citas existen: reprogramarlas tiene que
+  // seguir funcionando.
+  const uidViejo = Buffer.from('c-ana@g.com|ev-abc', 'utf8').toString('base64url');
   const r: any = await llamar('reschedule_booking', {
-    booking_uid: uid, cuando: '2026-09-08T15:00', doctor: 'López'
+    booking_uid: uidViejo, cuando: '2026-09-08T15:00', doctor: 'López'
   }, impl);
 
   const d = leer(r);
   assert.equal(d.status, 'rescheduled', 'el estado que el SOUL escribe en booking_patch');
   assert.equal(d.start_time, '2026-09-08T19:00:00.000Z');
   assert.equal(d.doctor, 'Dra. María López');
-  assert.equal(
-    Buffer.from(d.booking_uid, 'base64url').toString('utf8'),
-    'c-maria@g.com|ev-abc',
-    'el uid nuevo apunta ya al calendario del doctor nuevo'
-  );
+  assert.ok(d.booking_uid.endsWith('ev-abc'));
+  assert.ok(d.booking_uid.length <= 48, 'y el uid que sale ya es del formato corto');
   // EL TRASLADO VA ANTES QUE LA HORA. Al revés, si el traslado falla, la cita se queda con
   // la hora nueva en el doctor viejo.
   const escrituras = llamadas.filter(l => !l.url.includes('oauth2') && !l.url.includes('freeBusy'));

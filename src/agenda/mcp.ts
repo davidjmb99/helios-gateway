@@ -20,6 +20,7 @@
  * `tenant_id`, ni lo va a haber: ver `credencial.ts`.
  */
 
+import { createHash } from 'node:crypto';
 import { consultarAgenda, type Consulta } from './consulta.js';
 import { doctorPorNombre } from './nombres.js';
 import { leerMomento } from './reloj.js';
@@ -31,30 +32,57 @@ import type { DoctorDeClinica } from './doctores.js';
 import type { HorarioClinica } from '../leads/policy.js';
 
 /**
- * EL `booking_uid`, IGUAL DE OPACO QUE EL DE CAL.COM.
+ * EL `booking_uid`, IGUAL DE OPACO Y DE CORTO QUE EL DE CAL.COM.
  *
- * Cal.com devuelve un identificador y con ese identificador se reprograma y se cancela.
- * Aqui hacen falta DOS datos -el calendario y el evento- porque cada doctor tiene el suyo,
- * asi que van juntos dentro de un solo valor. El SOUL no tiene que enterarse: para el sigue
- * siendo una cadena que guarda y devuelve, exactamente como antes.
+ * Cal.com devuelve un identificador y con el se reprograma y se cancela. Aqui hacen falta
+ * DOS datos -calendario y evento, porque cada doctor tiene el suyo- asi que van juntos
+ * dentro de un solo valor. Para el SOUL sigue siendo una cadena que guarda y devuelve.
  *
- * Si se devolvieran los dos por separado habria que cambiar el SOUL, el `booking_patch` y
- * todo lo que ya esta escrito y probado alrededor de `booking_uid`. No merece la pena por
- * un guion.
+ * LA PRIMERA VERSION METIA EL ID DE CALENDARIO ENTERO y salian 235 caracteres. El de
+ * Cal.com media 22. Y eso no es solo feo: el uid se queda en `active_booking` y VIAJA EN
+ * CADA MENSAJE de esa conversacion mientras la cita exista.
+ *
+ * Ahora van ocho caracteres de huella del calendario y el id del evento. Para saber de que
+ * calendario es, se comparan las huellas de los doctores de la clinica: son veinte como
+ * mucho, y ya estan a mano.
  */
-const uidDeCita = (calendario: string, id: string) =>
-  Buffer.from(`${calendario}|${id}`, 'utf8').toString('base64url');
+const HUELLA = 8;
 
-function leerUid(uid: unknown): { calendario: string; id: string } | null {
+const huellaDeCalendario = (calendario: string) =>
+  createHash('sha256').update(calendario).digest('hex').slice(0, HUELLA);
+
+const uidDeCita = (calendario: string, id: string) =>
+  `${huellaDeCalendario(calendario)}${id}`;
+
+/**
+ * De que cita habla un uid.
+ *
+ * SE SIGUE ACEPTANDO EL FORMATO LARGO. Las citas creadas antes de acortarlo lo llevan
+ * guardado en su `active_booking`, y esas citas existen: reprogramarlas o cancelarlas tiene
+ * que seguir funcionando. Es una linea a cambio de no dejar tiradas las que ya hay.
+ */
+function leerUid(uid: unknown, doctores: DoctorDeClinica[]): { calendario: string; id: string } | null {
   const bruto = String(uid ?? '').trim();
   if (!bruto) return null;
-  try {
-    const [calendario, ...resto] = Buffer.from(bruto, 'base64url').toString('utf8').split('|');
-    const id = resto.join('|');
-    return calendario && id ? { calendario, id } : null;
-  } catch {
-    return null;
+
+  if (bruto.length > HUELLA) {
+    const huella = bruto.slice(0, HUELLA);
+    const id = bruto.slice(HUELLA);
+    const doctor = (doctores ?? []).find(d => huellaDeCalendario(d.calendario) === huella);
+    if (doctor && id) return { calendario: doctor.calendario, id };
   }
+
+  // El formato largo de antes: base64url de «calendario|evento».
+  try {
+    const texto = Buffer.from(bruto, 'base64url').toString('utf8');
+    if (texto.includes('|')) {
+      const [calendario, ...resto] = texto.split('|');
+      const id = resto.join('|');
+      if (calendario && id) return { calendario, id };
+    }
+  } catch { /* no era el formato viejo */ }
+
+  return null;
 }
 
 /** Las versiones del protocolo que se saben hablar. Se devuelve la que pida el cliente. */
@@ -259,7 +287,7 @@ async function ejecutar(
 
     // Se acepta el `booking_uid` opaco -que es lo que guarda el SOUL- y tambien el par
     // suelto, por si alguna cita vieja lo lleva asi.
-    const cita = leerUid(args.booking_uid)
+    const cita = leerUid(args.booking_uid, ctx.doctores)
       ?? (args.cita_id && args.calendario ? { calendario: String(args.calendario), id: String(args.cita_id) } : null);
     if (!cita) return malo('falta_booking_uid');
 
@@ -304,7 +332,7 @@ async function ejecutar(
   }
 
   if (nombre === 'cancel_booking') {
-    const cita = leerUid(args.booking_uid)
+    const cita = leerUid(args.booking_uid, ctx.doctores)
       ?? (args.cita_id && args.calendario ? { calendario: String(args.calendario), id: String(args.cita_id) } : null);
     if (!cita) return malo('falta_booking_uid');
     const r = await cancelarCita(cita, deps);
