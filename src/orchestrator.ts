@@ -1,3 +1,4 @@
+import { esPrimerMensajeDelDia } from './agenda/reloj.js';
 import { config } from './config.js';
 import { ajustarUsoDelNombre } from './chatwoot/name-style.js';
 import { 
@@ -644,7 +645,25 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         possible_frustration: possibleFrustration || asksForHuman,
         possible_emergency: possibleEmergency,
         asks_for_human: asksForHuman,
-        asks_for_financing: asksForFinancing
+        asks_for_financing: asksForFinancing,
+        // PARA QUE SALUDE CUANDO TOCA Y NO EN CADA MENSAJE.
+        //
+        // Un «buenos dias» en el primer mensaje del dia es cercano; en el cuarto seguido es
+        // un robot que no se ha enterado de que la conversacion ya estaba abierta. Y no
+        // saludar nunca es seco: David escribio «hola, buenos dias» y Helios arranco con
+        // «Le confirmo, Juan: ...».
+        //
+        // VIAJA COMO HECHO, NO COMO INSTRUCCION. Aqui solo se dice SI es el primer mensaje
+        // del dia; que hacer con eso lo decide el SOUL. Es el mismo reparto que con los
+        // archivos: el Gateway convierte, Hermes decide.
+        //
+        // Y EL DIA ES EL DE LA CLINICA. El contenedor corre en UTC: a las 22:30 de Caracas
+        // alli ya es el dia siguiente, y media tarde de conversaciones contaria como
+        // primer mensaje del dia.
+        primer_mensaje_del_dia: esPrimerMensajeDelDia(
+          state?.updated_at,
+          contextoDeClinica.zona
+        )
       },
       metadata: {
         trace_id: traceId,

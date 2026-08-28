@@ -113,3 +113,37 @@ export function hoyEn(zona: string, ahora: Date = new Date()): string {
   const p = partesEn(ahora, zona);
   return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
 }
+
+/**
+ * ¿Es el primer mensaje del día de esta conversación?
+ *
+ * PARA QUE HELIOS SALUDE CUANDO TOCA Y NO EN CADA MENSAJE. Un «buenos días» en el primero
+ * es cercano; en el cuarto seguido es un robot que no se ha enterado de que la conversación
+ * ya estaba abierta. Y no saludar nunca -que es lo que hacía- es seco: David escribió «hola,
+ * buenos días» y Helios arrancó con «Le confirmo, Juan: …».
+ *
+ * EL DÍA ES EL DE LA CLÍNICA, NO EL DEL SERVIDOR. El contenedor corre en UTC, así que a las
+ * 22:30 de Caracas allí ya es el día siguiente: media tarde de conversaciones se contaría
+ * como primer mensaje del día, y a nadie le saludan a media conversación.
+ *
+ * SIN ACTIVIDAD ANTERIOR, SÍ. Una conversación que empieza es el primer mensaje de su día
+ * por definición. Y si la fecha guardada no se entiende, también: saludar de más es una
+ * torpeza pequeña; no saludar a quien acaba de llegar es antipático.
+ */
+export function esPrimerMensajeDelDia(
+  ultimaActividad: unknown,
+  zona: string,
+  ahora: Date = new Date()
+): boolean {
+  const bruto = String(ultimaActividad ?? '').trim();
+  if (!bruto) return true;
+
+  const antes = new Date(bruto);
+  if (!Number.isFinite(antes.getTime())) return true;
+
+  // Una fecha en el futuro es un reloj mal puesto en algún sitio. No se saluda por si
+  // acaso: la conversación estaba viva hace nada.
+  if (antes.getTime() > ahora.getTime()) return false;
+
+  return hoyEn(zona, antes) !== hoyEn(zona, ahora);
+}

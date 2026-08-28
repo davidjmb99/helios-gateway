@@ -24,7 +24,7 @@
 import assert from 'node:assert/strict';
 
 process.env.CHATWOOT_BASE_URL = 'https://chatwoot.app.escala365.com';
-const { leerMomento, hoyEn } = await import('../src/agenda/reloj.js');
+const { leerMomento, hoyEn, esPrimerMensajeDelDia } = await import('../src/agenda/reloj.js');
 
 const CARACAS = 'America/Caracas';   // UTC-4 todo el año, sin cambio de hora
 const MADRID = 'Europe/Madrid';      // UTC+1 en invierno, UTC+2 en verano
@@ -158,6 +158,80 @@ const MADRID = 'Europe/Madrid';      // UTC+1 en invierno, UTC+2 en verano
   const madrugada = new Date('2026-09-08T02:00:00Z');
   assert.equal(hoyEn(CARACAS, madrugada), '2026-09-07', 'en Caracas todavía es día 7');
   assert.equal(hoyEn(MADRID, madrugada), '2026-09-08', 'en Madrid ya es día 8');
+}
+
+
+// --- EL PRIMER MENSAJE DEL DIA -------------------------------------------
+//
+// PARA QUE HELIOS SALUDE CUANDO TOCA Y NO EN CADA MENSAJE. Un «buenos dias» en el primero
+// es cercano; en el cuarto seguido es un robot que no se ha enterado de que la conversacion
+// ya estaba abierta. Y no saludar nunca es seco: David escribio «hola, buenos dias» y
+// Helios arranco con «Le confirmo, Juan: ...».
+//
+// LO QUE SE PROTEGE, POR ORDEN DE DAÑO:
+//
+//  1. QUE EL DIA SEA EL DE LA CLINICA Y NO EL DEL SERVIDOR. El contenedor corre en UTC: a
+//     las 22:30 de Caracas alli ya es el dia siguiente. Media tarde de conversaciones
+//     contaria como primer mensaje del dia, y a nadie le saludan a media conversacion.
+//
+//  2. Que una conversacion que empieza cuente como primer mensaje: es lo que es.
+//
+//  3. Que un dato ilegible no deje a alguien sin saludo. Saludar de mas es una torpeza
+//     pequeña; no saludar a quien acaba de llegar es antipatico.
+
+{
+  const CARACAS = 'America/Caracas';
+
+  // Las 02:00 UTC del dia 8 son todavia el dia 7 en Caracas. Un mensaje a esa hora
+  // continua la tarde anterior: NO es el primer mensaje del dia de nadie.
+  const ahora = new Date('2026-09-08T02:00:00Z');
+  assert.equal(
+    esPrimerMensajeDelDia('2026-09-07T23:00:00Z', CARACAS, ahora),
+    false,
+    'en Caracas los dos instantes son el mismo dia, aunque en UTC no lo sean'
+  );
+
+  // Y LA MISMA PAREJA DE FECHAS, OTRA CLINICA, OTRA RESPUESTA. Estas dos caen en el mismo
+  // dia en Caracas -las 16:00 y las 22:00 del dia 7- y en dias distintos en Madrid -las
+  // 22:00 del 7 y las 04:00 del 8-. Es la razon de que la zona no se pueda dar por hecha.
+  //
+  // La primera version de esta prueba usaba otro par que caia igual en las dos zonas, asi
+  // que comprobaba una diferencia que no existia: la asercion estaba mal, no el codigo.
+  assert.equal(
+    esPrimerMensajeDelDia('2026-09-07T20:00:00Z', CARACAS, ahora),
+    false,
+    'en Caracas los dos son del dia 7'
+  );
+  assert.equal(
+    esPrimerMensajeDelDia('2026-09-07T20:00:00Z', 'Europe/Madrid', ahora),
+    true,
+    'y en Madrid, uno del 7 y otro del 8'
+  );
+
+  // Ayer por la tarde, en hora de la clinica: si es el primero de hoy.
+  assert.equal(
+    esPrimerMensajeDelDia('2026-09-06T20:00:00Z', CARACAS, ahora),
+    true,
+    'la conversacion se quedo parada ayer'
+  );
+
+  // Hace cinco minutos: claramente no.
+  assert.equal(esPrimerMensajeDelDia('2026-09-08T01:55:00Z', CARACAS, ahora), false);
+
+  // 2 y 3. SIN DATO, SE SALUDA.
+  assert.equal(esPrimerMensajeDelDia(null, CARACAS, ahora), true, 'conversacion nueva');
+  assert.equal(esPrimerMensajeDelDia('', CARACAS, ahora), true);
+  assert.equal(esPrimerMensajeDelDia('  ', CARACAS, ahora), true);
+  assert.equal(esPrimerMensajeDelDia('cuando sea', CARACAS, ahora), true, 'fecha ilegible');
+  assert.equal(esPrimerMensajeDelDia(undefined, CARACAS, ahora), true);
+
+  // Una fecha en el futuro es un reloj mal puesto. No se saluda: la conversacion estaba
+  // viva hace nada, y saludar ahi seria lo raro.
+  assert.equal(
+    esPrimerMensajeDelDia('2027-01-01T00:00:00Z', CARACAS, ahora),
+    false,
+    'un reloj mal puesto no convierte una conversacion viva en una nueva'
+  );
 }
 
 console.log('agenda_reloj_test: OK');
