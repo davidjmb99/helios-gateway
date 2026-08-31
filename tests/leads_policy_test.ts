@@ -19,6 +19,8 @@ const {
   LEAD_BLOCK_REASONS
 } = await import('../src/leads/policy.js');
 const { construirMensaje, pideQueNoLeEscriban } = await import('../src/leads/messages.js');
+// La señal vive en el normalizador, junto a las otras que se sacan del texto del paciente.
+const { detectSignals } = await import('../src/chatwoot/normalizer.js');
 
 // Agosto: Madrid va en UTC+2.
 const madrid = (dia: number, hora: number, minuto = 0) =>
@@ -215,5 +217,92 @@ assert.equal(
   false,
   'dudar no es pedir que no le escriban'
 );
+
+
+// --- PREGUNTAR UN PRECIO ES UN LEAD --------------------------------------
+//
+// Y hasta el 28-ago-2026 no lo era. El interes `treatment` estaba declarado arriba desde el
+// principio -«pregunto por un tratamiento o un precio»- y NADA lo activaba. Una pieza a
+// medio hacer, y justo la del caso mas comercial que hay.
+//
+// LO ENCONTRO DAVID PROBANDO: cancelo una cita y despues pregunto «¿Que precio tiene una
+// limpieza?». Ese segundo mensaje no genero nada.
+
+{
+  const conPrecio = { asks_for_price: true };
+  const sinNada = { asks_for_price: false };
+  const nada = { type: 'none', status: 'not_started' };
+
+  // Es lo que devuelve Hermes cuando solo contesta una duda: operacion `none`.
+  assert.equal(detectLeadInterest(nada, conPrecio), 'treatment', 'preguntar un precio deja lead');
+  assert.equal(detectLeadInterest(nada, sinNada), null, 'y saludar no deja nada');
+  assert.equal(detectLeadInterest(nada, null), null, 'sin señales, como antes');
+  assert.equal(detectLeadInterest(nada, undefined), null);
+
+  // VA EL ULTIMO, porque es el mas debil. Quien pregunta el precio Y pide hora es un lead
+  // de cita, no de precio: el seguimiento que se le escribe no dice lo mismo.
+  assert.equal(
+    detectLeadInterest({ type: 'availability_checked', status: 'success' }, conPrecio),
+    'appointment',
+    'si el turno dejo un interes de agenda, ese manda'
+  );
+  assert.equal(
+    detectLeadInterest({ type: 'appointment_cancelled', status: 'success' }, conPrecio),
+    'cancelled'
+  );
+
+  // Y UNA CITA CREADA SIGUE SIN DEJAR LEAD aunque haya preguntado el precio por el camino:
+  // es un cliente, no un lead.
+  assert.equal(
+    detectLeadInterest({ type: 'appointment_created', status: 'success' }, conPrecio),
+    null,
+    'quien ya tiene cita no recibe un mensaje para venderle'
+  );
+
+  // UN TURNO QUE FALLO TAMPOCO, y esto importa mas de lo que parece: si Helios se cayo
+  // mientras alguien preguntaba cuanto cuesta una limpieza, escribirle al dia siguiente
+  // para venderle es lo ultimo que hay que hacer.
+  assert.equal(
+    detectLeadInterest({ type: 'none', status: 'failed' }, conPrecio),
+    null,
+    'un fallo tecnico no se convierte en oportunidad comercial'
+  );
+}
+
+// --- Y QUE LA SEÑAL RECONOZCA UNA PREGUNTA DE PRECIO ---------------------
+
+{
+  const pregunta = (t: string) => detectSignals(t).asks_for_price;
+
+  for (const si of [
+    '¿Qué precio tiene una limpieza?',
+    'cuanto cuesta una limpieza',
+    '¿Cuánto cuesta sacarme una muela?',
+    'cuánto vale un blanqueamiento',
+    'cuanto sale la ortodoncia',
+    'me pasas los precios?',
+    'que tarifa tienen',
+    'necesito un presupuesto',
+    'cuál es el costo de un implante',
+    'cuanto me sale la endodoncia'
+  ]) {
+    assert.equal(pregunta(si), true, `«${si}» pregunta un precio`);
+  }
+
+  // LO QUE NO. «Cuanto» suelto aparece en frases que no preguntan ningun precio, y «vale»
+  // suelto es media conversacion en español. Mejor perder alguna pregunta que llamar lead
+  // a un «vale, gracias».
+  for (const no of [
+    'hola buenos dias',
+    'quiero una cita para mañana',
+    'vale, gracias',
+    'en cuanto pueda le escribo',
+    'vengan cuanto antes',
+    'me duele mucho la muela',
+    'quiero hacerme una limpieza'
+  ]) {
+    assert.equal(pregunta(no), false, `«${no}» NO pregunta un precio`);
+  }
+}
 
 console.log('leads_policy_test: PASS');

@@ -474,6 +474,8 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       rawMessages.some(m => m.signals?.asks_for_human || false) || batchSignals.asks_for_human;
     const asksForFinancing =
       rawMessages.some(m => m.signals?.asks_for_financing || false) || batchSignals.asks_for_financing;
+    const asksForPrice =
+      rawMessages.some(m => m.signals?.asks_for_price || false) || batchSignals.asks_for_price;
 
     const retryCount = Math.max(...rawMessages.map(m => m.retry_count || 0));
     const parentTraceId = retryCount > 0 ? rawMessages[0]?.trace_id : null;
@@ -1239,7 +1241,10 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
                 conversationId,
                 contactId: contact_id,
                 traceId,
-                operation: hermesResponse.operation
+                operation: hermesResponse.operation,
+                // Preguntar un precio deja lead aunque la operacion sea `none`, que es lo
+                // que devuelve Hermes cuando solo contesta una duda.
+                señales: { asks_for_price: asksForPrice }
             });
         }
     }

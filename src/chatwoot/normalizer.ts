@@ -49,6 +49,8 @@ export interface MessageSignals {
   possible_emergency: boolean;
   asks_for_human: boolean;
   asks_for_financing: boolean;
+  /** Preguntó cuánto cuesta algo. Es la señal más comercial que hay. */
+  asks_for_price: boolean;
 }
 
 /**
@@ -70,7 +72,17 @@ export function detectSignals(text: unknown): MessageSignals {
     asks_for_human: /humano|agente|persona|hablar con alguien|operador/.test(t),
     asks_for_financing: /financiar|financiamiento|cuotas|pago fraccionado|crédito|credito|pagar a plazos/.test(t),
     possible_frustration: /molesto|enfadado|nadie responde|pérdida de tiempo|perdida de tiempo|solucion|queja|mal servicio/.test(t),
-    possible_emergency: /respirar|hinchazon|hinchazón|sangro|sangrando|golpe fuerte|urgencia|emergencia|dolor insoportable/.test(t)
+    possible_emergency: /respirar|hinchazon|hinchazón|sangro|sangrando|golpe fuerte|urgencia|emergencia|dolor insoportable/.test(t),
+    // PREGUNTAR UN PRECIO ES LA SEÑAL MÁS COMERCIAL QUE HAY, y hasta hoy no dejaba rastro:
+    // el interés `treatment` estaba declarado en la política de leads y NADIE lo activaba.
+    // Lo vio David probando: cancelo una cita, pregunto el precio de una limpieza, y ese
+    // segundo mensaje no genero nada.
+    //
+    // SE EXIGE «CUANTO» PEGADO A UNA PALABRA DE DINERO. «Cuánto» suelto aparece en «cuanto
+    // antes» y «en cuanto pueda», que no preguntan ningún precio; y «vale» suelto es media
+    // conversación en español. Mejor perder alguna pregunta que llamar lead a un «vale,
+    // gracias».
+    asks_for_price: /precio|precios|cu[aá]nto cuesta|cu[aá]nto vale|cu[aá]nto sale|cu[aá]nto es|costo|coste|tarifa|presupuesto|cu[aá]nto me sale|qu[eé] vale/.test(t)
   };
 }
 
@@ -233,7 +245,7 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
     && Boolean(conversation_id)
     && Boolean(message_id);
 
-  const { asks_for_human, asks_for_financing, possible_frustration, possible_emergency } =
+  const { asks_for_human, asks_for_financing, asks_for_price, possible_frustration, possible_emergency } =
     detectSignals(text);
 
   const trace_id = body.trace_id || randomUUID();
@@ -270,7 +282,8 @@ export function normalizeChatwootPayload(body: any): NormalizedMessage {
       possible_frustration,
       possible_emergency,
       asks_for_human,
-      asks_for_financing
+      asks_for_financing,
+      asks_for_price
     }
   };
 }

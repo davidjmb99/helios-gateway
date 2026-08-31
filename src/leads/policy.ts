@@ -109,14 +109,37 @@ const INTEREST_BY_OPERATION: Record<string, LeadInterest> = {
  * con éxito tampoco: ya tiene su hueco nuevo. Solo cuentan los intentos que se
  * quedaron a medias.
  */
-export function detectLeadInterest(operation: any): LeadInterest | null {
+export function detectLeadInterest(
+  operation: any,
+  /**
+   * Lo que se vio en el texto del paciente. Solo hace falta `asks_for_price`, pero se pasa
+   * el objeto entero para no tener que cambiar la firma la proxima vez.
+   */
+  señales?: { asks_for_price?: boolean } | null
+): LeadInterest | null {
   const type = String(operation?.type ?? '').trim().toLowerCase();
   const status = String(operation?.status ?? '').trim().toLowerCase();
   if (type === 'appointment_created' && status === 'success') return null;
   if (type === 'appointment_rescheduled' && status === 'success') return null;
   if (type === 'appointment_cancelled') return 'cancelled';
+
+  // UN TURNO QUE FALLO NO DEJA LEAD, y esto va ANTES que el precio a proposito: si Helios
+  // se cayo mientras alguien preguntaba cuanto cuesta una limpieza, escribirle al dia
+  // siguiente para venderle es lo ultimo que hay que hacer.
   if (status === 'failed') return null;
-  return INTEREST_BY_OPERATION[type] ?? null;
+
+  const porOperacion = INTEREST_BY_OPERATION[type];
+  if (porOperacion) return porOperacion;
+
+  // PREGUNTAR UN PRECIO ES UN LEAD, y hasta hoy no lo era. `treatment` estaba declarado
+  // arriba desde el principio -«pregunto por un tratamiento o un precio»- y NADA lo
+  // activaba: una pieza a medio hacer, y justo la del caso mas comercial.
+  //
+  // Va el ULTIMO porque es el mas debil: si el turno dejo un interes de agenda, ese manda.
+  // Alguien que pregunta el precio Y pide hora es un lead de cita, no de precio.
+  if (señales?.asks_for_price === true) return 'treatment';
+
+  return null;
 }
 
 // --- El reloj de la clínica -------------------------------------------------

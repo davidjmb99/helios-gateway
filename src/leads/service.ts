@@ -63,8 +63,10 @@ export async function markLeadInterest(input: {
   contactId: string;
   traceId: string;
   operation: any;
+  /** Lo que se vio en el texto del paciente en ESTE turno. */
+  señales?: { asks_for_price?: boolean } | null;
 }): Promise<void> {
-  const interest = detectLeadInterest(input.operation);
+  const interest = detectLeadInterest(input.operation, input.señales);
   if (!interest) return;
   try {
     await patch(input.tenantId, input.conversationId, {
