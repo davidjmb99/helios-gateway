@@ -45,6 +45,7 @@ import { cifrarContrasena, esHashSeguro, verificarContrasena } from './admin/pas
 import { contarFilas, purgarDatos } from './admin/data-purge.js';
 import { leerAjustes, guardarAjustes, obtenerHorarioYVentana } from './tenants/settings.js';
 import { probarAgenda } from './agenda/prueba.js';
+import { compruebaElSecreto, avisoDeArranque, CABECERA } from './chatwoot/secreto-webhook.js';
 import { atenderMcp } from './agenda/mcp.js';
 import { clinicaDelToken, tokenDeLaCabecera, tokenDeAgenda } from './agenda/credencial.js';
 import { leerDoctores } from './agenda/doctores.js';
@@ -1365,7 +1366,33 @@ async function handleChatwootWebhook(payload: any, urlTenantId: string | undefin
 }
 
 // POST /webhooks/chatwoot
+/**
+ * ¿Se le cree a este webhook?
+ *
+ * SE RECHAZA CON 401 Y SIN EXPLICAR NADA. Decir «falta el secreto» o «el secreto es
+ * incorrecto» le dice a quien esta probando por donde seguir probando.
+ */
+function webhookAutorizado(request: any, reply: any, secretoDeLaRuta?: string): boolean {
+  const veredicto = compruebaElSecreto({
+    deLaCabecera: (request.headers as any)?.[CABECERA],
+    deLaRuta: secretoDeLaRuta
+  });
+  if (veredicto === 'rechazado') {
+    console.warn(JSON.stringify({
+      event: 'webhook_rechazado',
+      motivo: 'secreto_invalido_o_ausente',
+      // Sin cuerpo, sin cabeceras y sin ip: de un webhook falso no se guarda nada de lo
+      // que traiga, que es justo lo que un atacante querria que quedara escrito.
+      ruta: String(request.url || '').split('?')[0]
+    }));
+    reply.status(401).send({ ok: false });
+    return false;
+  }
+  return true;
+}
+
 server.post('/webhooks/chatwoot', async (request, reply) => {
+  if (!webhookAutorizado(request, reply)) return;
   const payload = request.body as any;
   try {
     const result = await handleChatwootWebhook(payload, undefined, server.log);
@@ -1391,7 +1418,37 @@ server.post('/webhooks/chatwoot', async (request, reply) => {
 });
 
 // POST /webhooks/chatwoot/:tenant_id
+/**
+ * La misma puerta, con el secreto en la URL.
+ *
+ * EXISTE PORQUE NO TODOS LOS CHATWOOT DEJAN AÑADIR CABECERAS a un webhook. Si el tuyo puede,
+ * usa la cabecera: esta ruta acaba escrita en los registros de acceso del servidor y la
+ * cabecera no.
+ *
+ * Va declarada ANTES que la ruta de :tenant_id para que «secreto» no se lea como el nombre
+ * de una clinica.
+ */
+server.post('/webhooks/chatwoot/secreto/:secreto', async (request, reply) => {
+  const { secreto } = request.params as any;
+  if (!webhookAutorizado(request, reply, secreto)) return;
+  const payload = request.body as any;
+  try {
+    const result = await handleChatwootWebhook(payload, undefined, server.log);
+    if (result.status === 'buffered') {
+      return reply.status(202).send(result);
+    }
+    return reply.status(200).send(result);
+  } catch (error: any) {
+    if (error instanceof TenantContextError) {
+      return reply.status(422).send({ ok: false, error_code: error.code, recoverable: false });
+    }
+    server.log.error(error, 'Error procesando webhook de Chatwoot');
+    return reply.status(500).send({ ok: false, error: error.message });
+  }
+});
+
 server.post('/webhooks/chatwoot/:tenant_id', async (request, reply) => {
+  if (!webhookAutorizado(request, reply)) return;
   const { tenant_id } = request.params as any;
   const payload = request.body as any;
   try {
@@ -1607,6 +1664,14 @@ server.post('/admin/conversation-reset', async (request, reply) => {
 server.get('/healthz', async (request, reply) => {
   return { ok: true, status: 'healthy' };
 });
+
+// EL AVISO SE DA AL ARRANCAR, y en `error` y no en `info`, porque sin secreto el sistema
+// funciona EXACTAMENTE IGUAL que antes: nada en su comportamiento delata que la puerta esta
+// abierta. Si no se dice aqui, no se dice en ningun sitio.
+const avisoWebhook = avisoDeArranque();
+if (avisoWebhook && process.env.NODE_ENV !== 'test') {
+  console.error(JSON.stringify({ event: 'webhook_sin_secreto', aviso: avisoWebhook }));
+}
 
 const stopRecoveryWorker = process.env.NODE_ENV !== 'test' 
   ? startRecoveryWorker() 

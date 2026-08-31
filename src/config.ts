@@ -133,6 +133,19 @@ export const config = {
   HELIOS_OUTBOX_LEASE_MS: envNumber(process.env.HELIOS_OUTBOX_LEASE_MS, 60000),
   CHATWOOT_TIMEOUT_MS: envNumber(process.env.CHATWOOT_TIMEOUT_MS, 15000),
 
+  /**
+   * El secreto que tiene que traer un webhook de Chatwoot para que se le crea.
+   *
+   * LO GENERAS TU, largo y aleatorio, y lo pegas en DOS sitios: aqui, y en la URL o la
+   * cabecera del webhook dentro de Chatwoot.
+   *
+   * SIN ELLA TODO SIGUE COMO ANTES -y como antes significa que cualquiera con la URL del
+   * gateway y un account_id puede hacer que Helios le escriba a un paciente-. Se deja asi a
+   * proposito para que desplegar esto no deje a una clinica sin recibir mensajes; el
+   * arranque lo avisa por el log.
+   */
+  CHATWOOT_WEBHOOK_SECRET: (process.env.CHATWOOT_WEBHOOK_SECRET || '').trim(),
+
   // --- Archivos: audios, imagenes, videos y documentos ---
   //
   // Sin GEMINI_API_KEY, los archivos siguen ENTRANDO al sistema -no se descartan como
