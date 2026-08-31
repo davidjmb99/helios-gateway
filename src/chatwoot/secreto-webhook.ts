@@ -13,15 +13,23 @@
  * CHATWOOT NO FIRMA SUS WEBHOOKS -no tiene HMAC como GitHub o Stripe- así que la protección
  * tiene que ser un secreto compartido que solo conozcan él y nosotros.
  *
- * SE ACEPTA POR DOS CAMINOS Y NO POR UNO:
+ * SE ACEPTA POR TRES CAMINOS Y NO POR UNO:
  *
  *   la cabecera `x-helios-webhook-secret`   si tu Chatwoot deja añadir cabeceras
- *   la ruta /webhooks/chatwoot/secreto/xxx  si no
+ *   ?s=xxx  al final de la URL que ya tengas
+ *   la ruta /webhooks/chatwoot/secreto/xxx
  *
- * Porque no todas las versiones de Chatwoot dejan poner cabeceras en un webhook, y
- * descubrirlo después de haber montado solo ese camino es una tarde perdida. La cabecera es
- * mejor -no queda en los registros de acceso del servidor, y la ruta sí-, así que se
- * prefiere esa cuando las dos están disponibles.
+ * PORQUE EL CHATWOOT DE COI NO TIENE CAMPO DE CABECERAS: su formulario de webhook son tres
+ * cosas -URL, nombre y eventos- y nada más. Montar solo el camino de la cabecera habría
+ * sido montar algo que ahí no se puede usar.
+ *
+ * EL `?s=` EXISTE PORQUE NO OBLIGA A REESCRIBIR LA URL. La ruta /secreto/xxx solo vale si
+ * la URL era exactamente /webhooks/chatwoot; quien tenga /webhooks/chatwoot/democoi1
+ * tendría que elegir entre el secreto y el tenant. Con `?s=` se le añade el sufijo a lo que
+ * haya y no se pierde nada.
+ *
+ * LA CABECERA SIGUE SIENDO LA MEJOR cuando se puede: no queda en los registros de acceso
+ * del servidor, y la ruta y la query sí.
  *
  * SIN SECRETO CONFIGURADO, TODO SIGUE COMO ANTES. Es deliberado: desplegar esto no puede
  * dejar a una clínica sin recibir mensajes por una variable que todavía no está puesta. El
@@ -66,6 +74,8 @@ function iguales(a: string, b: string): boolean {
 export function compruebaElSecreto(entrada: {
   deLaCabecera?: unknown;
   deLaRuta?: unknown;
+  /** El `?s=` de la URL. */
+  deLaConsulta?: unknown;
   /**
    * El secreto contra el que comparar. Por defecto el de la configuracion.
    *
@@ -81,11 +91,14 @@ export function compruebaElSecreto(entrada: {
     : config.CHATWOOT_WEBHOOK_SECRET;
   if (!esperado) return 'sin_configurar';
 
-  const cabecera = String(entrada.deLaCabecera ?? '').trim();
-  const ruta = String(entrada.deLaRuta ?? '').trim();
+  // En el orden en que se prefieren. Da igual para el resultado -basta con que uno valga-,
+  // pero deja claro cual es el camino bueno para quien lea esto.
+  const candidatos = [entrada.deLaCabecera, entrada.deLaConsulta, entrada.deLaRuta];
 
-  if (cabecera && iguales(cabecera, esperado)) return 'vale';
-  if (ruta && iguales(ruta, esperado)) return 'vale';
+  for (const candidato of candidatos) {
+    const valor = String(candidato ?? '').trim();
+    if (valor && iguales(valor, esperado)) return 'vale';
+  }
   return 'rechazado';
 }
 

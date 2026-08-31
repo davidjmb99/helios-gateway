@@ -1375,6 +1375,7 @@ async function handleChatwootWebhook(payload: any, urlTenantId: string | undefin
 function webhookAutorizado(request: any, reply: any, secretoDeLaRuta?: string): boolean {
   const veredicto = compruebaElSecreto({
     deLaCabecera: (request.headers as any)?.[CABECERA],
+    deLaConsulta: (request.query as any)?.s,
     deLaRuta: secretoDeLaRuta
   });
   if (veredicto === 'rechazado') {

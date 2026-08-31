@@ -35,6 +35,7 @@ const BUENO = 'un-secreto-largo-y-aleatorio-de-verdad';
 
 {
   assert.equal(compruebaElSecreto({ deLaCabecera: BUENO }), 'vale', 'por cabecera');
+  assert.equal(compruebaElSecreto({ deLaConsulta: BUENO }), 'vale', 'por ?s=');
   assert.equal(compruebaElSecreto({ deLaRuta: BUENO }), 'vale', 'y por ruta');
   assert.equal(
     compruebaElSecreto({ deLaCabecera: BUENO, deLaRuta: 'basura' }), 'vale',
@@ -55,6 +56,7 @@ const BUENO = 'un-secreto-largo-y-aleatorio-de-verdad';
       `«${String(malo)}» no puede entrar`
     );
     assert.equal(compruebaElSecreto({ deLaRuta: malo }), 'rechazado');
+    assert.equal(compruebaElSecreto({ deLaConsulta: malo }), 'rechazado');
   }
 
   // Los espacios de sobra se recortan: quien lo pega en Chatwoot puede arrastrar uno.
@@ -138,6 +140,11 @@ const BUENO = 'un-secreto-largo-y-aleatorio-de-verdad';
   const fs = await import('node:fs');
   const fuente = fs.readFileSync('src/server.ts', 'utf8');
 
+  const guarda = fuente.slice(
+    fuente.indexOf('function webhookAutorizado'),
+    fuente.indexOf('function webhookAutorizado') + 900
+  );
+
   const rutas = [...fuente.matchAll(/server\.post\('(\/webhooks\/[^']*)'/g)].map(m => m[1]);
   assert.ok(rutas.length >= 3, `se esperaban al menos tres rutas de webhook y hay ${rutas.length}`);
 
@@ -152,12 +159,36 @@ const BUENO = 'un-secreto-largo-y-aleatorio-de-verdad';
     );
   }
 
-  // Y que se rechace con 401 y sin explicar nada: decir «falta el secreto» o «el secreto es
-  // incorrecto» le dice a quien esta probando por donde seguir probando.
-  const guarda = fuente.slice(
-    fuente.indexOf('function webhookAutorizado'),
-    fuente.indexOf('function webhookAutorizado') + 900
+  // Y QUE LA GUARDA LEA LOS TRES CAMINOS. Aceptarlos en `compruebaElSecreto` no sirve de
+  // nada si el servidor no se los pasa: quitar la linea del `?s=` deja ese camino muerto y
+  // la prueba del modulo sigue en verde, porque el modulo esta perfecto. Es el mismo fallo
+  // que no llamar a la guarda desde una ruta, un nivel mas abajo.
+  for (const [fuenteDelSecreto, deDonde] of [
+    ['deLaCabecera', 'la cabecera'],
+    ['deLaConsulta', 'el ?s= de la URL'],
+    ['deLaRuta', 'el segmento de ruta']
+  ]) {
+    assert.ok(
+      guarda.includes(`${fuenteDelSecreto}:`),
+      `webhookAutorizado no mira ${deDonde}: ese camino esta muerto y nada lo dice`
+    );
+  }
+
+  // EL SECRETO NO PUEDE ACABAR EN NUESTRO PROPIO LOG. Con `?s=` viaja en la URL, y la linea
+  // de `webhook_rechazado` escribe la ruta: si escribiera la URL entera, cada intento
+  // fallido dejaria escrito un secreto -el correcto, el dia que alguien se equivoque de
+  // campo al configurarlo-. Se corta por el `?`.
+  const registro = fuente.slice(
+    fuente.indexOf("event: 'webhook_rechazado'"),
+    fuente.indexOf("event: 'webhook_rechazado'") + 500
   );
+  assert.ok(
+    registro.includes("split('?')[0]"),
+    'la linea de rechazo NO puede registrar la query: ahi va el secreto'
+  );
+
+  // Y se rechaza con 401 y sin explicar nada: decir «falta el secreto» o «el secreto es
+  // incorrecto» le dice a quien esta probando por donde seguir probando.
   assert.ok(guarda.includes('.status(401)'), 'se rechaza con 401');
   assert.ok(
     !/status\(401\)[\s\S]{0,120}(falta|incorrecto|invalid)/i.test(guarda),
