@@ -72,11 +72,17 @@ assert.deepEqual(
   ['first_name', 'last_name'],
   'para IDENTIFICAR solo hacen falta nombre y apellido: el correo no identifica a nadie'
 );
+// Y PARA RESERVAR, LO MISMO. AQUI SE EXIGIA UN CORREO, y la razon escrita era «sin el,
+// Cal.com crea la cita y el paciente no recibe la confirmacion». Cal.com se fue el 27 de
+// agosto y Google Calendar no manda ningun correo, asi que esta prueba llevaba cuatro dias
+// defendiendo un motivo muerto.
+//
+// SE VIO CON UN PACIENTE DE VERDAD: Helios pidio el correo «para enviarle la confirmacion»
+// y dos mensajes despues tuvo que explicar que no se envia ninguna.
 assert.deepEqual(
   deriveMissingBookingFields(absent),
-  ['first_name', 'last_name', 'email'],
-  'para RESERVAR si hace falta el correo: sin el, Cal.com crea la cita y el paciente no '
-  + 'recibe la confirmacion'
+  ['first_name', 'last_name'],
+  'para RESERVAR ya no hace falta el correo: no hay ninguna confirmacion que mandar'
 );
 
 // EL CASO QUE MOTIVA TODO: alguien que ya dio su nombre y apellido pero no el correo.
@@ -102,20 +108,41 @@ assert.equal(
   'con nombre, apellido y telefono ya se sabe QUIEN es: eso es identidad completa'
 );
 assert.equal(
-  soloNombre.bookingReady, false,
-  'pero sin correo no se le puede reservar: la confirmacion no llegaria a ningun sitio'
+  soloNombre.bookingReady, true,
+  'Y SIN CORREO TAMBIEN SE LE PUEDE RESERVAR. Un dato que no se usa para nada no puede '
+  + 'impedir que un paciente consiga una cita.'
 );
 assert.deepEqual(
   deriveMissingIdentityFields(soloNombre), [],
   'y NO se le vuelve a pedir el nombre: es el bucle que habria provocado el prompt solo'
 );
 assert.deepEqual(
-  deriveMissingBookingFields(soloNombre), ['email'],
-  'lo unico que le falta para agendar es el correo, y eso se le pide al agendar'
+  deriveMissingBookingFields(soloNombre), [],
+  'no le falta nada para agendar'
 );
+
+// EL CORREO SE SIGUE GUARDANDO SI EL PACIENTE LO DA. No se ha borrado el campo: lo que se
+// ha quitado es que BLOQUEE. Si alguien lo escribe, viaja al perfil y de ahi al CRM.
+const conCorreo = evaluatePersistedProfile(
+  {
+    tenant_id: 'democoi1',
+    contact_id: '9',
+    phone: operationalPhone,
+    first_name: 'Maria',
+    last_name: 'Lara',
+    email: 'maria@example.invalid',
+    profile_complete: false,
+    crm_contact_id: null
+  },
+  operationalPhone,
+  'democoi1',
+  '9'
+);
+assert.equal(conCorreo.email, 'maria@example.invalid', 'el correo se guarda si lo dan');
+assert.equal(conCorreo.bookingReady, true);
 assert.equal(
   soloNombre.profileComplete, false,
-  'profile_complete sigue exigiendo TODO: es la bandera de «no le preguntes nada mas»'
+  'profile_complete sigue en false, pero ahora por el CRM: falta el crm_contact_id'
 );
 
 const technicalOnly = evaluatePersistedProfile(
@@ -141,8 +168,8 @@ assert.deepEqual(
 );
 assert.deepEqual(
   deriveMissingBookingFields(technicalOnly),
-  ['first_name', 'last_name', 'email'],
-  'y para reservar falta todo, correo incluido'
+  ['first_name', 'last_name'],
+  'y para reservar falta lo mismo: el correo ya no cuenta'
 );
 
 const firstNameOnly = evaluatePersistedProfile(
@@ -167,8 +194,8 @@ assert.deepEqual(
 );
 assert.deepEqual(
   deriveMissingBookingFields(firstNameOnly),
-  ['last_name', 'email'],
-  'para reservar siguen faltando el apellido y el correo'
+  ['last_name'],
+  'para reservar solo falta el apellido'
 );
 
 const invalidEmail = evaluatePersistedProfile(
@@ -186,17 +213,24 @@ const invalidEmail = evaluatePersistedProfile(
   'democoi1',
   '8'
 );
-// Un correo mal escrito NO impide identificar a nadie: el nombre y el apellido están.
-// Lo que impide es reservarle, porque la confirmación no llegaría a ninguna parte.
+// UN CORREO MAL ESCRITO YA NO IMPIDE NADA. Antes bloqueaba la reserva -«la confirmacion
+// no llegaria a ninguna parte»- y hoy no hay confirmacion que mandar.
+//
+// ES EL CASO MAS FEO DEL COMPORTAMIENTO VIEJO: un paciente que escribe mal su correo se
+// quedaba sin poder agendar, por culpa de un dato que no se iba a usar. Y sin entender
+// por que, porque desde su lado ya lo habia dado.
 assert.deepEqual(
   deriveMissingIdentityFields(invalidEmail), [],
   'un correo invalido no borra la identidad: se sabe perfectamente quien es'
 );
 assert.equal(invalidEmail.identityComplete, true);
-assert.equal(invalidEmail.bookingReady, false, 'pero con un correo invalido no se reserva');
+assert.equal(
+  invalidEmail.bookingReady, true,
+  'y con un correo mal escrito TAMBIEN se reserva: no bloquea un dato que no se usa'
+);
 assert.deepEqual(
-  deriveMissingBookingFields(invalidEmail), ['email'],
-  'y hay que pedirle uno bueno, pero solo cuando vaya a agendar'
+  deriveMissingBookingFields(invalidEmail), [],
+  'no se le pide que lo corrija: no hay nada que mandarle a ese correo'
 );
 assert.deepEqual(
   deriveMissingIdentityFields(noCrm),
@@ -278,3 +312,53 @@ assert.equal(incomingWithoutConversationContact.contact_id, '9');
 assert.equal(incomingWithoutConversationContact.sender_id, '9');
 
 console.log('identity_normalization_test: PASS');
+
+// --- Y QUE EL GATEWAY NO PIDA EL CORREO POR OTRO CAMINO ----------------------
+//
+// Las funciones de arriba pueden estar perfectas y no servir de nada: `callHermes`
+// construye su PROPIA lista de campos que faltan, sin pasar por ellas, y ahi decia
+// ["first_name", "last_name", "email"]. Esa linea era la que hacia que Helios pidiera el
+// correo, y ninguna prueba la miraba.
+//
+// SE COMPROBO VOLVIENDO A METER 'email' AHI: la suite entera seguia en verde.
+{
+  const fs = await import('node:fs');
+  const cliente = fs.readFileSync('src/hermes/client.ts', 'utf8');
+
+  // EL `*?` NO ES ADORNO. Con `*` voraz, en
+  //     const missing = isNew ? ["first_name", "last_name", "email"] : [];
+  // el motor llega al final de la linea y retrocede hasta el ULTIMO corchete -el `[]` del
+  // caso falso-, capturando una lista vacia. La comprobacion pasaba siempre.
+  //
+  // Se vio inyectando el fallo: se volvio a meter 'email' y la prueba siguio en verde.
+  const listas = [...cliente.matchAll(/missing(?:_fields)?\s*[:=][^;\n]*?\[([^\]]*)\]/g)]
+    .map(m => m[1]);
+  assert.ok(listas.length >= 2, `se esperaban al menos dos listas y hay ${listas.length}`);
+
+  for (const lista of listas) {
+    assert.ok(
+      !/email|correo/i.test(lista),
+      `el gateway sigue pidiendo el correo: [${lista.trim()}]. Cal.com se fue y Google no `
+      + 'manda ninguna confirmacion, asi que no hay motivo que darle al paciente.'
+    );
+  }
+
+  // Y que el respaldo simulado no nombre a una clinica concreta. Es multiclinica: el
+  // nombre de una sola ahi dentro es el mismo error que ya se corrigio en la rama de
+  // produccion de este archivo.
+  //
+  // SIN LOS COMENTARIOS: dos de ellos citan ese nombre a proposito, para contar por que se
+  // quito. Una comprobacion que no distingue codigo de comentario prohibe explicar el
+  // fallo, que es justo lo que hay que dejar escrito.
+  const soloCodigo = cliente
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter(linea => !linea.trim().startsWith('//'))
+    .join('\n');
+  assert.ok(
+    !/Centro Odontol[oó]gico Integral/i.test(soloCodigo),
+    'hay el nombre de una clinica concreta escrito en el codigo de un producto multiclinica'
+  );
+}
+
+console.log('identity_normalization_test: correo ya no bloquea OK');

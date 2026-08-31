@@ -140,9 +140,20 @@ export function evaluatePersistedProfile(
   //   identityComplete .. sé QUIÉN es. Nombre, apellido y un teléfono usable. Con esto
   //                       ya se puede crear el contacto en el CRM, que es para lo que
   //                       hace falta la identidad.
-  //   bookingReady ...... puedo RESERVARLE. Lo anterior más un correo válido, porque la
-  //                       confirmación de Cal.com se manda por correo y sin él la cita
-  //                       existe pero el paciente no recibe nada.
+  //   bookingReady ...... puedo RESERVARLE.
+  //
+  // BOOKINGREADY EXIGIA UN CORREO VALIDO, y el motivo escrito aqui era «la confirmacion
+  // de Cal.com se manda por correo y sin el la cita existe pero el paciente no recibe
+  // nada». ESE MOTIVO MURIO CON CAL.COM el 27 de agosto de 2026: Google Calendar no manda
+  // ningun correo -una cuenta de servicio no puede invitar asistentes-.
+  //
+  // Se quito el 31 de agosto, despues de que una prueba con un paciente real acabara con
+  // Helios pidiendo un correo «para enviarle la confirmacion» y luego teniendo que
+  // explicar que no se envia ninguna. Pedir un dato es aceptable; pedirlo por un motivo
+  // que no existe, no.
+  //
+  // EL CORREO SIGUE GUARDANDOSE SI EL PACIENTE LO DA -viaja al perfil y de ahi al CRM-,
+  // pero ya no BLOQUEA una cita. Un dato que no se usa no puede impedir agendar.
   //
   // Y PENSANDO EN INSTAGRAM, que es lo siguiente: por ahí no llega teléfono. Con esta
   // división, alguien de Instagram puede quedar identificado con nombre y apellido y
@@ -154,16 +165,12 @@ export function evaluatePersistedProfile(
     && lastName
     && isValidOperationalPhone(resolvedPhone)
   );
-  const bookingReady = Boolean(
-    identityComplete
-    && email
-    && isValidEmail(email)
-  );
+  const bookingReady = identityComplete;
   const crmSynced = profileExists && Boolean(cleanStr(patientProfile.crm_contact_id));
   const profileComplete = profileExists
     && patientProfile.profile_complete === true
-    // profile_complete sigue exigiendo TODO, correo incluido: es la bandera que dice
-    // «este paciente está listo del todo», y se usa para no volver a preguntarle nada.
+    // «este paciente esta listo del todo», y se usa para no volver a preguntarle nada.
+    // Ya NO exige correo, porque bookingReady dejo de exigirlo.
     && bookingReady
     && crmSynced;
 
@@ -218,10 +225,14 @@ export function deriveMissingIdentityFields(
 /**
  * Qué falta para poder RESERVARLE una cita.
  *
- * Es lo de la identidad más el correo. Se calcula aparte para que Helios sepa pedir
- * cada cosa en su momento: el nombre cuando alguien se presenta, el correo cuando pide
- * hora. Sin el correo la reserva se crea en Cal.com pero el paciente no recibe la
- * confirmación, así que ahí sí es obligatorio.
+ * HOY ES LO MISMO QUE LA IDENTIDAD, y la funcion se queda por dos motivos: porque el
+ * payload que viaja a Hermes tiene los dos campos y quitarlos seria un cambio de contrato,
+ * y porque EN INSTAGRAM VOLVERA A SER DISTINTO -por ahi no llega telefono, asi que habra
+ * que pedirlo justo antes de reservar, que es exactamente para lo que existe esta
+ * separacion-.
+ *
+ * YA NO PIDE CORREO. Lo pedia para que Cal.com mandara la confirmacion; Cal.com ya no
+ * esta y Google no manda nada.
  */
 export function deriveMissingBookingFields(profileStatus: {
   bookingReady?: boolean;
@@ -234,7 +245,6 @@ export function deriveMissingBookingFields(profileStatus: {
   const missing: string[] = [];
   if (!cleanStr(profileStatus.firstName)) missing.push('first_name');
   if (!cleanStr(profileStatus.lastName)) missing.push('last_name');
-  if (!profileStatus.email || !isValidEmail(profileStatus.email)) missing.push('email');
   return missing;
 }
 

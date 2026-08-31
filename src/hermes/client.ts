@@ -91,7 +91,10 @@ export async function callHermes(payload: any, traceId: string): Promise<HermesR
 
   const consolidatedText = payload.message?.text || '';
   const isNew = payload.patient?.is_new || false;
-  const missing = isNew ? ["first_name", "last_name", "email"] : [];
+  // SIN CORREO. Se pedia para que Cal.com mandara la confirmacion de la cita; Cal.com ya
+  // no esta y Google Calendar no manda ningun correo. Pedirlo aqui hacia que Helios lo
+  // reclamase «para enviarle la confirmacion» y despues tuviera que desdecirse.
+  const missing = isNew ? ["first_name", "last_name"] : [];
 
   // 4. El cuerpo que se manda al Adapter.
   //
@@ -320,12 +323,16 @@ function mockHermesResponse(payload: any): HermesResponse {
       route: 'collect_profile',
       intent: 'collect_patient_identity',
       decision: 'identity_required',
-      reply: '¡Hola! Gracias por escribir al Centro Odontológico Integral. Para ayudarte mejor, ¿me indicas por favor tu nombre, apellido y correo electrónico?',
+      // SIN EL NOMBRE DE NINGUNA CLINICA. Aqui decia «Centro Odontologico Integral»
+      // -una clinica concreta en un producto multiclinica-. Es la respuesta simulada
+      // (ADAPTER_MOCK), asi que no llegaba a un paciente, pero es exactamente el error
+      // que ya se corrigio en la rama de produccion de este mismo archivo.
+      reply: '¡Hola! Gracias por escribir. Para ayudarle mejor, ¿me indica por favor su nombre y apellido?',
       handoff_required: false,
       state_update: {
         status: 'collecting_profile',
         pending_question: text,
-        missing_fields: ['first_name', 'last_name', 'email']
+        missing_fields: ['first_name', 'last_name']
       },
       tool_calls: []
     };
