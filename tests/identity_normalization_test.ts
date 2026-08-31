@@ -72,17 +72,20 @@ assert.deepEqual(
   ['first_name', 'last_name'],
   'para IDENTIFICAR solo hacen falta nombre y apellido: el correo no identifica a nadie'
 );
-// Y PARA RESERVAR, LO MISMO. AQUI SE EXIGIA UN CORREO, y la razon escrita era «sin el,
-// Cal.com crea la cita y el paciente no recibe la confirmacion». Cal.com se fue el 27 de
-// agosto y Google Calendar no manda ningun correo, asi que esta prueba llevaba cuatro dias
-// defendiendo un motivo muerto.
+// Y PARA RESERVAR, ADEMAS EL CORREO. AQUI LA RAZON ESCRITA ERA «sin el, Cal.com crea la
+// cita y el paciente no recibe la confirmacion», Y ESA RAZON YA NO EXISTE: Cal.com se fue
+// el 27 de agosto y Google Calendar no manda ningun correo.
 //
-// SE VIO CON UN PACIENTE DE VERDAD: Helios pidio el correo «para enviarle la confirmacion»
-// y dos mensajes despues tuvo que explicar que no se envia ninguna.
+// EL DATO SI SIGUE HACIENDO FALTA -es para la ficha del CRM, lo confirmo David-. Lo que no
+// se puede es volver a pedirlo diciendo que es para mandar una confirmacion: eso se probo
+// con un paciente real y Helios tuvo que desdecirse dos mensajes despues.
+//
+// LA DIFERENCIA NO ES ACADEMICA: si manana se quita HubSpot, esta linea se cae con el, y
+// quien la lea tiene que saber de que cuelga.
 assert.deepEqual(
   deriveMissingBookingFields(absent),
-  ['first_name', 'last_name'],
-  'para RESERVAR ya no hace falta el correo: no hay ninguna confirmacion que mandar'
+  ['first_name', 'last_name', 'email'],
+  'para RESERVAR ademas el correo, que es lo que lleva la ficha al CRM'
 );
 
 // EL CASO QUE MOTIVA TODO: alguien que ya dio su nombre y apellido pero no el correo.
@@ -108,17 +111,16 @@ assert.equal(
   'con nombre, apellido y telefono ya se sabe QUIEN es: eso es identidad completa'
 );
 assert.equal(
-  soloNombre.bookingReady, true,
-  'Y SIN CORREO TAMBIEN SE LE PUEDE RESERVAR. Un dato que no se usa para nada no puede '
-  + 'impedir que un paciente consiga una cita.'
+  soloNombre.bookingReady, false,
+  'sin correo todavia falta un dato para su ficha, y hay que pedirselo'
 );
 assert.deepEqual(
   deriveMissingIdentityFields(soloNombre), [],
   'y NO se le vuelve a pedir el nombre: es el bucle que habria provocado el prompt solo'
 );
 assert.deepEqual(
-  deriveMissingBookingFields(soloNombre), [],
-  'no le falta nada para agendar'
+  deriveMissingBookingFields(soloNombre), ['email'],
+  'lo unico que le falta es el correo, y eso se le pide al agendar, no al saludar'
 );
 
 // EL CORREO SE SIGUE GUARDANDO SI EL PACIENTE LO DA. No se ha borrado el campo: lo que se
@@ -138,8 +140,8 @@ const conCorreo = evaluatePersistedProfile(
   'democoi1',
   '9'
 );
-assert.equal(conCorreo.email, 'maria@example.invalid', 'el correo se guarda si lo dan');
-assert.equal(conCorreo.bookingReady, true);
+assert.equal(conCorreo.email, 'maria@example.invalid', 'el correo se guarda');
+assert.equal(conCorreo.bookingReady, true, 'y con el ya no falta nada para reservar');
 assert.equal(
   soloNombre.profileComplete, false,
   'profile_complete sigue en false, pero ahora por el CRM: falta el crm_contact_id'
@@ -168,8 +170,8 @@ assert.deepEqual(
 );
 assert.deepEqual(
   deriveMissingBookingFields(technicalOnly),
-  ['first_name', 'last_name'],
-  'y para reservar falta lo mismo: el correo ya no cuenta'
+  ['first_name', 'last_name', 'email'],
+  'y para reservar falta todo, correo incluido'
 );
 
 const firstNameOnly = evaluatePersistedProfile(
@@ -194,8 +196,8 @@ assert.deepEqual(
 );
 assert.deepEqual(
   deriveMissingBookingFields(firstNameOnly),
-  ['last_name'],
-  'para reservar solo falta el apellido'
+  ['last_name', 'email'],
+  'para reservar siguen faltando el apellido y el correo'
 );
 
 const invalidEmail = evaluatePersistedProfile(
@@ -213,24 +215,25 @@ const invalidEmail = evaluatePersistedProfile(
   'democoi1',
   '8'
 );
-// UN CORREO MAL ESCRITO YA NO IMPIDE NADA. Antes bloqueaba la reserva -«la confirmacion
-// no llegaria a ninguna parte»- y hoy no hay confirmacion que mandar.
+// UN CORREO MAL ESCRITO NO IDENTIFICA PEOR A NADIE: el nombre y el apellido estan.
+// Lo que pasa es que la ficha del CRM se quedaria con un correo que no sirve.
 //
-// ES EL CASO MAS FEO DEL COMPORTAMIENTO VIEJO: un paciente que escribe mal su correo se
-// quedaba sin poder agendar, por culpa de un dato que no se iba a usar. Y sin entender
-// por que, porque desde su lado ya lo habia dado.
+// AQUI HAY UN CASO INCOMODO Y CONVIENE QUE ESTE ESCRITO: quien teclea mal su correo ve
+// como Helios se lo vuelve a pedir, y desde su lado ya lo habia dado. Se acepta porque
+// `create_booking` NO MIRA ESTA BANDERA -solo exige doctor, hora y nombre-, asi que Helios
+// puede agendar igualmente y seguir. Es una senal de «falta preguntar», no un cerrojo.
 assert.deepEqual(
   deriveMissingIdentityFields(invalidEmail), [],
   'un correo invalido no borra la identidad: se sabe perfectamente quien es'
 );
 assert.equal(invalidEmail.identityComplete, true);
 assert.equal(
-  invalidEmail.bookingReady, true,
-  'y con un correo mal escrito TAMBIEN se reserva: no bloquea un dato que no se usa'
+  invalidEmail.bookingReady, false,
+  'pero con un correo invalido la ficha quedaria mal, asi que se le pide otro'
 );
 assert.deepEqual(
-  deriveMissingBookingFields(invalidEmail), [],
-  'no se le pide que lo corrija: no hay nada que mandarle a ese correo'
+  deriveMissingBookingFields(invalidEmail), ['email'],
+  'y hay que pedirle uno bueno, pero solo cuando vaya a agendar'
 );
 assert.deepEqual(
   deriveMissingIdentityFields(noCrm),
@@ -313,12 +316,16 @@ assert.equal(incomingWithoutConversationContact.sender_id, '9');
 
 console.log('identity_normalization_test: PASS');
 
-// --- Y QUE EL GATEWAY NO PIDA EL CORREO POR OTRO CAMINO ----------------------
+// --- Y QUE EL SALUDO NO PIDA EL CORREO -----------------------------------------
 //
-// Las funciones de arriba pueden estar perfectas y no servir de nada: `callHermes`
-// construye su PROPIA lista de campos que faltan, sin pasar por ellas, y ahi decia
-// ["first_name", "last_name", "email"]. Esa linea era la que hacia que Helios pidiera el
-// correo, y ninguna prueba la miraba.
+// EL CORREO SE PIDE AL AGENDAR, NO AL SALUDAR. Lo pidio David el 21 de agosto: «para
+// Espana si era necesario pedir todos los datos al principio, pero en Venezuela eso es
+// raro». Un paciente nuevo da su nombre; el correo llega cuando pide hora.
+//
+// Y LAS FUNCIONES DE ARRIBA NO BASTAN PARA GARANTIZARLO: `callHermes` construye su PROPIA
+// lista de campos que faltan, sin pasar por ellas, y ahi decia ["first_name",
+// "last_name", "email"]. ESA era la linea que hacia que Helios lo pidiera nada mas
+// saludar, y ninguna prueba la miraba.
 //
 // SE COMPROBO VOLVIENDO A METER 'email' AHI: la suite entera seguia en verde.
 {
@@ -338,8 +345,9 @@ console.log('identity_normalization_test: PASS');
   for (const lista of listas) {
     assert.ok(
       !/email|correo/i.test(lista),
-      `el gateway sigue pidiendo el correo: [${lista.trim()}]. Cal.com se fue y Google no `
-      + 'manda ninguna confirmacion, asi que no hay motivo que darle al paciente.'
+      `el saludo vuelve a pedir el correo: [${lista.trim()}]. Ese dato se pide al AGENDAR `
+      + '-va en bookingReady-, no al presentarse: pedirlo todo de golpe suena a '
+      + 'interrogatorio.'
     );
   }
 
@@ -361,4 +369,4 @@ console.log('identity_normalization_test: PASS');
   );
 }
 
-console.log('identity_normalization_test: correo ya no bloquea OK');
+console.log('identity_normalization_test: el correo se pide al agendar OK');

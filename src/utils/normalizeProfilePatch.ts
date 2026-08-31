@@ -140,20 +140,24 @@ export function evaluatePersistedProfile(
   //   identityComplete .. sé QUIÉN es. Nombre, apellido y un teléfono usable. Con esto
   //                       ya se puede crear el contacto en el CRM, que es para lo que
   //                       hace falta la identidad.
-  //   bookingReady ...... puedo RESERVARLE.
+  //   bookingReady ...... puedo RESERVARLE. Lo anterior mas un correo valido.
   //
-  // BOOKINGREADY EXIGIA UN CORREO VALIDO, y el motivo escrito aqui era «la confirmacion
+  // EL MOTIVO DEL CORREO CAMBIO, Y CONVIENE NO CONFUNDIRLOS. Aqui decia «la confirmacion
   // de Cal.com se manda por correo y sin el la cita existe pero el paciente no recibe
-  // nada». ESE MOTIVO MURIO CON CAL.COM el 27 de agosto de 2026: Google Calendar no manda
-  // ningun correo -una cuenta de servicio no puede invitar asistentes-.
+  // nada». Eso murio el 27 de agosto con la migracion a Google Calendar: una cuenta de
+  // servicio no puede invitar asistentes, asi que NO SE MANDA NINGUN CORREO.
   //
-  // Se quito el 31 de agosto, despues de que una prueba con un paciente real acabara con
-  // Helios pidiendo un correo «para enviarle la confirmacion» y luego teniendo que
-  // explicar que no se envia ninguna. Pedir un dato es aceptable; pedirlo por un motivo
-  // que no existe, no.
+  // EL CORREO SE SIGUE PIDIENDO, PERO PARA EL CRM. Lo confirmo David el 31 de agosto: la
+  // ficha del paciente en HubSpot lo necesita. Lo que NO se puede volver a hacer es
+  // pedirlo diciendo que es para mandar una confirmacion -eso se probo con un paciente
+  // real y Helios tuvo que desdecirse dos mensajes despues-.
   //
-  // EL CORREO SIGUE GUARDANDOSE SI EL PACIENTE LO DA -viaja al perfil y de ahi al CRM-,
-  // pero ya no BLOQUEA una cita. Un dato que no se usa no puede impedir agendar.
+  // Y SE PIDE AL AGENDAR, NO AL SALUDAR. Por eso sigue en bookingReady y no en
+  // identityComplete: en Venezuela pedir todos los datos de golpe suena a interrogatorio.
+  //
+  // ESTO NO IMPIDE AGENDAR POR SI SOLO. `create_booking` no mira esta bandera: solo exige
+  // doctor, hora y nombre. bookingReady es una SENAL para que Helios sepa que le falta
+  // preguntar, no un cerrojo. Si un paciente no quiere dar el correo, la cita se crea.
   //
   // Y PENSANDO EN INSTAGRAM, que es lo siguiente: por ahí no llega teléfono. Con esta
   // división, alguien de Instagram puede quedar identificado con nombre y apellido y
@@ -165,12 +169,16 @@ export function evaluatePersistedProfile(
     && lastName
     && isValidOperationalPhone(resolvedPhone)
   );
-  const bookingReady = identityComplete;
+  const bookingReady = Boolean(
+    identityComplete
+    && email
+    && isValidEmail(email)
+  );
   const crmSynced = profileExists && Boolean(cleanStr(patientProfile.crm_contact_id));
   const profileComplete = profileExists
     && patientProfile.profile_complete === true
+    // profile_complete sigue exigiendo TODO, correo incluido: es la bandera que dice
     // «este paciente esta listo del todo», y se usa para no volver a preguntarle nada.
-    // Ya NO exige correo, porque bookingReady dejo de exigirlo.
     && bookingReady
     && crmSynced;
 
@@ -225,14 +233,15 @@ export function deriveMissingIdentityFields(
 /**
  * Qué falta para poder RESERVARLE una cita.
  *
- * HOY ES LO MISMO QUE LA IDENTIDAD, y la funcion se queda por dos motivos: porque el
- * payload que viaja a Hermes tiene los dos campos y quitarlos seria un cambio de contrato,
- * y porque EN INSTAGRAM VOLVERA A SER DISTINTO -por ahi no llega telefono, asi que habra
- * que pedirlo justo antes de reservar, que es exactamente para lo que existe esta
- * separacion-.
+ * Es lo de la identidad mas el correo. Se calcula aparte para que Helios sepa pedir cada
+ * cosa en su momento: el nombre cuando alguien se presenta, el correo cuando pide hora.
  *
- * YA NO PIDE CORREO. Lo pedia para que Cal.com mandara la confirmacion; Cal.com ya no
- * esta y Google no manda nada.
+ * EL CORREO ES PARA LA FICHA DEL CRM, NO PARA MANDAR NADA. Cal.com mandaba una
+ * confirmacion por correo y Google no manda ninguna. El dato sigue haciendo falta; lo que
+ * ya no existe es la excusa que se le daba al paciente.
+ *
+ * Y EN INSTAGRAM VOLVERA A SER DISTINTO: por ahi no llega telefono, asi que habra que
+ * pedirlo aqui tambien. Esta separacion existe exactamente para eso.
  */
 export function deriveMissingBookingFields(profileStatus: {
   bookingReady?: boolean;
@@ -245,6 +254,7 @@ export function deriveMissingBookingFields(profileStatus: {
   const missing: string[] = [];
   if (!cleanStr(profileStatus.firstName)) missing.push('first_name');
   if (!cleanStr(profileStatus.lastName)) missing.push('last_name');
+  if (!profileStatus.email || !isValidEmail(profileStatus.email)) missing.push('email');
   return missing;
 }
 
