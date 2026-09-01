@@ -30,7 +30,7 @@
 
 import { config } from '../config.js';
 import { supabase } from '../supabase/client.js';
-import { normalizarIntentos, MINIMO_INTENTOS, MAXIMO_INTENTOS, INTENTOS_RECOVERY } from '../services/recovery-policy.js';
+import { normalizarIntentos, MINIMO_INTENTOS, MAXIMO_INTENTOS, opcionesDeIntentos } from '../services/recovery-policy.js';
 import {
   HORAS_VUELTA,
   MINIMO_HORAS_VUELTA,
@@ -405,7 +405,7 @@ export async function leerAjustes(tenantId: string): Promise<Record<string, unkn
     handoff_stale_por_defecto: defectos.handoff_stale_hours,
 
     recovery_intentos: ajustes.recovery_intentos,
-    recovery_opciones: [...INTENTOS_RECOVERY],
+    recovery_opciones: opcionesDeIntentos(ajustes.recovery_intentos),
     recovery_por_defecto: defectos.recovery_intentos,
 
     clinic_hours: horarioParaGuardar(ajustes.clinic_hours),
