@@ -713,3 +713,57 @@ console.log('clinic_settings_test: direccion OK');
 console.log('clinic_settings_test: servicios y precios OK');
 
 console.log('clinic_settings_test: primera visita OK');
+
+// --- NINGÚN PLACEHOLDER PUEDE LLEVAR DATOS DE UNA CLÍNICA REAL ----------------
+//
+// EL PANEL USABA LOS DATOS DE COI COMO TEXTO DE EJEMPLO. Su dirección, sus precios, sus
+// dos doctoras con los identificadores de sus calendarios de Google, y su tono.
+//
+// SE VIO AL ABRIR LOS AJUSTES DE UNA CLÍNICA NUEVA: aparecían la dirección de Acarigua y
+// los precios de higiene y exodoncia. Los campos estaban VACÍOS —el valor por defecto de
+// dirección, precios y doctores es null a propósito— pero el ejemplo decía otra cosa.
+//
+// SON DOS PROBLEMAS Y LOS DOS IMPORTAN:
+//
+//   1. UNA CLÍNICA VE LOS DATOS DE OTRA. La dirección y los precios de un cliente
+//      enseñados a otro, y de regalo los ids de calendario de sus doctoras.
+//   2. QUIEN CONFIGURA NO SABE SI ESTÁ PUESTO O NO. Un ejemplo que parece un valor hace
+//      creer que el campo ya está configurado, y se guarda vacío.
+//
+// UN EJEMPLO TIENE QUE EXPLICAR LA FORMA, NO SER UN CASO REAL.
+
+{
+  const fs = await import('node:fs');
+  const panel = fs.readFileSync('public/index.html', 'utf8');
+
+  const placeholders = [...panel.matchAll(/placeholder="([^"]*)"/g)].map(m => m[1]);
+  assert.ok(placeholders.length > 5, 'se esperaban placeholders y casi no hay');
+
+  // Datos reales de COI que llegaron a estar escritos ahí como ejemplo.
+  const deUnaClinicaReal = [
+    'Mamánico', 'Acarigua',
+    'Ana Martínez', 'Sofía Lemur',
+    'c-ana@', 'c-sofia@',
+    'Higiene dental completa: 25',
+    'Exodoncia simple: 30'
+  ];
+
+  for (const texto of placeholders) {
+    for (const dato of deUnaClinicaReal) {
+      assert.ok(
+        !texto.includes(dato),
+        `un placeholder lleva «${dato}», que es un dato real de una clínica: ${texto.slice(0, 70)}`
+      );
+    }
+  }
+
+  // Y NINGÚN CORREO NI CALENDARIO CONCRETO, aunque sea de otra clínica futura.
+  for (const texto of placeholders) {
+    assert.ok(
+      !/@group\.calendar\.google\.com/.test(texto) || /el-id-del-calendario|otro-id/.test(texto),
+      `un placeholder lleva un calendario que parece real: ${texto.slice(0, 70)}`
+    );
+  }
+}
+
+console.log('clinic_settings_test: los ejemplos no llevan datos de nadie OK');

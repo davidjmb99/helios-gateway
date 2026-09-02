@@ -3288,7 +3288,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
               tengas en Cal.com, o la confirmación de la cita dirá otra cosa.
             </p>
             <input id="clinica-direccion" type="text" maxlength="200"
-                   placeholder="Acarigua, CC Mamánico local 27. Tiene estacionamiento."
+                   placeholder="Calle y número, referencia para llegar, y si hay estacionamiento"
                    oninput="cambiarTexto('clinic_address', this.value)"
                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none">
           </div>
@@ -3322,7 +3322,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
               deriva.</b> Y siempre los dice como orientativos, sujetos a valoración.
             </p>
             <textarea id="clinica-servicios" rows="8"
-                      placeholder="Higiene dental completa: 25$ (limpieza, profilaxis, sarro, tártaro)&#10;Exodoncia simple: 30$ (extracción, sacar una muela, sacar un diente)"
+                      placeholder="Nombre del servicio: precio (otros nombres por los que lo pidan)&#10;Otro servicio: desde 40$ (los nombres de la calle, separados por comas)"
                       oninput="cambiarTexto('clinic_services', this.value)"
                       class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
             <p class="text-[11px] text-slate-500 mt-1">
@@ -3345,7 +3345,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
               declara.
             </p>
             <textarea id="clinica-doctores" rows="10"
-                      placeholder="Dra. Ana Martínez&#10;  calendario: c-ana@group.calendar.google.com&#10;  hace: valoración, higiene, blanqueamiento&#10;&#10;Dra. Sofía Lemur&#10;  calendario: c-sofia@group.calendar.google.com&#10;  horario: L, J, V, S&#10;  hace: valoración, odontopediatría"
+                      placeholder="Nombre del profesional&#10;  calendario: el-id-del-calendario@group.calendar.google.com&#10;  hace: los servicios que atiende, separados por comas&#10;&#10;Otro profesional&#10;  calendario: otro-id@group.calendar.google.com&#10;  horario: L, J, V, S&#10;  hace: sus servicios"
                       oninput="cambiarTexto('clinic_doctors', this.value)"
                       class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
           </div>
@@ -3399,7 +3399,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
               decide su SOUL.
             </p>
             <textarea id="clinica-tono" rows="2" maxlength="400"
-                      placeholder="Cercano y claro, de tú, sin tecnicismos."
+                      placeholder="Cómo quieres que hable: cercano o formal, de tú o de usted, con o sin tecnicismos"
                       oninput="cambiarTexto('clinic_tone', this.value)"
                       class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"></textarea>
           </div>
