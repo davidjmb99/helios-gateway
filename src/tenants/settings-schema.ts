@@ -272,6 +272,82 @@ export function normalizarTono(valor: unknown): string | null {
 
 export const MAX_LARGO_TONO = MAX_TONO;
 
+// --- Como se le habla al paciente: tu, usted o vos ---------------------------
+//
+// POR QUE ES UN AJUSTE Y NO UNA LINEA DEL SOUL. Estaba en el SOUL, y el SOUL es UNO
+// para todas las clinicas: la primera que quisiera tutear obligaba a editar el prompt
+// compartido, y ese prompt es justo lo que hay que poder copiar tal cual de una version
+// del producto a la siguiente. Con cuatro clientes y tres versiones, eso se convierte en
+// una revision manual del SOUL clinica por clinica en cada actualizacion.
+//
+// Es el mismo fallo que «Acarigua» en el SOUL (HEL-085) y que la primera visita cableada
+// a `true`: un dato de UNA clinica en un sitio que sirve a TODAS.
+//
+// Y POR QUE NO CABE DENTRO DE `clinic_tone`. El tono es texto libre -«cercano y
+// profesional»- y de ahi NO se deduce si tratar de tu o de usted. Es un binario que tiene
+// que salir bien en CADA frase, y un binario no se guarda en un campo difuso.
+
+/**
+ * Las tres formas, y las tres desde el primer dia.
+ *
+ * SE ADMITE `vos` YA porque el trato cambia por pais y no lo decide el operador:
+ * Venezuela usa usted y tu, España tu, el Rio de la Plata vos. Añadirlo hoy es una
+ * palabra; añadirlo cuando haya cuentas es una migracion.
+ */
+export const TRATOS = ['usted', 'tu', 'vos'] as const;
+
+export type TratoAlPaciente = (typeof TRATOS)[number];
+
+/**
+ * El defecto, y esta es la parte que importa.
+ *
+ * Tratar de usted a quien esperaba tu suena algo rigido y no se lo cuenta nadie; tutear a
+ * quien esperaba usted es una falta de respeto, y en una clinica eso es una queja. Los dos
+ * fallos no cuestan lo mismo, asi que el defecto no puede estar en medio.
+ *
+ * Es el mismo razonamiento que `first_visit_free: false`.
+ */
+export const TRATO_POR_DEFECTO: TratoAlPaciente = 'usted';
+
+/**
+ * Acepta lo que escriba quien rellena el panel, no lo que le convenga al codigo.
+ *
+ * `tu` y `tú` son la MISMA opcion y nadie va a acordarse de cual toca, asi que se
+ * quitan los acentos antes de comparar. Igual con mayusculas y espacios de sobra.
+ *
+ * Devuelve `null` para cualquier otra cosa, y eso NO significa «sin trato»: significa
+ * «la clinica no lo ha elegido», y entonces se aplica TRATO_POR_DEFECTO. Por eso el
+ * campo puede estar en NULL en la base y el panel sigue pudiendo decir la verdad sobre
+ * quien eligio el valor.
+ */
+/**
+ * Las formas en que se puede escribir cada opcion.
+ *
+ * UNA TABLA Y NO UN REGEX DE ACENTOS. La primera version quitaba los diacriticos con
+ * `normalize("NFD")` y una clase de caracteres combinantes, y eso deja en el fuente unos
+ * acentos sueltos que NO SE VEN al leerlo y que se pierden en cualquier copia y pega.
+ * Aqui se ve exactamente que entra y que no.
+ */
+const ESCRITURAS: Record<string, TratoAlPaciente> = {
+  usted: "usted",
+  tu: "tu",
+  "tú": "tu",
+  vos: "vos",
+  "vós": "vos"
+};
+
+export function normalizarTrato(valor: unknown): TratoAlPaciente | null {
+  // SOLO CADENAS, y no `String(valor)`. Una prueba lo pillo: `String(["tu"])` es `"tu"`,
+  // asi que un array se colaba y quedaba guardado como si alguien lo hubiera elegido.
+  // Coercer en silencio es exactamente lo que la regla de este fichero prohibe -caer al
+  // valor de siempre se puede explicar; adivinar lo que quiso decir el que llama, no-.
+  // Y de paso se van los numeros, los booleanos, null y los objetos de una sola linea.
+  if (typeof valor !== "string") return null;
+  const limpio = valor.trim().toLowerCase();
+  if (!limpio) return null;
+  return ESCRITURAS[limpio] ?? null;
+}
+
 // --- Direccion de la clinica -------------------------------------------------
 
 const MAX_DIRECCION = 200;

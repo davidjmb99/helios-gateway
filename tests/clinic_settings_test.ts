@@ -502,7 +502,18 @@ console.log('  minutos de la semana en que se puede escribir: ' + permitidos + '
   // tiene que LLEGAR en el contexto del turno. Si esta prueba no existiera, se podria
   // guardar la direccion en el panel y seguir sin que Hermes la viera nunca.
   const fuente = readFileSync(new URL('../src/orchestrator.ts', import.meta.url), 'utf8');
-  const bloque = fuente.slice(fuente.indexOf('clinic_context: {'), fuente.indexOf('clinic_context: {') + 2000);
+  // EL BLOQUE SE DELIMITA POR LO QUE VIENE DESPUES, no cortando 2000 caracteres.
+  //
+  // Con el corte fijo, cualquier campo o comentario que se añada arriba empuja lo que se
+  // comprueba fuera de la ventana y la prueba se pone roja por una razon que no tiene
+  // nada que ver con la direccion. Paso el 3-sep-2026 al meter `formality`: la direccion
+  // seguia perfectamente cableada y esta prueba decia que no.
+  //
+  // Y EL FALLO AL REVES ES PEOR: si la ventana se queda corta por el otro lado, la
+  // comprobacion deja de mirar donde cree y pasa en verde con el fallo dentro.
+  const inicioContexto = fuente.indexOf('clinic_context: {');
+  assert.ok(inicioContexto > 0, 'se encontro el bloque clinic_context en el orquestador');
+  const bloque = fuente.slice(inicioContexto, fuente.indexOf('signals: {', inicioContexto));
   assert.ok(
     /clinic_address:\s*contextoDeClinica\.direccion/.test(bloque),
     'clinic_context no lleva clinic_address: la direccion se guardaria y Hermes no la veria'

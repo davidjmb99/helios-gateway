@@ -2488,6 +2488,10 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
       },
       clinic_timezone: { nombre: 'La zona horaria', texto: z => z || 'sin definir' },
       clinic_tone: { nombre: 'El tono', texto: t => t ? '«' + t + '»' : 'sin definir' },
+      clinic_formality: {
+        nombre: 'El trato al paciente',
+        texto: v => ({ usted: 'de usted', tu: 'de tú', vos: 'de vos' })[v] || 'de usted'
+      },
       clinic_address: {
         nombre: 'La dirección',
         texto: d => d ? '«' + d + '»' : 'sin definir (Helios derivará a una persona)'
@@ -2694,6 +2698,10 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
       document.getElementById('envio-hasta').value = ventana.hasta || '';
       document.getElementById('clinica-zona').value = valorEnPantalla('clinic_timezone') || '';
       document.getElementById('clinica-tono').value = valorEnPantalla('clinic_tone') || '';
+      // EL TRATO NUNCA ESTA VACIO: si la clinica no lo eligio, el desplegable tiene que
+      // enseñar el defecto que se esta usando de verdad, no la primera opcion por
+      // casualidad. Con `|| 'usted'` coinciden lo que se ve y lo que se manda.
+      document.getElementById('clinica-trato').value = valorEnPantalla('clinic_formality') || 'usted';
       document.getElementById('clinica-direccion').value = valorEnPantalla('clinic_address') || '';
       document.getElementById('clinica-primera-visita').checked = valorEnPantalla('first_visit_free') === true;
       document.getElementById('clinica-servicios').value = valorEnPantalla('clinic_services') || '';
@@ -3391,15 +3399,32 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
             <div id="agenda-resultado" class="hidden text-xs space-y-1"></div>
           </div>
           <div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Trato al paciente</h3>
+            <p class="text-[11px] text-slate-400 mb-2">
+              Cómo se le habla: de tú, de usted o de vos. Cambia por país y no lo
+              decide el operador. Es lo único del tono que no es texto libre, porque
+              hay que acertarlo en <b class="text-slate-300">cada frase</b>.
+            </p>
+            <select id="clinica-trato" onchange="cambiarTexto('clinic_formality', this.value)"
+                    class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none">
+              <option value="usted">De usted</option>
+              <option value="tu">De tú</option>
+              <option value="vos">De vos</option>
+            </select>
+            <p class="text-[10px] text-slate-500 mt-1">
+              Si no se elige, se trata de usted.
+            </p>
+          </div>
+          <div>
             <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Tono</h3>
             <p class="text-[11px] text-slate-400 mb-2">
-              Cómo quieres que hable Helios. Se le manda en el contexto de cada
-              mensaje. <b class="text-slate-300">Ojo:</b> solo surte efecto si el
-              perfil de Hermes está escrito para leerlo; lo que Helios dice lo
-              decide su SOUL.
+              Cómo quieres que hable Helios, en tus palabras. Se le manda en el
+              contexto de cada mensaje. <b class="text-slate-300">Ojo:</b> solo surte
+              efecto si el perfil de Hermes está escrito para leerlo; lo que Helios
+              dice lo decide su SOUL.
             </p>
             <textarea id="clinica-tono" rows="2" maxlength="400"
-                      placeholder="Cómo quieres que hable: cercano o formal, de tú o de usted, con o sin tecnicismos"
+                      placeholder="Cercano o distante, con o sin tecnicismos, cuánto explica. El tú o el usted va arriba"
                       oninput="cambiarTexto('clinic_tone', this.value)"
                       class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"></textarea>
           </div>

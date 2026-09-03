@@ -30,6 +30,7 @@ import { decidirCierre } from './csat/cierre.js';
 import { fraseDeDisponibilidad } from './handoff/disponibilidad.js';
 import { registrarTurnoDeCrm } from './services/crm-watch.js';
 import { obtenerHorarioYVentana, leerContextoDeClinica } from './tenants/settings.js';
+import { TRATO_POR_DEFECTO } from './tenants/settings-schema.js';
 import { blockLead, markLeadInterest } from './leads/service.js';
 import { pideQueNoLeEscriban } from './leads/messages.js';
 import {
@@ -491,6 +492,10 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     const contextoDeClinica = await leerContextoDeClinica(tenantId).catch(() => ({
       horario: null,
       tono: null,
+      // SIN PODER LEER LOS AJUSTES, SE TRATA DE USTED. No hay «sin trato»: el modelo va a
+      // usar un pronombre igualmente, asi que aqui se elige el que no ofende a nadie.
+      // Tutear a un paciente que esperaba usted es una queja; lo contrario suena rigido.
+      trato: TRATO_POR_DEFECTO,
       zona: config.CLINIC_TIMEZONE || 'Europe/Madrid',
       direccion: null,
       // SIN PODER LEER LOS AJUSTES, NO SE PROMETE NADA GRATIS. Es la misma razon que el
@@ -586,6 +591,19 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       clinic_context: {
         timezone: contextoDeClinica.zona,
         tone: contextoDeClinica.tono || config.CLINIC_TONE || "es-ES",
+        // TU, USTED O VOS. Estaba en el SOUL, y el SOUL es UNO para todas las clinicas:
+        // la primera que quisiera tutear obligaba a editar el prompt compartido, que es
+        // justo lo que hay que poder copiar tal cual de una version del producto a la
+        // siguiente. Mismo fallo que «Acarigua» en el SOUL o la primera visita cableada.
+        //
+        // VIAJA SIEMPRE, al contrario que la direccion o el horario. Aquellos se omiten
+        // si nadie los confirmo, porque un defecto se leeria como un hecho de la clinica.
+        // Este no es un hecho: es una eleccion que hay que tomar en CADA frase, asi que
+        // si no la hace la clinica la hace el codigo. Omitirla se la devolveria al SOUL.
+        //
+        // Y NO CABE EN `tone`, que es texto libre: de «cercano y profesional» no se
+        // deduce el pronombre, y este es un binario que tiene que salir bien siempre.
+        formality: contextoDeClinica.trato,
         ...(contextoDeClinica.horario ? { clinic_hours: contextoDeClinica.horario } : {}),
         // LA DIRECCION VIAJA COMO DATO, NO COMO INSTRUCCION, y es deliberado.
         //

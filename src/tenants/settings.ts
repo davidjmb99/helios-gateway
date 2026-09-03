@@ -50,6 +50,10 @@ import {
   normalizarHorario,
   normalizarModo,
   normalizarTono,
+  normalizarTrato,
+  TRATOS,
+  TRATO_POR_DEFECTO,
+  type TratoAlPaciente,
   normalizarDireccion,
   normalizarPrimeraVisita,
   normalizarServicios,
@@ -97,6 +101,12 @@ export interface AjustesClinica {
   recovery_intentos: number;
   clinic_timezone: string;
   clinic_tone: string | null;
+  /**
+   * Tu, usted o vos. NUNCA es null: si la clinica no lo eligio vale el defecto, porque
+   * el modelo tiene que usar un pronombre en cada frase y esa decision no puede
+   * quedarse en el SOUL, que es compartido. `origen` dice quien lo eligio.
+   */
+  clinic_formality: TratoAlPaciente;
   /** Donde esta la clinica. Viaja en clinic_context, no en el prompt. */
   clinic_address: string | null;
   first_visit_free: boolean;
@@ -123,6 +133,7 @@ const CAMPOS = {
   chatwoot_teams: { normalizar: normalizarEquipos, error: 'EQUIPOS_INVALIDOS' },
   clinic_timezone: { normalizar: normalizarZona, error: 'ZONA_INVALIDA' },
   clinic_tone: { normalizar: normalizarTono, error: 'TONO_INVALIDO' },
+  clinic_formality: { normalizar: normalizarTrato, error: 'TRATO_INVALIDO' },
   clinic_address: { normalizar: normalizarDireccion, error: 'DIRECCION_INVALIDA' },
   first_visit_free: { normalizar: normalizarPrimeraVisita, error: 'PRIMERA_VISITA_INVALIDA' },
   clinic_services: { normalizar: normalizarServicios, error: 'SERVICIOS_INVALIDOS' },
@@ -173,6 +184,15 @@ function porDefecto(): AjustesClinica {
     chatwoot_teams: {},
     clinic_timezone: config.CLINIC_TIMEZONE,
     clinic_tone: null,
+    // EL TRATO SI TIENE DEFECTO, al contrario que la direccion o los precios. La
+    // diferencia: una direccion que no se sabe se puede NO decir, pero un pronombre hay
+    // que usarlo en cada frase, asi que la eleccion existe siempre. Si no la hace la
+    // clinica, la hace el codigo -y no el SOUL, que es compartido-.
+    //
+    // `usted` porque los dos fallos no cuestan lo mismo: tratar de usted a quien
+    // esperaba tu suena rigido y no se queja nadie; tutear a quien esperaba usted es una
+    // falta de respeto, y en una clinica eso es una queja. Igual que first_visit_free.
+    clinic_formality: TRATO_POR_DEFECTO,
     // SIN DIRECCION POR DEFECTO. Inventar una es peor que no tenerla: el paciente se
     // presentaria en un sitio equivocado. Si no esta configurada, Helios deriva.
     clinic_address: null,
@@ -364,6 +384,7 @@ export async function obtenerTono(tenantId: string): Promise<string | null> {
 export async function leerContextoDeClinica(tenantId: string): Promise<{
   horario: Record<string, Array<[string, string]>> | null;
   tono: string | null;
+  trato: TratoAlPaciente;
   zona: string;
   direccion: string | null;
   primeraVisitaGratis: boolean;
@@ -387,6 +408,12 @@ export async function leerContextoDeClinica(tenantId: string): Promise<{
       ? horarioParaGuardar(ajustes.clinic_hours) as Record<string, Array<[string, string]>>
       : null,
     tono: ajustes.clinic_tone,
+    // EL TRATO VIAJA SIEMPRE, no solo si la clinica lo configuro, y es la diferencia
+    // con el horario y la direccion. Aquellos se omiten porque un valor por defecto se
+    // leeria como un hecho de la clinica que nadie ha confirmado. Este no es un hecho
+    // del mundo: es una eleccion de estilo que HAY que tomar en cada frase. Omitirla
+    // devolveria la decision al SOUL, que es exactamente de donde se la esta sacando.
+    trato: ajustes.clinic_formality,
     zona: ajustes.clinic_timezone
   };
 }
@@ -425,6 +452,11 @@ export async function leerAjustes(tenantId: string): Promise<Record<string, unkn
     clinic_timezone: ajustes.clinic_timezone,
     clinic_tone: ajustes.clinic_tone,
     clinic_tone_max: MAX_LARGO_TONO,
+
+    clinic_formality: ajustes.clinic_formality,
+    clinic_formality_opciones: [...TRATOS],
+    clinic_formality_por_defecto: defectos.clinic_formality,
+
     clinic_address: ajustes.clinic_address,
     first_visit_free: ajustes.first_visit_free,
     clinic_services: ajustes.clinic_services,
