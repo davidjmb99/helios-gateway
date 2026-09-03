@@ -496,6 +496,9 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       // usar un pronombre igualmente, asi que aqui se elige el que no ofende a nadie.
       // Tutear a un paciente que esperaba usted es una queja; lo contrario suena rigido.
       trato: TRATO_POR_DEFECTO,
+      // Y sin poder leer los ajustes, tampoco se adapta: encender comportamiento
+      // porque la base no contesta es lo contrario de fallar con seguridad.
+      tratoEspejo: false,
       zona: config.CLINIC_TIMEZONE || 'Europe/Madrid',
       direccion: null,
       // SIN PODER LEER LOS AJUSTES, NO SE PROMETE NADA GRATIS. Es la misma razon que el
@@ -604,6 +607,15 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         // Y NO CABE EN `tone`, que es texto libre: de «cercano y profesional» no se
         // deduce el pronombre, y este es un binario que tiene que salir bien siempre.
         formality: contextoDeClinica.trato,
+        // SI PUEDE SEGUIRLE EL TRATO AL PACIENTE. `formality` dice con cual EMPIEZA;
+        // esto, si puede cambiar al del paciente cuando el paciente lo marca claro.
+        //
+        // LAS REGLAS DE CUANDO CAMBIAR VIVEN EN EL SOUL, no aqui, y es el reparto de
+        // siempre: detectar el registro es interpretar lenguaje. La mayoria de los
+        // mensajes no llevan marca -«Hola», «Quiero pedir una cita»- asi que la regla
+        // tiene que ser «solo con marca inequivoca, una vez, y sin volver atras».
+        // Cambiar por el tono seria empezar a tutear a quien nunca tuteo.
+        formality_follows_patient: contextoDeClinica.tratoEspejo,
         ...(contextoDeClinica.horario ? { clinic_hours: contextoDeClinica.horario } : {}),
         // LA DIRECCION VIAJA COMO DATO, NO COMO INSTRUCCION, y es deliberado.
         //

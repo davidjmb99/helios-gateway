@@ -308,4 +308,111 @@ for (const basura of [
   );
 }
 
+// =============================================================================
+// 9. EL ESPEJO: SEGUIRLE EL TRATO AL PACIENTE
+// =============================================================================
+//
+// `clinic_formality` dice con QUE trato empieza; esto, si puede cambiar al del paciente
+// cuando el paciente lo marca de forma inequivoca.
+//
+// LO QUE MAS IMPORTA AQUI ES QUE VENGA APAGADO. No por prudencia generica: para muchas
+// clinicas el trato es una decision de marca y no un accidente -una que trata de usted
+// QUIERE tratar de usted aunque el paciente tutee, igual que su recepcionista-. Que
+// nazca encendido seria cambiar como habla Helios en una cuenta que ya atiende sin que
+// nadie lo haya decidido.
+
+{
+  const { normalizarInterruptor } = esquema;
+
+  // CUALQUIER COSA QUE NO SEA UN SI EXPLICITO ES UN NO. Con un interruptor que enciende
+  // comportamiento, la unica lectura segura de un valor raro es «apagado».
+  for (const si of [true, 'true', 1, '1']) {
+    assert.equal(normalizarInterruptor(si), true, `«${String(si)}» enciende`);
+  }
+  for (const no of [
+    false, 'false', 0, '0', null, undefined, '', 'si', 'yes', 'on', 'TRUE',
+    2, -1, {}, [], 'cualquier cosa'
+  ]) {
+    assert.equal(
+      normalizarInterruptor(no), false,
+      `«${JSON.stringify(no)}» NO puede encender comportamiento por accidente`
+    );
+  }
+
+  const { __setSupabaseClientForTests } = await import('../src/supabase/client.js');
+  const { FakeSupabase, HELIOS_PRIMARY_KEYS } = await import('./fixtures/fake-supabase.js');
+  const settings = await import('../src/tenants/settings.js');
+
+  const fake = new FakeSupabase({ primaryKeys: HELIOS_PRIMARY_KEYS });
+  fake.seed('helios_tenants', [
+    // COI tal como esta hoy: sin la columna. Tiene que quedarse apagado.
+    { tenant_id: 'democoi1' },
+    { tenant_id: 'clinica3', clinic_formality: 'tu', clinic_formality_mirror: true }
+  ]);
+  __setSupabaseClientForTests(fake as any);
+  await settings.guardarAjustes('clinica3', { clinic_formality_mirror: true }).catch(() => {});
+
+  assert.equal(
+    (await settings.leerContextoDeClinica('democoi1')).tratoEspejo, false,
+    'APAGADO para una fila que no trae la columna: es el caso de COI el dia del despliegue'
+  );
+
+  // Y EL DEFECTO DEL CODIGO, PINCHADO APARTE. La comprobacion de arriba NO lo cubre, y
+  // costo verlo: `normalizarInterruptor` nunca devuelve null, asi que para cualquier fila
+  // que exista en la tabla el valor leido SOBRESCRIBE el de `porDefecto()`. Cambiar el
+  // defecto a `true` dejaba la prueba en verde.
+  //
+  // Una clinica que no esta en la tabla si cae en `porDefecto()`, y ahi es donde se ve.
+  assert.equal(
+    (await settings.leerContextoDeClinica('clinica-que-no-existe')).tratoEspejo, false,
+    'EL ESPEJO TIENE QUE NACER APAGADO: encenderlo por defecto cambiaria como habla '
+    + 'Helios en todas las cuentas que ya atienden, sin que nadie lo haya decidido'
+  );
+  assert.equal(
+    (await settings.leerContextoDeClinica('clinica3')).tratoEspejo, true,
+    'y encendido para quien si'
+  );
+  assert.equal(
+    (await settings.leerContextoDeClinica('democoi1')).trato, 'usted',
+    'y una cosa no arrastra a la otra'
+  );
+}
+
+{
+  const fuente = readFileSync('src/orchestrator.ts', 'utf8');
+  const inicio = fuente.indexOf('clinic_context: {');
+  const bloque = fuente.slice(inicio, fuente.indexOf('signals: {', inicio));
+
+  // ANCLADO, por lo mismo que el otro: sin `^\s*` la comprobacion pasa en verde con la
+  // linea comentada.
+  assert.ok(
+    /^\s*formality_follows_patient:\s*contextoDeClinica\.tratoEspejo,/m.test(bloque),
+    'el orquestador no manda el espejo: el ajuste seria decorativo'
+  );
+
+  const conCatch = fuente.slice(
+    fuente.indexOf('leerContextoDeClinica(tenantId).catch'),
+    inicio
+  );
+  assert.ok(
+    /tratoEspejo:\s*false/.test(conCatch),
+    'con los ajustes ilegibles NO se adapta: encender comportamiento porque la base no '
+    + 'contesta es lo contrario de fallar con seguridad'
+  );
+}
+
+{
+  const panel = readFileSync('public/index.html', 'utf8');
+  assert.ok(
+    /id="clinica-trato-espejo"[\s\S]{0,200}cambiarBooleano\('clinic_formality_mirror'/.test(panel),
+    'la casilla del espejo no guarda nada'
+  );
+  assert.ok(
+    /clinica-trato-espejo'\)\.checked\s*=/.test(panel),
+    'al abrir Ajustes hay que enseñar si esta encendido'
+  );
+}
+
+console.log('trato_paciente_test: espejo OK');
+
 console.log('trato_paciente_test: OK');

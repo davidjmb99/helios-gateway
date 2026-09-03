@@ -2488,6 +2488,10 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
       },
       clinic_timezone: { nombre: 'La zona horaria', texto: z => z || 'sin definir' },
       clinic_tone: { nombre: 'El tono', texto: t => t ? '«' + t + '»' : 'sin definir' },
+      clinic_formality_mirror: {
+        nombre: 'Seguir el trato del paciente',
+        texto: v => v === true ? 'si' : 'no'
+      },
       clinic_formality: {
         nombre: 'El trato al paciente',
         texto: v => ({ usted: 'de usted', tu: 'de tú', vos: 'de vos' })[v] || 'de usted'
@@ -2702,6 +2706,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
       // enseñar el defecto que se esta usando de verdad, no la primera opcion por
       // casualidad. Con `|| 'usted'` coinciden lo que se ve y lo que se manda.
       document.getElementById('clinica-trato').value = valorEnPantalla('clinic_formality') || 'usted';
+      document.getElementById('clinica-trato-espejo').checked = valorEnPantalla('clinic_formality_mirror') === true;
       document.getElementById('clinica-direccion').value = valorEnPantalla('clinic_address') || '';
       document.getElementById('clinica-primera-visita').checked = valorEnPantalla('first_visit_free') === true;
       document.getElementById('clinica-servicios').value = valorEnPantalla('clinic_services') || '';
@@ -3414,6 +3419,19 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
             <p class="text-[10px] text-slate-500 mt-1">
               Si no se elige, se trata de usted.
             </p>
+            <label class="flex items-start gap-2 text-xs text-slate-200 cursor-pointer mt-3">
+              <input id="clinica-trato-espejo" type="checkbox"
+                     onchange="cambiarBooleano('clinic_formality_mirror', this.checked)"
+                     class="rounded border-slate-700 bg-slate-950 mt-0.5">
+              <span>
+                Seguir el trato del paciente
+                <span class="block text-[10px] text-slate-500 mt-0.5">
+                  Empieza con el de arriba y cambia al del paciente solo si este lo
+                  marca claramente. Viene apagado: para muchas clínicas el trato es
+                  una decisión suya y no del paciente.
+                </span>
+              </span>
+            </label>
           </div>
           <div>
             <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Tono</h3>

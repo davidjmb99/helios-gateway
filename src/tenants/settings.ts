@@ -51,6 +51,7 @@ import {
   normalizarModo,
   normalizarTono,
   normalizarTrato,
+  normalizarInterruptor,
   TRATOS,
   TRATO_POR_DEFECTO,
   type TratoAlPaciente,
@@ -107,6 +108,8 @@ export interface AjustesClinica {
    * quedarse en el SOUL, que es compartido. `origen` dice quien lo eligio.
    */
   clinic_formality: TratoAlPaciente;
+  /** Si Helios puede pasar al trato del paciente cuando el paciente lo marca. */
+  clinic_formality_mirror: boolean;
   /** Donde esta la clinica. Viaja en clinic_context, no en el prompt. */
   clinic_address: string | null;
   first_visit_free: boolean;
@@ -134,6 +137,7 @@ const CAMPOS = {
   clinic_timezone: { normalizar: normalizarZona, error: 'ZONA_INVALIDA' },
   clinic_tone: { normalizar: normalizarTono, error: 'TONO_INVALIDO' },
   clinic_formality: { normalizar: normalizarTrato, error: 'TRATO_INVALIDO' },
+  clinic_formality_mirror: { normalizar: normalizarInterruptor, error: 'ESPEJO_INVALIDO' },
   clinic_address: { normalizar: normalizarDireccion, error: 'DIRECCION_INVALIDA' },
   first_visit_free: { normalizar: normalizarPrimeraVisita, error: 'PRIMERA_VISITA_INVALIDA' },
   clinic_services: { normalizar: normalizarServicios, error: 'SERVICIOS_INVALIDOS' },
@@ -193,6 +197,11 @@ function porDefecto(): AjustesClinica {
     // esperaba tu suena rigido y no se queja nadie; tutear a quien esperaba usted es una
     // falta de respeto, y en una clinica eso es una queja. Igual que first_visit_free.
     clinic_formality: TRATO_POR_DEFECTO,
+    // APAGADO, y no por prudencia generica: para muchas clinicas el trato es una
+    // decision de marca y no un accidente. Una que trata de usted QUIERE tratar de
+    // usted aunque el paciente tutee, igual que su recepcionista. Encenderlo tiene
+    // que ser la decision de alguien, no un cambio silencioso en una cuenta viva.
+    clinic_formality_mirror: false,
     // SIN DIRECCION POR DEFECTO. Inventar una es peor que no tenerla: el paciente se
     // presentaria en un sitio equivocado. Si no esta configurada, Helios deriva.
     clinic_address: null,
@@ -385,6 +394,7 @@ export async function leerContextoDeClinica(tenantId: string): Promise<{
   horario: Record<string, Array<[string, string]>> | null;
   tono: string | null;
   trato: TratoAlPaciente;
+  tratoEspejo: boolean;
   zona: string;
   direccion: string | null;
   primeraVisitaGratis: boolean;
@@ -414,6 +424,9 @@ export async function leerContextoDeClinica(tenantId: string): Promise<{
     // del mundo: es una eleccion de estilo que HAY que tomar en cada frase. Omitirla
     // devolveria la decision al SOUL, que es exactamente de donde se la esta sacando.
     trato: ajustes.clinic_formality,
+    // Viaja siempre, igual que el trato: es una politica que el SOUL tiene que poder
+    // consultar, y omitirla le devolveria la decision al prompt compartido.
+    tratoEspejo: ajustes.clinic_formality_mirror,
     zona: ajustes.clinic_timezone
   };
 }
@@ -456,6 +469,7 @@ export async function leerAjustes(tenantId: string): Promise<Record<string, unkn
     clinic_formality: ajustes.clinic_formality,
     clinic_formality_opciones: [...TRATOS],
     clinic_formality_por_defecto: defectos.clinic_formality,
+    clinic_formality_mirror: ajustes.clinic_formality_mirror,
 
     clinic_address: ajustes.clinic_address,
     first_visit_free: ajustes.first_visit_free,

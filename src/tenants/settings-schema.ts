@@ -336,6 +336,22 @@ const ESCRITURAS: Record<string, TratoAlPaciente> = {
   "vós": "vos"
 };
 
+/**
+ * Un interruptor: encendido o apagado, y nada mas.
+ *
+ * NUNCA DEVUELVE null, al contrario que casi todo en este fichero, y es a proposito:
+ * para un booleano no hay diferencia util entre «no configurado» y «apagado». Las dos
+ * cosas significan que la funcion no actua.
+ *
+ * Y CUALQUIER COSA QUE NO SEA UN SI EXPLICITO ES UN NO. Con un interruptor que enciende
+ * comportamiento, la unica lectura segura de un valor raro es «apagado»: encender algo
+ * porque en la columna habia una cadena inesperada seria cambiar lo que hace Helios sin
+ * que nadie lo haya decidido.
+ */
+export function normalizarInterruptor(valor: unknown): boolean {
+  return valor === true || valor === 'true' || valor === 1 || valor === '1';
+}
+
 export function normalizarTrato(valor: unknown): TratoAlPaciente | null {
   // SOLO CADENAS, y no `String(valor)`. Una prueba lo pillo: `String(["tu"])` es `"tu"`,
   // asi que un array se colaba y quedaba guardado como si alguien lo hubiera elegido.
