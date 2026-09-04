@@ -2460,6 +2460,233 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
       return abiertos.length + (abiertos.length === 1 ? ' día abierto' : ' días abiertos');
     }
 
+    // --- EDITORES DE FICHAS ----------------------------------------------------
+    //
+    // Tres campos guardan TEXTO con un formato: servicios, doctores y dias cerrados. El
+    // formato se enseñaba en el `placeholder`, y un placeholder DESAPARECE al escribir la
+    // primera letra, o sea justo cuando hace falta. David perdio un rato por eso el
+    // 4-sep-2026: escribio un doctor sin su linea `calendario:`, el guardado entero se
+    // rechazo -bien rechazado- y no habia forma de recordar el modelo.
+    //
+    // Aqui cada dato tiene su casilla con su nombre encima. El modelo no se borra, y el
+    // fallo del calendario deja de ser POSIBLE en vez de estar solo mejor explicado.
+    //
+    // LO QUE NO CAMBIA: se sigue guardando EL MISMO TEXTO. El servidor no se toca, no hay
+    // migracion, y una clinica que ya tenia datos los ve repartidos en casillas.
+    //
+    // EL RIESGO ES LA IDA Y VUELTA. Si leer el texto en fichas y volver a escribirlo
+    // perdiera algo, abrir Ajustes y guardar destruiria la configuracion de una clinica
+    // que ya funciona. Por eso hay una prueba que compara contra el parser REAL del
+    // servidor -no basta con que el texto se parezca, tiene que entenderse igual- y por
+    // eso se conserva el cuadro crudo detras de «Ver como texto».
+
+    const FICHAS = {
+      servicios: {
+        textarea: 'clinica-servicios',
+        campo: 'clinic_services',
+        anadir: 'Añadir servicio',
+        vacia: function () { return { nombre: '', precio: '', tambien: '' }; },
+        columnas: [
+          { k: 'nombre', etiqueta: 'Servicio', ancho: 'flex-1', ph: 'Limpieza dental' },
+          { k: 'precio', etiqueta: 'Precio', ancho: 'w-32', ph: 'desde 40$' },
+          { k: 'tambien', etiqueta: 'Otros nombres por los que lo piden', ancho: 'flex-1', ph: 'profilaxis, limpieza' }
+        ]
+      },
+      doctores: {
+        textarea: 'clinica-doctores',
+        campo: 'clinic_doctors',
+        anadir: 'Añadir profesional',
+        vacia: function () { return { nombre: '', calendario: '', horario: '', hace: '' }; },
+        columnas: [
+          { k: 'nombre', etiqueta: 'Nombre y apellido', ancho: 'flex-1', ph: 'Dra. Ana Martinez' },
+          // OBLIGATORIO Y DICHO: sin calendario no se le pueden consultar huecos ni crear
+          // citas, y el servidor rechaza la lista ENTERA. Que se vea antes de guardar.
+          { k: 'calendario', etiqueta: 'ID de calendario de Google (obligatorio)', ancho: 'flex-1', ph: 'c_xxxx@group.calendar.google.com' },
+          { k: 'horario', etiqueta: 'Horario (solo si NO es el de la clinica)', ancho: 'w-48', ph: 'L, J, V, S' },
+          { k: 'hace', etiqueta: 'Que servicios hace (un * detras = preferente)', ancho: 'flex-1', ph: 'valoracion, limpieza, urgencia*' }
+        ]
+      },
+      cierres: {
+        textarea: 'clinica-cierres',
+        campo: 'clinic_closures',
+        anadir: 'Añadir dia cerrado',
+        vacia: function () { return { desde: '', hasta: '', motivo: '' }; },
+        columnas: [
+          { k: 'desde', etiqueta: 'Desde', ancho: 'w-36', ph: '25/12/2026' },
+          { k: 'hasta', etiqueta: 'Hasta (vacio si es un solo dia)', ancho: 'w-36', ph: '' },
+          { k: 'motivo', etiqueta: 'Motivo (opcional)', ancho: 'flex-1', ph: 'Navidad' }
+        ]
+      }
+    };
+
+    const fichasActuales = { servicios: [], doctores: [], cierres: [] };
+
+    // --- Leer el texto guardado y repartirlo en casillas ------------------------
+
+    function leerFichas(cual, texto) {
+      const lineas = String(texto || '').split('\n');
+
+      if (cual === 'servicios') {
+        return lineas.map(function (l) { return l.trim(); }).filter(Boolean).map(function (linea) {
+          // El parentesis del final es el de los otros nombres, y se toma el ULTIMO: el
+          // precio puede llevar parentesis dentro -«40$ a 80$ (por sesion)»-.
+          const m = linea.match(/^([^:]+):\s*(.+?)(?:\s*\(([^()]*)\))?\s*$/);
+          // Si no se entiende NO se tira: se deja entera en la primera casilla para que
+          // se vea y se pueda arreglar. Tirarla seria perder un dato al abrir la pantalla.
+          if (!m) return { nombre: linea, precio: '', tambien: '' };
+          return { nombre: m[1].trim(), precio: m[2].trim(), tambien: (m[3] || '').trim() };
+        });
+      }
+
+      if (cual === 'doctores') {
+        const filas = [];
+        let actual = null;
+        for (const cruda of lineas) {
+          const linea = cruda.trim();
+          if (!linea) continue;
+          const campo = linea.match(/^(calendario|horario|hace)\s*:\s*(.+)$/i);
+          if (!campo) {
+            if (actual) filas.push(actual);
+            actual = { nombre: linea, calendario: '', horario: '', hace: '' };
+            continue;
+          }
+          if (!actual) continue;
+          actual[campo[1].toLowerCase()] = campo[2].trim();
+        }
+        if (actual) filas.push(actual);
+        return filas;
+      }
+
+      return lineas.map(function (l) { return l.trim(); }).filter(Boolean).map(function (linea) {
+        const m = linea.match(/^(\d{1,2}[/-]\d{1,2}[/-]\d{4})(?:\s*-\s*(\d{1,2}[/-]\d{1,2}[/-]\d{4}))?\s*(.*)$/);
+        if (!m) return { desde: linea, hasta: '', motivo: '' };
+        return { desde: m[1], hasta: m[2] || '', motivo: (m[3] || '').trim() };
+      });
+    }
+
+    // --- Y volver a escribirlo en el formato que entiende el servidor -----------
+
+    function escribirFichas(cual, filas) {
+      if (cual === 'servicios') {
+        return filas
+          .filter(function (f) { return (f.nombre || '').trim() || (f.precio || '').trim(); })
+          .map(function (f) {
+            const t = (f.tambien || '').trim();
+            return (f.nombre || '').trim() + ': ' + (f.precio || '').trim() + (t ? ' (' + t + ')' : '');
+          })
+          .join('\n');
+      }
+
+      if (cual === 'doctores') {
+        return filas
+          .filter(function (f) { return (f.nombre || '').trim(); })
+          .map(function (f) {
+            const l = [(f.nombre || '').trim()];
+            if ((f.calendario || '').trim()) l.push('  calendario: ' + f.calendario.trim());
+            if ((f.horario || '').trim()) l.push('  horario: ' + f.horario.trim());
+            if ((f.hace || '').trim()) l.push('  hace: ' + f.hace.trim());
+            return l.join('\n');
+          })
+          .join('\n\n');
+      }
+
+      return filas
+        .filter(function (f) { return (f.desde || '').trim(); })
+        .map(function (f) {
+          let l = (f.desde || '').trim();
+          if ((f.hasta || '').trim()) l += ' - ' + f.hasta.trim();
+          if ((f.motivo || '').trim()) l += '   ' + f.motivo.trim();
+          return l;
+        })
+        .join('\n');
+    }
+
+    // --- Pintar, editar, añadir y quitar ---------------------------------------
+
+    function pintarFichas(cual) {
+      const caja = document.getElementById('fichas-' + cual);
+      if (!caja) return;
+      const def = FICHAS[cual];
+      const filas = fichasActuales[cual];
+
+      if (filas.length === 0) {
+        caja.innerHTML = '<p class="text-[11px] text-slate-500 italic py-2">'
+          + 'Sin nada todavia. Dale a «' + escapeHtml(def.anadir) + '».</p>';
+        return;
+      }
+
+      caja.innerHTML = filas.map(function (fila, i) {
+        const casillas = def.columnas.map(function (c) {
+          return '<div class="' + c.ancho + ' min-w-[8rem]">'
+            + '<label class="block text-[10px] text-slate-500 mb-0.5">' + escapeHtml(c.etiqueta) + '</label>'
+            + '<input type="text" value="' + escapeHtml(String(fila[c.k] || '')) + '"'
+            + ' placeholder="' + escapeHtml(c.ph) + '"'
+            + ' oninput="editarFicha(&quot;' + cual + '&quot;, ' + i + ', &quot;' + c.k + '&quot;, this.value)"'
+            + ' class="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:border-amber-500 focus:outline-none">'
+            + '</div>';
+        }).join('');
+        return '<div class="flex flex-wrap gap-2 items-end mb-2 pb-2 border-b border-slate-800">'
+          + casillas
+          + '<button type="button" onclick="quitarFicha(&quot;' + cual + '&quot;, ' + i + ')"'
+          + ' class="text-slate-500 hover:text-red-400 text-xs px-2 py-1" title="Quitar">X</button>'
+          + '</div>';
+      }).join('');
+    }
+
+    // AL EDITAR NO SE REPINTA. Repintar en cada tecla destruye el input y se pierde el
+    // foco a la primera letra. Solo se repinta al añadir o quitar una ficha.
+    function editarFicha(cual, i, clave, valor) {
+      if (!fichasActuales[cual][i]) return;
+      fichasActuales[cual][i][clave] = valor;
+      volcarFichas(cual);
+    }
+
+    function anadirFicha(cual) {
+      fichasActuales[cual].push(FICHAS[cual].vacia());
+      pintarFichas(cual);
+      volcarFichas(cual);
+    }
+
+    function quitarFicha(cual, i) {
+      fichasActuales[cual].splice(i, 1);
+      pintarFichas(cual);
+      volcarFichas(cual);
+    }
+
+    // El cuadro de texto sigue siendo lo que se manda: las fichas solo lo escriben. Asi el
+    // resto del panel -el resumen, el guardado, lo pendiente- no se entera de que esto
+    // existe, y un fallo aqui no puede romper el guardado de los demas campos.
+    function volcarFichas(cual) {
+      const def = FICHAS[cual];
+      const texto = escribirFichas(cual, fichasActuales[cual]);
+      const area = document.getElementById(def.textarea);
+      if (area) area.value = texto;
+      cambiarTexto(def.campo, texto);
+    }
+
+    function cargarFichas(cual, texto) {
+      fichasActuales[cual] = leerFichas(cual, texto);
+      const area = document.getElementById(FICHAS[cual].textarea);
+      if (area) area.value = String(texto || '');
+      pintarFichas(cual);
+    }
+
+    // EL CUADRO CRUDO SIGUE AHI, detras de un enlace. Es la valvula de escape: si algun
+    // dia las fichas no supieran representar algo que ya estaba guardado, se ve y se
+    // arregla a mano en vez de perderlo en silencio.
+    function alternarTexto(cual) {
+      const area = document.getElementById(FICHAS[cual].textarea);
+      const caja = document.getElementById('fichas-' + cual);
+      const boton = document.getElementById('alternar-' + cual);
+      if (!area || !caja) return;
+      const eraTexto = !area.classList.contains('hidden');
+      area.classList.toggle('hidden', eraTexto);
+      caja.classList.toggle('hidden', !eraTexto);
+      if (boton) boton.textContent = eraTexto ? 'Ver como texto' : 'Volver a las casillas';
+      // Al volver del texto a las casillas se relee, para que no queden desincronizados.
+      if (eraTexto) cargarFichas(cual, area.value);
+    }
+
     // QUE SIGNIFICA CADA CODIGO DE RECHAZO, en palabras de quien rellena el formulario.
     // El servidor manda un codigo y el campo; aqui se juntan con el nombre en español que
     // ya vive en CAMPOS_AJUSTE, para que el aviso diga QUE campo y POR QUE.
@@ -2744,9 +2971,12 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
       document.getElementById('clinica-trato-espejo').checked = valorEnPantalla('clinic_formality_mirror') === true;
       document.getElementById('clinica-direccion').value = valorEnPantalla('clinic_address') || '';
       document.getElementById('clinica-primera-visita').checked = valorEnPantalla('first_visit_free') === true;
-      document.getElementById('clinica-servicios').value = valorEnPantalla('clinic_services') || '';
-      document.getElementById('clinica-doctores').value = valorEnPantalla('clinic_doctors') || '';
-      document.getElementById('clinica-cierres').value = valorEnPantalla('clinic_closures') || '';
+      // LOS TRES CAMPOS CON FORMATO SE REPARTEN EN CASILLAS. `cargarFichas` deja tambien
+      // el cuadro de texto crudo con lo guardado, para que la valvula de escape enseñe lo
+      // que hay de verdad y no lo que las fichas hayan sabido reconstruir.
+      cargarFichas('servicios', valorEnPantalla('clinic_services') || '');
+      cargarFichas('doctores', valorEnPantalla('clinic_doctors') || '');
+      cargarFichas('cierres', valorEnPantalla('clinic_closures') || '');
 
       document.getElementById('horario-estado').innerHTML = textoDeOrigen(
         ajustesActuales.origen.clinic_hours,
@@ -3375,10 +3605,17 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
               <b class="text-slate-300">Si lo dejas vacío, Helios no inventa precios:
               deriva.</b> Y siempre los dice como orientativos, sujetos a valoración.
             </p>
+            <div id="fichas-servicios"></div>
             <textarea id="clinica-servicios" rows="8"
                       placeholder="Nombre del servicio: precio (otros nombres por los que lo pidan)&#10;Otro servicio: desde 40$ (como lo pide la gente, separado por comas)"
                       oninput="cambiarTexto('clinic_services', this.value)"
-                      class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
+                      class="hidden w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
+            <div class="flex items-center gap-3 mt-2">
+              <button type="button" onclick="anadirFicha(&quot;servicios&quot;)"
+                      class="text-xs text-amber-400 hover:text-amber-300 font-semibold">+ Añadir servicio</button>
+              <button type="button" id="alternar-servicios" onclick="alternarTexto(&quot;servicios&quot;)"
+                      class="text-[11px] text-slate-500 hover:text-slate-300">Ver como texto</button>
+            </div>
             <p class="text-[11px] text-slate-500 mt-1">
               Si alguna línea no se entiende <b class="text-slate-400">no se guarda
               ninguna</b>: es peor que la clínica crea que puso doce precios y Helios solo
@@ -3398,10 +3635,17 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
               lo cogen los demás»</b>. Sin estrella, ese servicio lo hace solo quien lo
               declara.
             </p>
+            <div id="fichas-doctores"></div>
             <textarea id="clinica-doctores" rows="10"
                       placeholder="Nombre del profesional&#10;  calendario: el-id-del-calendario@group.calendar.google.com&#10;  hace: los servicios que atiende, separados por comas&#10;&#10;Otro profesional&#10;  calendario: otro-id@group.calendar.google.com&#10;  horario: L, J, V, S&#10;  hace: sus servicios"
                       oninput="cambiarTexto('clinic_doctors', this.value)"
-                      class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
+                      class="hidden w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
+            <div class="flex items-center gap-3 mt-2">
+              <button type="button" onclick="anadirFicha(&quot;doctores&quot;)"
+                      class="text-xs text-amber-400 hover:text-amber-300 font-semibold">+ Añadir profesional</button>
+              <button type="button" id="alternar-doctores" onclick="alternarTexto(&quot;doctores&quot;)"
+                      class="text-[11px] text-slate-500 hover:text-slate-300">Ver como texto</button>
+            </div>
           </div>
           <div>
             <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-1">Días cerrados</h3>
@@ -3414,10 +3658,17 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
               esperar a que cuatro personas se acuerden de bloquear su agenda es garantizar
               que una se olvide.
             </p>
+            <div id="fichas-cierres"></div>
             <textarea id="clinica-cierres" rows="4"
                       placeholder="25/12/2026   Navidad&#10;15/08/2026 - 22/08/2026   vacaciones"
                       oninput="cambiarTexto('clinic_closures', this.value)"
-                      class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
+                      class="hidden w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
+            <div class="flex items-center gap-3 mt-2">
+              <button type="button" onclick="anadirFicha(&quot;cierres&quot;)"
+                      class="text-xs text-amber-400 hover:text-amber-300 font-semibold">+ Añadir día cerrado</button>
+              <button type="button" id="alternar-cierres" onclick="alternarTexto(&quot;cierres&quot;)"
+                      class="text-[11px] text-slate-500 hover:text-slate-300">Ver como texto</button>
+            </div>
           </div>
           <div>
             <div class="flex items-center justify-between mb-1">
