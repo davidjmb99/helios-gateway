@@ -778,3 +778,66 @@ console.log('clinic_settings_test: primera visita OK');
 }
 
 console.log('clinic_settings_test: los ejemplos no llevan datos de nadie OK');
+
+// =============================================================================
+// UN RECHAZO TIENE QUE DECIR QUE CAMPO Y POR QUE
+// =============================================================================
+//
+// EL 4-sep-2026 DAVID ESCRIBIO «no se porque no me permitio guardar». Un doctor sin su
+// linea de `calendario:` tumbaba el guardado ENTERO -a proposito: media ficha guardada se
+// descubre con el primer paciente- y la pantalla enseñaba «No se guardo nada:
+// DOCTORES_INVALIDOS». Un codigo, sin decir cual de los quince campos era.
+//
+// El servidor SABIA el campo -`resultado.campo`- y lo tiraba a la basura.
+
+{
+  const servidor = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8');
+  const i = servidor.indexOf('guardarAjustes(tenantId');
+  assert.ok(i > 0, 'se encontro el endpoint de guardar ajustes');
+  const bloqueRespuesta = servidor.slice(i, servidor.indexOf('});', i));
+  assert.ok(
+    /campo:\s*resultado\.campo/.test(bloqueRespuesta),
+    'el endpoint no manda QUE campo fallo: el panel solo puede enseñar un codigo'
+  );
+}
+
+{
+  // TODO CODIGO DE `CAMPOS` TIENE SU EXPLICACION EN ESPAÑOL. Sin esta comprobacion, añadir
+  // un campo con un codigo nuevo -como paso con TRATO_INVALIDO y ESPEJO_INVALIDO- deja al
+  // panel enseñando el codigo crudo, y nadie se entera hasta que alguien no puede guardar.
+  const fuente = readFileSync(new URL('../src/tenants/settings.ts', import.meta.url), 'utf8');
+  const campos = fuente.slice(
+    fuente.indexOf('const CAMPOS = {'),
+    fuente.indexOf('} as const;', fuente.indexOf('const CAMPOS = {'))
+  );
+  const codigos = [...new Set([...campos.matchAll(/error:\s*'([A-Z_]+)'/g)].map(m => m[1]))];
+  assert.ok(codigos.length >= 12, `se esperaban los codigos de CAMPOS, salieron ${codigos.length}`);
+
+  const panel = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const mapa = panel.slice(
+    panel.indexOf('const MOTIVO_ERROR = {'),
+    panel.indexOf('};', panel.indexOf('const MOTIVO_ERROR = {'))
+  );
+  assert.ok(mapa.length > 0, 'el panel no tiene el mapa MOTIVO_ERROR');
+
+  const sinTraducir = codigos.filter(c => !mapa.includes(c + ':'));
+  assert.deepEqual(
+    sinTraducir, [],
+    'ESTOS CODIGOS NO TIENEN EXPLICACION EN EL PANEL: ' + sinTraducir.join(', ')
+    + '. Quien rellene ese campo mal vera el codigo crudo y no sabra que arreglar.'
+  );
+
+  // Y los dos que no vienen de CAMPOS pero los devuelve guardarAjustes.
+  for (const suelto of ['SIN_CAMBIOS', 'AJUSTES_WRITE_FAILED']) {
+    assert.ok(mapa.includes(suelto + ':'), `falta la explicacion de ${suelto}`);
+  }
+
+  // EL CODIGO CRUDO SIGUE SALIENDO SI NO HAY TRADUCCION. Un aviso generico para un codigo
+  // sin mapear seria PEOR que el de antes: no se podria ni buscar en el codigo fuente.
+  assert.ok(
+    /El servidor lo rechazo con/.test(panel),
+    'sin traduccion hay que enseñar el codigo crudo, no un mensaje generico'
+  );
+}
+
+console.log('clinic_settings_test: los rechazos se explican OK');

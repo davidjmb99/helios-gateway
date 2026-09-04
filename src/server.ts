@@ -268,7 +268,12 @@ server.post('/admin/settings', async (request, reply) => {
   const tenantId = await checkAuth(request, reply);
   const resultado = await guardarAjustes(tenantId, (request.body || {}) as Record<string, unknown>);
   if (!resultado.ok) {
-    return reply.status(400).send({ error: true, error_code: resultado.error });
+    // VA TAMBIEN QUE CAMPO LO RECHAZO, y no es cosmetico. Sin el, el panel solo puede
+    // enseñar un codigo -«DOCTORES_INVALIDOS»- y quien rellena los ajustes se queda
+    // adivinando cual de los quince campos fue. Paso el 4-sep-2026: un doctor al que le
+    // faltaba su linea de calendario tumbo el guardado ENTERO -es a proposito: media
+    // ficha guardada se descubre con el primer paciente- y la pantalla no dijo donde.
+    return reply.status(400).send({ error: true, error_code: resultado.error, campo: resultado.campo });
   }
   return resultado;
 });

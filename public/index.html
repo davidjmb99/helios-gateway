@@ -2460,6 +2460,41 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
       return abiertos.length + (abiertos.length === 1 ? ' día abierto' : ' días abiertos');
     }
 
+    // QUE SIGNIFICA CADA CODIGO DE RECHAZO, en palabras de quien rellena el formulario.
+    // El servidor manda un codigo y el campo; aqui se juntan con el nombre en español que
+    // ya vive en CAMPOS_AJUSTE, para que el aviso diga QUE campo y POR QUE.
+    const MOTIVO_ERROR = {
+      BUFFER_FUERA_DE_RANGO: 'tiene que estar entre 3 y 30 segundos.',
+      HORAS_VUELTA_FUERA_DE_RANGO: 'ese numero de horas esta fuera de lo admitido.',
+      INTENTOS_FUERA_DE_RANGO: 'ese numero de reintentos no esta permitido.',
+      HORARIO_INVALIDO: 'revisa las horas: la de cierre no puede ser anterior a la de apertura. Puede quedar abierto cualquier numero de dias, incluso uno; lo unico que no se admite es tenerlos los siete cerrados.',
+      VENTANA_ENVIO_INVALIDA: 'solo se admite entre 07:00 y 23:00, y la primera hora antes que la segunda.',
+      MODO_INVALIDO: 'ese modo no existe.',
+      EQUIPOS_INVALIDOS: 'revisa los identificadores de los equipos.',
+      ZONA_INVALIDA: 'eligela de la lista; no vale escribirla a mano.',
+      TONO_INVALIDO: 'son 400 caracteres como mucho.',
+      TRATO_INVALIDO: 'eligelo de la lista.',
+      ESPEJO_INVALIDO: 'solo puede estar marcado o sin marcar.',
+      DIRECCION_INVALIDA: 'son 200 caracteres como mucho.',
+      PRIMERA_VISITA_INVALIDA: 'solo puede estar marcado o sin marcar.',
+      SERVICIOS_INVALIDOS: 'cada linea tiene que ser «Nombre del servicio: precio». Si una sola no se entiende no se guarda ninguna.',
+      DOCTORES_INVALIDOS: 'a algun doctor le falta su linea «calendario: ...» justo debajo del nombre. Sin calendario no se le pueden consultar huecos ni crear citas, asi que no se guarda a medias. Cada linea que no empieza por calendario:, horario: o hace: se lee como un doctor NUEVO.',
+      CIERRES_INVALIDOS: 'una fecha por linea, en dd/mm/aaaa, o un rango con un guion en medio.',
+      SIN_CAMBIOS: 'no habia nada que guardar.',
+      AJUSTES_WRITE_FAILED: 'la base de datos no acepto el cambio. Vuelve a intentarlo.'
+    };
+
+    function explicarFallo(err) {
+      const codigo = String((err && err.message) || 'error');
+      const motivo = MOTIVO_ERROR[codigo];
+      const ficha = err && err.campo ? CAMPOS_AJUSTE[err.campo] : null;
+      const nombre = ficha ? ficha.nombre : null;
+      // SIN MAPA, SE ENSEÑA EL CODIGO CRUDO. Un aviso generico para un codigo que nadie
+      // tradujo todavia seria peor que el de antes: no se podria ni buscar en el codigo.
+      if (!motivo) return 'El servidor lo rechazo con «' + escapeHtml(codigo) + '».';
+      return (nombre ? escapeHtml(nombre) + ': ' : '') + escapeHtml(motivo);
+    }
+
     const CAMPOS_AJUSTE = {
       buffer_ms: {
         nombre: 'La espera antes de contestar',
@@ -2839,7 +2874,11 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
           body: JSON.stringify(aGuardar)
         });
         const data = await res.json();
-        if (!res.ok || data.error) throw new Error(data.error_code || 'error');
+        if (!res.ok || data.error) {
+          const fallo = new Error(data.error_code || 'error');
+          fallo.campo = data.campo || null;
+          throw fallo;
+        }
         // Se recarga del servidor en vez de dar por bueno lo enviado: lo que se
         // muestra es lo que hay guardado, no lo que se pidio.
         await cargarConversacion();
@@ -2847,8 +2886,8 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
           '<span class="text-emerald-400">Guardado y activo. Se aplica a partir del próximo mensaje; '
           + 'las conversaciones que ya estén esperando siguen con el valor anterior.</span>';
       } catch (err) {
-        resumen.innerHTML = '<span class="text-red-400">No se guardó nada: '
-          + escapeHtml(String(err.message)) + '</span>';
+        resumen.innerHTML = '<span class="text-red-400">No se guardó nada. '
+          + explicarFallo(err) + '</span>';
         pintarConversacion();
       } finally {
         boton.textContent = 'Guardar cambios';
@@ -3219,6 +3258,8 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
             Cuándo atiende la clínica. De aquí sale qué días cuentan para el
             seguimiento, y es el horario que Helios recibe en su contexto.
             Cada día admite dos tramos, para las jornadas partidas.
+            <b class="text-slate-300">Puede ser cualquier número de días, incluso uno</b>:
+            lo único que no se admite es tenerlos los siete cerrados.
           </p>
           <div id="horario-dias" class="mb-2"></div>
           <div id="horario-estado" class="text-[11px]"></div>
@@ -3335,7 +3376,7 @@ Se usa para probar cambios sin que el historial viejo los tape. ¿Seguir?`)) ret
               deriva.</b> Y siempre los dice como orientativos, sujetos a valoración.
             </p>
             <textarea id="clinica-servicios" rows="8"
-                      placeholder="Nombre del servicio: precio (otros nombres por los que lo pidan)&#10;Otro servicio: desde 40$ (los nombres de la calle, separados por comas)"
+                      placeholder="Nombre del servicio: precio (otros nombres por los que lo pidan)&#10;Otro servicio: desde 40$ (como lo pide la gente, separado por comas)"
                       oninput="cambiarTexto('clinic_services', this.value)"
                       class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:border-amber-500 focus:outline-none"></textarea>
             <p class="text-[11px] text-slate-500 mt-1">
