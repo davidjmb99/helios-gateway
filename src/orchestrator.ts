@@ -31,6 +31,7 @@ import { fraseDeDisponibilidad } from './handoff/disponibilidad.js';
 import { registrarTurnoDeCrm } from './services/crm-watch.js';
 import { obtenerHorarioYVentana, leerContextoDeClinica } from './tenants/settings.js';
 import { TRATO_POR_DEFECTO } from './tenants/settings-schema.js';
+import { fechaDeHoyEn } from './agenda/reloj.js';
 import { blockLead, markLeadInterest } from './leads/service.js';
 import { pideQueNoLeEscriban } from './leads/messages.js';
 import {
@@ -593,6 +594,22 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
       // confirmado, y de ahi a decirle a un paciente una hora inventada hay un paso.
       clinic_context: {
         timezone: contextoDeClinica.zona,
+        // QUE DIA ES HOY, COMO UN HECHO Y EN LA ZONA DE LA CLINICA.
+        //
+        // Antes no viajaba, y el 4-sep-2026 costo una cita mal dada: un paciente escribio
+        // un jueves, la conversacion quedo en «su limpieza para MAÑANA VIERNES», y al dia
+        // siguiente -viernes- Helios repitio la frase tal cual. Ayer era cierta; hoy manda
+        // al paciente al sabado.
+        //
+        // UNA FECHA RELATIVA GUARDADA EN EL HISTORIAL DEJA DE SER CIERTA AL DIA SIGUIENTE,
+        // y el modelo tiene delante la frase ya escrita. Pedirle en el SOUL que
+        // «recalcule» es debil: le pide deducir lo que ya cree saber. Con la fecha delante
+        // no tiene que deducir nada, que es el mismo motivo por el que viajan la direccion
+        // y los precios (HEL-085).
+        //
+        // Y EN LA ZONA DE LA CLINICA, no en la del servidor: el contenedor corre en UTC y
+        // a las 22:30 de Caracas alli ya es el dia siguiente.
+        ...fechaDeHoyEn(contextoDeClinica.zona),
         tone: contextoDeClinica.tono || config.CLINIC_TONE || "es-ES",
         // TU, USTED O VOS. Estaba en el SOUL, y el SOUL es UNO para todas las clinicas:
         // la primera que quisiera tutear obligaba a editar el prompt compartido, que es

@@ -130,6 +130,56 @@ export function hoyEn(zona: string, ahora: Date = new Date()): string {
  * por definición. Y si la fecha guardada no se entiende, también: saludar de más es una
  * torpeza pequeña; no saludar a quien acaba de llegar es antipático.
  */
+/**
+ * Que dia es hoy en la clinica, escrito para que lo lea un modelo de lenguaje.
+ *
+ * POR QUE HACE FALTA, Y ES UN FALLO REAL DEL 4-sep-2026. Un paciente escribio un jueves y
+ * la conversacion quedo en «¿a que hora le quedaria mejor su limpieza para MAÑANA
+ * VIERNES?». Al dia siguiente -viernes- volvio a escribir y Helios contesto «quedamos en
+ * agendar su limpieza para mañana viernes». Ayer era cierto; hoy manda al paciente al
+ * sabado creyendo que es viernes.
+ *
+ * UNA FECHA RELATIVA GUARDADA EN EL HISTORIAL ES UNA BOMBA DE RELOJERIA: deja de ser
+ * cierta al dia siguiente, y el modelo tiene delante la frase ya escrita. Una regla en el
+ * SOUL que diga «recalculalo» es debil contra eso, porque le pide deducir lo que ya cree
+ * saber.
+ *
+ * ASI QUE HOY VIAJA COMO UN HECHO, igual que la direccion y los precios (HEL-085): lo que
+ * llega en la peticion es un dato, y lo que hay que deducir del historial es un recuerdo
+ * del que el SOUL le enseña a desconfiar. Con la fecha delante no tiene por que fiarse de
+ * una frase de ayer.
+ *
+ * Y EN LA ZONA DE LA CLINICA, no en la del servidor. El contenedor corre en UTC: a las
+ * 22:30 de Caracas alli ya es el dia siguiente, y «hoy» seria mañana.
+ */
+export function fechaDeHoyEn(zona: string, ahora: Date = new Date()): {
+  today: string;
+  today_label: string;
+} {
+  const iso = hoyEn(zona, ahora);
+
+  // EN ESPAÑOL Y A MANO, sin depender del locale del contenedor. `Intl` con 'es-ES'
+  // funcionaria, pero los datos de locale no siempre estan completos en una imagen alpine
+  // y un «Friday» suelto en un prompt en español es justo el tipo de detalle que el modelo
+  // copia. Son diecinueve palabras, no una dependencia.
+  const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  const MESES = [
+    'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+    'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
+  ];
+
+  // El dia de la semana se saca de la fecha YA en la zona de la clinica, tomandola como
+  // UTC a mediodia: a las 12:00Z ningun desplazamiento horario del mundo cambia el dia,
+  // asi que no hay que preocuparse por los bordes.
+  const [anio, mes, dia] = iso.split('-').map(Number);
+  const aMediodia = new Date(Date.UTC(anio, mes - 1, dia, 12, 0, 0));
+
+  return {
+    today: iso,
+    today_label: `${DIAS[aMediodia.getUTCDay()]} ${dia} de ${MESES[mes - 1]} de ${anio}`
+  };
+}
+
 export function esPrimerMensajeDelDia(
   ultimaActividad: unknown,
   zona: string,
