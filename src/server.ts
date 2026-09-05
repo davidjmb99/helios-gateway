@@ -9,7 +9,7 @@ import { describirModo, accionPara } from './handoff/modo.js';
 import { pedirEmpezarDeCero } from './conversaciones/empezar-de-cero.js';
 import { normalizeChatwootPayload } from './chatwoot/normalizer.js';
 import { procesarMediaDelMensaje } from './media/pipeline.js';
-import { resolveTenantContext, TenantContextError, validateWebhookTenantRoute, resolveTenantContextByTenantId } from './tenants/context.js';
+import { resolveTenantContext, TenantContextError, validateWebhookTenantRoute, resolveTenantContextByTenantId, arrancarRefrescoDelMapa, pararRefrescoDelMapa, estadoDelMapa } from './tenants/context.js';
 import {
   bufferRepository,
   idempotencyRepository,
@@ -174,6 +174,12 @@ server.get('/health', async (request, reply) => {
     version: '0.1.0',
     recovery_mode: config.HELIOS_RECOVERY_MODE,
     admin_pii_enabled: config.HELIOS_ADMIN_SHOW_PII,
+    // DE DÓNDE SALE EL MAPA DE CLÍNICAS AHORA MISMO: `entorno` o `tabla`, cuántas
+    // clínicas hay y cuándo se refrescó por última vez. Va en /health y no en el panel
+    // porque la pregunta que responde -«¿este despliegue está leyendo la tabla?»- se
+    // hace cuando algo va mal, y entonces el panel puede ser justo lo que no funciona.
+    // No lleva ningún dato de ninguna clínica: solo el recuento y la fuente.
+    mapa_de_clinicas: estadoDelMapa(),
     components: {
       hermes_agent_api: componentHealth.hermes,
       adapter: componentHealth.adapter,
@@ -1695,6 +1701,18 @@ const stopStaleHandoffWorker = process.env.NODE_ENV !== 'test'
   ? startStaleHandoffWorker()
   : () => Promise.resolve();
 
+// EL MAPA DE CLÍNICAS, REFRESCADO DESDE LA TABLA.
+//
+// No es un trabajador como los de arriba: aquellos HACEN cosas -mandan mensajes, rescatan
+// lotes-, y este solo mantiene fresco un Map en memoria. Por eso no tiene un `stop` que
+// haya que esperar; se corta y ya.
+//
+// SI ESTO NO ARRANCARA, NO SE ROMPE NADA: el Gateway seguiría leyendo la variable de
+// entorno, que es exactamente como funcionaba hasta hoy.
+if (process.env.NODE_ENV !== 'test') {
+  arrancarRefrescoDelMapa();
+}
+
 const start = async () => {
   try {
     console.log("[BOOT] Helios Gateway starting...");
@@ -1720,7 +1738,8 @@ async function gracefulShutdown(signal: string) {
   await stopNotificationWorker();
   await stopStaleHandoffWorker();
   await stopLeadFollowupWorker();
-  
+  pararRefrescoDelMapa();
+
   server.close().then(() => {
     console.log('[Helios Gateway] Fastify server closed.');
     process.exit(0);
