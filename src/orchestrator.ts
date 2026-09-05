@@ -31,7 +31,7 @@ import { fraseDeDisponibilidad } from './handoff/disponibilidad.js';
 import { registrarTurnoDeCrm } from './services/crm-watch.js';
 import { obtenerHorarioYVentana, leerContextoDeClinica } from './tenants/settings.js';
 import { TRATO_POR_DEFECTO } from './tenants/settings-schema.js';
-import { fechaDeHoyEn } from './agenda/reloj.js';
+import { fechaDeHoyEn, ultimaActividadEn } from './agenda/reloj.js';
 import { blockLead, markLeadInterest } from './leads/service.js';
 import { pideQueNoLeEscriban } from './leads/messages.js';
 import {
@@ -569,7 +569,22 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         human_handoff_active: humanHandoffActiveFor(stage),
         active_booking: state.active_booking || null,
         financing: activeFinancing ? { id: activeFinancing.id, status: activeFinancing.status } : null,
-        last_intent: state.last_intent || null
+        last_intent: state.last_intent || null,
+        // CUANDO SE HABLO POR ULTIMA VEZ EN ESTA CONVERSACION, y solo si NO fue hoy.
+        //
+        // El 5-sep-2026 un paciente pidio cita un viernes y volvio el sabado con «hola,
+        // buenos dias». Helios volvio a ofrecer -bien- pero sin decir CUANDO fue. No es
+        // que ignorara la regla: en el payload solo viaja el mensaje actual, asi que
+        // sabia que habia un tema pendiente y no sabia que era del viernes.
+        //
+        // Es el mismo patron que `today` y que el espejo del trato -pedirle deducir algo
+        // que no tiene delante- y se arregla igual: dandole el hecho.
+        //
+        // SE ESPARCE Y NO SE ASIGNA, A PROPOSITO: cuando el tema es de HOY el campo
+        // DESAPARECE, y esa ausencia es la señal de «misma conversacion, continua sin
+        // ceremonia». Un `null` viajando siempre obligaria al modelo a interpretarlo, y
+        // decir «hoy me preguntaste» a los dos minutos seria peor que el fallo original.
+        ...(ultimaActividadEn(state?.updated_at, contextoDeClinica.zona) ?? {})
       },
       ...(handoffContext ? { human_handoff: handoffContext } : {}),
       message: {

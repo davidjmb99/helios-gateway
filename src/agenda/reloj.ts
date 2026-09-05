@@ -180,6 +180,95 @@ export function fechaDeHoyEn(zona: string, ahora: Date = new Date()): {
   };
 }
 
+/**
+ * Cuando fue la ultima vez que se hablo en esta conversacion, dicho para un modelo.
+ *
+ * EL FALLO QUE ARREGLA, Y ES EL TERCERO DEL MISMO TIPO EN UN DIA. Un paciente escribio un
+ * viernes pidiendo cita, y el sabado volvio con «hola, buenos dias». Helios contesto
+ * «¿le gustaria agendar su limpieza? ¿que dia y a que hora le queda mejor?»: bien -vuelve
+ * a ofrecer y no arrastra la hora de entonces- pero SIN DECIR CUANDO FUE. Lo que se
+ * buscaba era «el viernes me pregunto por una limpieza».
+ *
+ * Y NO ES QUE IGNORARA LA REGLA: es que probablemente NO PODIA SABERLO. En el payload solo
+ * viaja el mensaje actual; el historial vive en la sesion de Hermes y ahi los mensajes no
+ * llevan una fecha que el modelo pueda usar con soltura. Sabia que habia un tema
+ * pendiente. No sabia que era del viernes.
+ *
+ * ES EL MISMO PATRON QUE `today` Y QUE EL ESPEJO DEL TRATO: se le pedia deducir algo que
+ * no tenia delante. La solucion es la de siempre -darle el hecho- y las dos veces
+ * anteriores funciono.
+ *
+ * DEVUELVE null SI FUE HOY, y eso es la señal: sin campo, el tema es de hoy y la
+ * conversacion se continua con naturalidad; con campo, hay que nombrar cuando fue y volver
+ * a ofrecer. Es como viajan `doctors`, `services` y `clinic_address`: su ausencia dice algo.
+ */
+export function ultimaActividadEn(
+  ultimaActividad: unknown,
+  zona: string,
+  ahora: Date = new Date()
+): { ultima_actividad: string; ultima_actividad_label: string } | null {
+  const bruto = String(ultimaActividad ?? '').trim();
+  if (!bruto) return null;
+
+  const antes = new Date(bruto);
+  if (!Number.isFinite(antes.getTime())) return null;
+  // Una fecha en el futuro es un reloj mal puesto. No se inventa nada.
+  if (antes.getTime() > ahora.getTime()) return null;
+
+  const diaDeEntonces = hoyEn(zona, antes);
+  const diaDeHoy = hoyEn(zona, ahora);
+  if (diaDeEntonces === diaDeHoy) return null;
+
+  // Y ADEMAS TIENE QUE HABER PASADO TIEMPO DE VERDAD, no solo la medianoche.
+  //
+  // Lo encontro una prueba: un paciente que escribe a las 23:50 y vuelve a las 00:14 esta
+  // en DOS DIAS DE CALENDARIO distintos y a VEINTICUATRO MINUTOS de distancia. Decirle
+  // «ayer me preguntaste» suena raro, y lo peor no es como suena: la regla del SOUL haria
+  // que Helios volviera a OFRECER en medio de la misma conversacion, como si el paciente
+  // hubiera podido cambiar de idea mientras cruzaba la medianoche.
+  //
+  // CUATRO HORAS ES UN JUICIO, NO UNA CONSTANTE SAGRADA. Lo que se busca es «se fue y
+  // volvio»: cubre el caso de la medianoche -veinticuatro minutos- sin dejar fuera el que
+  // importa, que es escribir por la noche y volver por la mañana -diez o doce horas-.
+  const HORAS_MINIMAS = 4;
+  if (ahora.getTime() - antes.getTime() < HORAS_MINIMAS * 3_600_000) return null;
+
+  // LOS DIAS SE CUENTAN POR FECHA DE CALENDARIO, NO POR HORAS TRANSCURRIDAS. De las
+  // 23:00 de ayer a las 01:00 de hoy hay dos horas y es «ayer»; de las 01:00 de ayer a
+  // las 23:00 de hoy hay cuarenta y seis y sigue siendo «ayer». Contar horas diria una
+  // cosa distinta en cada caso, y el paciente piensa en dias.
+  const aMediodiaUTC = (iso: string) => {
+    const [a, m, d] = iso.split('-').map(Number);
+    // Mediodia: a las 12:00Z ningun desplazamiento horario cambia el dia, asi que la
+    // resta no se rompe en los bordes ni con el cambio de hora.
+    return Date.UTC(a, m - 1, d, 12, 0, 0);
+  };
+  const dias = Math.round(
+    (aMediodiaUTC(diaDeHoy) - aMediodiaUTC(diaDeEntonces)) / 86_400_000
+  );
+
+  const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  const MESES = [
+    'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+    'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
+  ];
+  const [anio, mes, dia] = diaDeEntonces.split('-').map(Number);
+
+  let etiqueta: string;
+  if (dias === 1) {
+    etiqueta = 'ayer';
+  } else if (dias < 7) {
+    // DE DOS A SEIS DIAS, EL NOMBRE DEL DIA. «el viernes» se entiende sin pensar.
+    etiqueta = 'el ' + DIAS[new Date(aMediodiaUTC(diaDeEntonces)).getUTCDay()];
+  } else {
+    // A PARTIR DE SIETE, LA FECHA. A los siete dias exactos el nombre del dia es el
+    // mismo que hoy -«el sabado» estando en sabado- y eso no situa nada.
+    etiqueta = `el ${dia} de ${MESES[mes - 1]}`;
+  }
+
+  return { ultima_actividad: diaDeEntonces, ultima_actividad_label: etiqueta };
+}
+
 export function esPrimerMensajeDelDia(
   ultimaActividad: unknown,
   zona: string,
