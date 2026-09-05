@@ -74,6 +74,14 @@ let ultimoFalloDeRefresco: string | null = null;
  * viendo si pasa algo, que es exactamente la clase de diagnóstico que no queremos.
  */
 export function estadoDelMapa() {
+  // EL MAPA DEL ENTORNO SE CARGA PEREZOSAMENTE, en la primera lectura de verdad. Asi que
+  // si todavia no ha llegado ningun mensaje, esto diria «0 clinicas» en un sistema
+  // perfectamente sano — y un cero ahi es exactamente la señal engañosa que este campo
+  // venia a evitar. Se fuerza la carga, y si la variable esta rota se calla: el propio
+  // estado ya lo cuenta con `clinicas: 0`.
+  if (cachedByAccount.size === 0 && fuente === 'entorno') {
+    try { loadTenantContexts(); } catch { /* sin mapa; el recuento lo dice */ }
+  }
   return {
     fuente,
     clinicas: cachedByAccount.size,

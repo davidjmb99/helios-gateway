@@ -63,6 +63,18 @@ function avisosDesde(n: number) { return avisos.slice(n); }
 
 ctx.reiniciarMapaParaPruebas();
 {
+  // ANTES DE QUE NADIE LEA NADA. El mapa del entorno se carga perezosamente, en la primera
+  // lectura de verdad, asi que recien arrancado el proceso no hay nada en memoria. Si
+  // `estadoDelMapa` no forzara la carga, /health diria «0 clinicas» en un sistema sano
+  // mientras no llegara un mensaje — y ese cero es exactamente la señal engañosa que este
+  // campo venia a evitar. Peor: se mira JUSTO al desplegar, que es cuando todavia no ha
+  // escrito nadie.
+  assert.equal(
+    ctx.estadoDelMapa().clinicas, 2,
+    '/health tiene que contar las clinicas aunque no haya llegado ningun mensaje'
+  );
+  assert.equal(ctx.estadoDelMapa().fuente, 'entorno');
+
   const coi = ctx.resolveTenantContext('2');
   assert.equal(coi.tenant_id, 'democoi1');
   assert.equal(coi.hermes_profile, 'helios-por-entorno', 'sin tabla tiene que contestar la variable');
@@ -74,6 +86,22 @@ ctx.reiniciarMapaParaPruebas();
     (e: any) => e.code === 'TENANT_NOT_CONFIGURED',
     'una cuenta desconocida no puede resolverse a ninguna clinica'
   );
+}
+
+// Y CON LA VARIABLE ROTA, `estadoDelMapa` NO PUEDE LANZAR. Se llama desde /health, que es
+// lo que se mira precisamente cuando algo va mal: si lanzara, /health se caeria justo en
+// el caso en que hace falta, y la respuesta a «¿que le pasa?» seria un 500 mudo.
+{
+  const anterior = process.env.CHATWOOT_TENANT_CONTEXTS_JSON;
+  ctx.reiniciarMapaParaPruebas();
+  process.env.CHATWOOT_TENANT_CONTEXTS_JSON = '{ esto no es JSON';
+
+  const estado = ctx.estadoDelMapa();
+  assert.equal(estado.clinicas, 0, 'sin mapa, el recuento lo dice en vez de reventar');
+  assert.equal(estado.fuente, 'entorno');
+
+  process.env.CHATWOOT_TENANT_CONTEXTS_JSON = anterior;
+  ctx.reiniciarMapaParaPruebas();
 }
 
 // =============================================================================
