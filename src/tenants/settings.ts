@@ -392,6 +392,7 @@ export async function obtenerTono(tenantId: string): Promise<string | null> {
  */
 export async function leerContextoDeClinica(tenantId: string): Promise<{
   horario: Record<string, Array<[string, string]>> | null;
+  horarioCrudo: HorarioSemanal | null;
   tono: string | null;
   trato: TratoAlPaciente;
   tratoEspejo: boolean;
@@ -417,6 +418,17 @@ export async function leerContextoDeClinica(tenantId: string): Promise<{
     horario: ajustes.origen.clinic_hours === 'clinica'
       ? horarioParaGuardar(ajustes.clinic_hours) as Record<string, Array<[string, string]>>
       : null,
+    // EL MISMO HORARIO EN EL FORMATO INTERNO, en minutos desde medianoche.
+    //
+    // El de arriba es el que se le manda a Hermes -«sat»: [["10:00","15:00"]]-, legible
+    // para el modelo. Este es con el que se CALCULA si la clínica está abierta ahora.
+    // Sale del mismo sitio, así que no puede desfasarse del otro; se devuelven los dos
+    // para no tener que deshacer `horarioParaGuardar` ni volver a consultar la base.
+    //
+    // Y NULO BAJO LA MISMA CONDICIÓN, que es lo que de verdad importa aquí: con el
+    // horario por defecto se podría decir «cerrado ahora» de una clínica que está
+    // abierta, y eso es peor que no decir nada.
+    horarioCrudo: ajustes.origen.clinic_hours === 'clinica' ? ajustes.clinic_hours : null,
     tono: ajustes.clinic_tone,
     // EL TRATO VIAJA SIEMPRE, no solo si la clinica lo configuro, y es la diferencia
     // con el horario y la direccion. Aquellos se omiten porque un valor por defecto se

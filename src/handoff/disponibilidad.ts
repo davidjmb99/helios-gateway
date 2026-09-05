@@ -39,7 +39,7 @@ const HORIZONTE_MINUTOS = 8 * 24 * 60;
  * lo que se entiende sin pensar. Aquí llegué a poner «12:00m» por mi cuenta y David
  * lo corrigió: era una forma inventada que nadie usa.
  */
-function horaTexto(minutos: number): string {
+export function horaTexto(minutos: number): string {
   const h24 = Math.floor(minutos / 60);
   const m = minutos % 60;
   const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
@@ -132,4 +132,105 @@ export function fraseDeDisponibilidad(entrada: {
   // horario, que es un hecho de la clínica y no una expectativa del paciente.
   return 'El equipo responde dentro del horario de atención, que se reanuda '
     + `${cuando} a las ${horaTexto(apertura.minuto)}.`;
+}
+
+/**
+ * QUÉ HORA ES Y SI LA CLÍNICA ESTÁ ABIERTA, como hechos para el payload.
+ *
+ * EL FALLO, Y ES EL CUARTO DEL MISMO TIPO. El sábado 5-sep-2026 a las 15:07, un paciente
+ * escribió «hola, buenos días» a COI y Helios contestó: «¡Hola, David, buenos días! ¿Listo
+ * para agendar su limpieza? Hoy sábado atendemos de 10:00am a 3:00pm. ¿A qué hora le
+ * gustaría venir?».
+ *
+ * A las 15:07 esa franja ENTERA ya había pasado. Y encima «buenos días» a las tres de la
+ * tarde.
+ *
+ * NO ERA QUE IGNORARA UNA REGLA: es que no podía saberlo. En `clinic_context` viajaba
+ * `today` -qué día es- y `clinic_hours` -a qué hora abre la clínica los sábados-, y NUNCA
+ * LA HORA. Con esos dos datos, «hoy sábado atendemos de 10:00 a 15:00» es exactamente lo
+ * que hay que responder; el error no estaba en el razonamiento sino en lo que tenía
+ * delante.
+ *
+ * Mismo patrón que `today`, que el espejo del trato y que `ultima_actividad`: pedirle
+ * deducir algo que no tiene. Y se arregla igual: dándole el hecho.
+ *
+ * LO QUE NO ERA EL FALLO, Y CONVIENE TENERLO CLARO: la agenda nunca habría reservado a las
+ * dos de la tarde. `huecos.ts` recorta a `ahora + antelación`, así que si Helios llega a
+ * consultar el calendario, los huecos pasados no existen. El daño es anterior a eso —
+ * invitar al paciente a pedir una hora que la agenda le va a negar después—, y es el tipo
+ * de fallo que hace quedar mal a la clínica sin llegar a producir una cita mala.
+ *
+ * POR QUÉ `closes_at` ES EL FIN DEL TRAMO ACTUAL Y NO EL DEL DÍA. Una clínica con parada
+ * para comer -de 9 a 13 y de 15 a 19- estando a las 12:50 devuelve «1:00pm», no «7:00pm».
+ * Es cierto, y se queda corto en vez de pasarse: si el paciente pide las 16:00, la agenda
+ * se la dará igual. Quedarse corto solo hace perder una oferta; pasarse hace prometer una
+ * hora que no existe, y eso es lo que estamos arreglando.
+ */
+export function momentoDeLaClinica(entrada: {
+  ahora: Date;
+  zona: string;
+  horario: HorarioClinica | null;
+}): { now: string; open_now?: boolean; closes_at?: string; next_open_label?: string } {
+  const { ahora, zona, horario } = entrada;
+  const { dia, minuto } = momentoLocal(ahora, zona);
+
+  // LA HORA VIAJA SIEMPRE, tenga o no horario configurado la clínica. «Buenos días» a las
+  // tres de la tarde está mal aunque no se sepa a qué hora abren, y saber la hora también
+  // es lo que permite entender «¿puede ser en una hora?».
+  const salida: { now: string; open_now?: boolean; closes_at?: string; next_open_label?: string } = {
+    now: horaTexto(minuto)
+  };
+
+  // SIN HORARIO CONFIRMADO NO SE DICE NADA MÁS, y es la misma regla que sigue
+  // `clinic_hours`: mandar el horario por defecto haría creer que es el de esta clínica.
+  // Aquí sería peor todavía, porque `open_now` es un binario que suena a hecho
+  // comprobado: un «false» inventado cierra una clínica que está abierta.
+  if (!horario || dia < 0) return salida;
+
+  const abierta = clinicaAbierta(ahora, zona, horario);
+  salida.open_now = abierta;
+
+  if (abierta) {
+    // Se camina a saltos de cuarto de hora hasta que deja de estar abierta, igual que
+    // `proximaApertura`, y por el mismo motivo: con varios tramos al día la aritmética de
+    // franjas se equivoca justo en el hueco de la comida.
+    for (let paso = PASO_MINUTOS; paso <= 24 * 60; paso += PASO_MINUTOS) {
+      const despues = new Date(ahora.getTime() + paso * 60000);
+      if (clinicaAbierta(despues, zona, horario)) continue;
+
+      // LA MUESTRA NO ES EL CIERRE, exactamente igual que en `proximaApertura`. Buscando a
+      // saltos de cuarto de hora, la primera muestra cerrada cae en cualquier minuto
+      // posterior al cierre: una clínica que cierra a las 13:00 decía «1:05pm», una hora
+      // que no existe en ningún horario y que se lee como un error del sistema.
+      //
+      // Lo cazó la prueba de la parada para comer. Se retrocede minuto a minuto hasta el
+      // primer minuto cerrado de verdad, que es la hora de cierre.
+      let cierre = despues;
+      for (let atras = 1; atras < PASO_MINUTOS; atras += 1) {
+        const anterior = new Date(despues.getTime() - atras * 60000);
+        if (anterior.getTime() <= ahora.getTime()) break;
+        if (clinicaAbierta(anterior, zona, horario)) break;
+        cierre = anterior;
+      }
+
+      salida.closes_at = horaTexto(momentoLocal(cierre, zona).minuto);
+      break;
+    }
+    return salida;
+  }
+
+  // CERRADA: cuándo se vuelve a abrir. Sin esto, el modelo sabe que no puede ofrecer hoy y
+  // no tiene nada que ofrecer en su lugar, que deja la conversación en un callejón.
+  const apertura = proximaApertura(ahora, zona, horario);
+  if (apertura) {
+    // «el lunes 7 a las 10:00am»: el día CON SU NÚMERO, que no envejece si la conversación
+    // cruza la medianoche, al revés que «mañana». Es la forma que ya se fijó para las
+    // fechas del payload.
+    const diaDelMes = Number(new Intl.DateTimeFormat('en-US', { timeZone: zona, day: 'numeric' })
+      .format(apertura.fecha));
+    salida.next_open_label =
+      `el ${NOMBRES_DIA[apertura.dia]} ${diaDelMes} a las ${horaTexto(apertura.minuto)}`;
+  }
+
+  return salida;
 }

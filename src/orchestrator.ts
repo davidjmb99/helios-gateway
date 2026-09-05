@@ -27,7 +27,7 @@ import { detectSignals } from './chatwoot/normalizer.js';
 import { sinNotasDelSistema } from './media/pipeline.js';
 import { markEligibleIfAppointment, markExcluded } from './csat/service.js';
 import { decidirCierre } from './csat/cierre.js';
-import { fraseDeDisponibilidad } from './handoff/disponibilidad.js';
+import { fraseDeDisponibilidad, momentoDeLaClinica } from './handoff/disponibilidad.js';
 import { registrarTurnoDeCrm } from './services/crm-watch.js';
 import { obtenerHorarioYVentana, leerContextoDeClinica } from './tenants/settings.js';
 import { TRATO_POR_DEFECTO } from './tenants/settings-schema.js';
@@ -492,6 +492,10 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
     // paciente sin respuesta.
     const contextoDeClinica = await leerContextoDeClinica(tenantId).catch(() => ({
       horario: null,
+      // Sin poder leer los ajustes no se sabe el horario, asi que no se dice si esta
+      // abierta: `now` viaja igual -la hora no depende de la base- y `open_now` se omite.
+      // Inventar un «cerrado» aqui apagaria una clinica que esta atendiendo.
+      horarioCrudo: null,
       tono: null,
       // SIN PODER LEER LOS AJUSTES, SE TRATA DE USTED. No hay «sin trato»: el modelo va a
       // usar un pronombre igualmente, asi que aqui se elige el que no ofende a nadie.
@@ -649,6 +653,26 @@ export async function processBufferEvent(tenantId: string, conversationId: strin
         // Cambiar por el tono seria empezar a tutear a quien nunca tuteo.
         formality_follows_patient: contextoDeClinica.tratoEspejo,
         ...(contextoDeClinica.horario ? { clinic_hours: contextoDeClinica.horario } : {}),
+        // QUE HORA ES, Y SI LA CLINICA ESTA ABIERTA AHORA MISMO.
+        //
+        // `clinic_hours` dice a que hora abre los sabados; NO dice que son las 15:07 y que
+        // ese sabado ya se acabo. El 5-sep-2026 eso costo esta respuesta en COI: «Hoy
+        // sabado atendemos de 10:00am a 3:00pm. ¿A que hora le gustaria venir?» — mandada
+        // a las 15:07, con la franja entera ya pasada, y saludando con «buenos dias».
+        //
+        // CON LO QUE TENIA DELANTE, ESA RESPUESTA ERA CORRECTA. Sabia el dia y sabia el
+        // horario del dia. Es el cuarto fallo del mismo tipo -`today`, el espejo del
+        // trato, `ultima_actividad` y este-: pedirle deducir algo que no tiene. Y se
+        // arregla igual, dandole el hecho.
+        //
+        // `now` viaja siempre; `open_now`, `closes_at` y `next_open_label` solo si la
+        // clinica confirmo su horario, por la misma razon que `clinic_hours` se omite: un
+        // `open_now: false` inventado cierra una clinica que esta abierta.
+        ...momentoDeLaClinica({
+          ahora: new Date(),
+          zona: contextoDeClinica.zona,
+          horario: contextoDeClinica.horarioCrudo
+        }),
         // LA DIRECCION VIAJA COMO DATO, NO COMO INSTRUCCION, y es deliberado.
         //
         // Estuvo escrita en el perfil de Hermes -«La clinica esta en Acarigua, CC
